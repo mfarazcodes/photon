@@ -4,9 +4,9 @@ import 'package:photon/main.dart';
 void main() {
   testWidgets('App loads smoke test', (WidgetTester tester) async {
     // Build our app and trigger a frame.
-    await tester.pumpWidget(const MyApp());
+    await tester.pumpWidget(const VeriTrustApp());
 
-    // Verify that brand new project text is present.
-    expect(find.text('Brand New Project'), findsOneWidget);
+    // Verify that VeriTrust title text is present.
+    expect(find.text('VeriTrust'), findsWidgets);
   });
 }
