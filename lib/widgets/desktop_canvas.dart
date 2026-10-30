@@ -34,6 +34,9 @@ class _DesktopCanvasState extends State<DesktopCanvas>
   Duration _last = Duration.zero;
   bool? _gravity;
   WorkspaceController? _ws;
+  bool _paletteOpen = false;
+  String _paletteQuery = '';
+  final FocusNode _paletteFocus = FocusNode();
 
   /// Mouse position normalised to -1..1, eased each frame. Feeds the
   /// wordmark and floaters so the centerpiece tilts toward the cursor.
@@ -74,7 +77,19 @@ class _DesktopCanvasState extends State<DesktopCanvas>
     final key = event.logicalKey;
     final ctrl = HardwareKeyboard.instance.isControlPressed;
     if (key == LogicalKeyboardKey.escape) {
+      if (_paletteOpen) {
+        setState(() => _paletteOpen = false);
+        return true;
+      }
       ws.escape();
+      return true;
+    }
+    if (ctrl && key == LogicalKeyboardKey.keyK) {
+      setState(() {
+        _paletteOpen = !_paletteOpen;
+        _paletteQuery = '';
+        if (_paletteOpen) _paletteFocus.requestFocus();
+      });
       return true;
     }
     if (ctrl && key == LogicalKeyboardKey.keyN) {
@@ -86,6 +101,14 @@ class _DesktopCanvasState extends State<DesktopCanvas>
       return true;
     }
     return false;
+  }
+
+  void _setPhysicsMode(PhysicsMode mode) {
+    setState(() {
+      _engine.mode = mode;
+      _paletteOpen = false;
+      if (!_ws!.gravity) _ws!.setGravity(true);
+    });
   }
 
   @override
@@ -222,6 +245,94 @@ class _DesktopCanvasState extends State<DesktopCanvas>
                 ),
               ),
             ),
+            if (_paletteOpen)
+              Positioned.fill(
+                child: GestureDetector(
+                  onTap: () => setState(() => _paletteOpen = false),
+                  child: Container(
+                    color: const Color(0x66000000),
+                    alignment: Alignment.center,
+                    child: GestureDetector(
+                      onTap: () {}, // consume tap
+                      child: Container(
+                        width: 600,
+                        constraints: const BoxConstraints(maxHeight: 400),
+                        decoration: BoxDecoration(
+                          color: const Color(0xE60A0A0A),
+                          borderRadius: BorderRadius.circular(16),
+                          border: Border.all(color: const Color(0x33FFFFFF)),
+                          boxShadow: const [
+                            BoxShadow(color: Color(0x40000000), blurRadius: 30, offset: Offset(0, 10)),
+                          ],
+                        ),
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Padding(
+                              padding: const EdgeInsets.symmetric(horizontal: 16),
+                              child: TextField(
+                                focusNode: _paletteFocus,
+                                autofocus: true,
+                                style: PT.label(size: 24, color: PC.white),
+                                decoration: InputDecoration(
+                                  hintText: 'Search or type a command...',
+                                  hintStyle: PT.label(size: 24, color: PC.muted),
+                                  border: InputBorder.none,
+                                  icon: const Icon(Icons.search, color: PC.muted, size: 28),
+                                ),
+                                onChanged: (v) => setState(() => _paletteQuery = v.toLowerCase()),
+                                onSubmitted: (v) {
+                                  if (v.isEmpty) return;
+                                  setState(() => _paletteOpen = false);
+                                  // Quick VFX prompt fallback
+                                  ws.draft.prompt.text = v;
+                                  ws.openOverlay(StudioOverlay.promptDrawer);
+                                },
+                              ),
+                            ),
+                            const Divider(color: Color(0x33FFFFFF), height: 1),
+                            Flexible(
+                              child: ListView(
+                                shrinkWrap: true,
+                                padding: const EdgeInsets.symmetric(vertical: 8),
+                                children: [
+                                  if ('1g standard'.contains(_paletteQuery))
+                                    _CommandItem(
+                                      title: 'Physics: Standard 1G',
+                                      icon: Icons.south,
+                                      onTap: () => _setPhysicsMode(PhysicsMode.standard),
+                                    ),
+                                  if ('zero-g drift'.contains(_paletteQuery))
+                                    _CommandItem(
+                                      title: 'Physics: Zero-G Drift',
+                                      icon: Icons.blur_circular,
+                                      onTap: () => _setPhysicsMode(PhysicsMode.zeroG),
+                                    ),
+                                  if ('vortex center'.contains(_paletteQuery))
+                                    _CommandItem(
+                                      title: 'Physics: Center Vortex',
+                                      icon: Icons.adjust,
+                                      onTap: () => _setPhysicsMode(PhysicsMode.vortex),
+                                    ),
+                                  for (final node in ws.nodes.where((n) => n.label.toLowerCase().contains(_paletteQuery)))
+                                    _CommandItem(
+                                      title: 'Open ${node.label}',
+                                      icon: node.isFolder ? Icons.folder : Icons.insert_drive_file,
+                                      onTap: () {
+                                        setState(() => _paletteOpen = false);
+                                        ws.openNode(node);
+                                      },
+                                    ),
+                                ],
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
           ],
         ),
       );
@@ -255,6 +366,44 @@ class _DesktopCanvasState extends State<DesktopCanvas>
                 ? SystemMouseCursors.grab
                 : SystemMouseCursors.click,
             child: child,
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _CommandItem extends StatefulWidget {
+  const _CommandItem({required this.title, required this.icon, required this.onTap});
+  final String title;
+  final IconData icon;
+  final VoidCallback onTap;
+
+  @override
+  State<_CommandItem> createState() => _CommandItemState();
+}
+
+class _CommandItemState extends State<_CommandItem> {
+  bool _hover = false;
+
+  @override
+  Widget build(BuildContext context) {
+    return MouseRegion(
+      cursor: SystemMouseCursors.click,
+      onEnter: (_) => setState(() => _hover = true),
+      onExit: (_) => setState(() => _hover = false),
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: widget.onTap,
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+          color: _hover ? PC.blue : Colors.transparent,
+          child: Row(
+            children: [
+              Icon(widget.icon, color: _hover ? PC.white : const Color(0xFF888888), size: 20),
+              const SizedBox(width: 16),
+              Text(widget.title, style: PT.label(size: 16, color: _hover ? PC.white : const Color(0xFFDDDDDD))),
+            ],
           ),
         ),
       ),

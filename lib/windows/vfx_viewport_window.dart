@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 
 import '../models/desktop_node.dart';
@@ -52,7 +54,7 @@ class _VfxViewportContentState extends State<VfxViewportContent> {
             Positioned(
               left: 14,
               top: 14,
-              right: liquid ? 250 : 14,
+              right: liquid ? 400 : 170,
               child: IgnorePointer(
                 child: Wrap(
                   spacing: 6,
@@ -71,7 +73,7 @@ class _VfxViewportContentState extends State<VfxViewportContent> {
             ),
             if (liquid)
               Positioned(
-                right: 14,
+                right: 170,
                 top: 14,
                 child: ListenableBuilder(
                   listenable: _playback,
@@ -81,6 +83,11 @@ class _VfxViewportContentState extends State<VfxViewportContent> {
                   ),
                 ),
               ),
+            Positioned(
+              right: 14,
+              top: 14,
+              child: _ScopeHud(playback: _playback, params: params),
+            ),
             Positioned(
               left: 14,
               right: 14,
@@ -323,4 +330,77 @@ class _TimelinePainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant _TimelinePainter old) => old.progress != progress;
+}
+
+class _ScopeHud extends StatelessWidget {
+  const _ScopeHud({required this.playback, required this.params});
+  final Playback playback;
+  final SimParams params;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: 140,
+      height: 44,
+      padding: const EdgeInsets.symmetric(horizontal: 12),
+      decoration: BoxDecoration(
+        color: const Color(0xCC0A0A0A),
+        borderRadius: BorderRadius.circular(100),
+      ),
+      child: ListenableBuilder(
+        listenable: playback,
+        builder: (context, _) => Row(
+          children: [
+            Expanded(
+              child: CustomPaint(
+                painter: _ScopePainter(
+                  time: playback.clock,
+                  turb: params.turbulence,
+                  coh: params.coherence,
+                ),
+              ),
+            ),
+            const SizedBox(width: 8),
+            Text(
+              playback.playing ? '16.6ms' : 'PAUSED',
+              style: PT.mono(size: 10, color: playback.playing ? PC.white : PC.muted, weight: FontWeight.w700),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _ScopePainter extends CustomPainter {
+  _ScopePainter({required this.time, required this.turb, required this.coh});
+  final double time;
+  final double turb;
+  final double coh;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final colors = [const Color(0xFFFF3B30), const Color(0xFF34C759), const Color(0xFF007AFF)];
+    for (var c = 0; c < 3; c++) {
+      final path = Path();
+      for (var i = 0; i <= 40; i++) {
+        final x = i / 40 * size.width;
+        final phase = time * (3 + c + turb * 5) + (x * (0.05 + coh * 0.1)) + c * 2.0;
+        final y = size.height / 2 + math.sin(phase) * (size.height * 0.3 * (0.5 + turb));
+        if (i == 0) path.moveTo(x, y);
+        else path.lineTo(x, y);
+      }
+      canvas.drawPath(
+        path,
+        Paint()
+          ..color = colors[c].withOpacity(0.7)
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 1.2
+          ..blendMode = BlendMode.screen
+      );
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _ScopePainter old) => old.time != time || old.turb != turb || old.coh != coh;
 }

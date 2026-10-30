@@ -8,6 +8,8 @@ import 'package:flutter/widgets.dart';
 /// returning: spring interpolation back to the grid.
 enum GravityPhase { docked, falling, returning }
 
+enum PhysicsMode { standard, zeroG, vortex }
+
 Offset _rot(Offset v, double a) {
   final c = math.cos(a), s = math.sin(a);
   return Offset(v.dx * c - v.dy * s, v.dx * s + v.dy * c);
@@ -67,6 +69,8 @@ class GravityEngine extends ChangeNotifier {
   /// Static axis-aligned obstacles (the explore dock) that falling bodies
   /// bounce off and pile around. Canvas coordinates.
   final List<Rect> obstacles = [];
+
+  PhysicsMode mode = PhysicsMode.standard;
 
   /// Phase changes are picked up by the next [step]; they never notify
   /// synchronously so they are safe to call from build-time callbacks.
@@ -258,8 +262,21 @@ class GravityEngine extends ChangeNotifier {
   }
 
   void _integrate(Body b, double h) {
-    b.vel = Offset(b.vel.dx, b.vel.dy + gravity * h) * (1 - 0.12 * h);
-    b.spin *= 1 - 0.9 * h;
+    if (mode == PhysicsMode.standard) {
+      b.vel = Offset(b.vel.dx, b.vel.dy + gravity * h) * (1 - 0.12 * h);
+      b.spin *= 1 - 0.9 * h;
+    } else if (mode == PhysicsMode.zeroG) {
+      b.vel *= (1 - 0.05 * h);
+      b.spin *= (1 - 0.05 * h);
+    } else if (mode == PhysicsMode.vortex) {
+      final center = Offset(bounds.width / 2, bounds.height / 2);
+      final d = center - b.pos;
+      final dist = math.max(d.distance, 10.0);
+      final pull = d / dist * (4000000 / math.max(dist, 100.0));
+      b.vel += pull * h;
+      b.vel *= (1 - 0.4 * h);
+      b.spin *= 1 - 0.6 * h;
+    }
     b.pos += b.vel * h;
     b.angle += b.spin * h;
   }
@@ -269,7 +286,18 @@ class GravityEngine extends ChangeNotifier {
     final prev = b.pos;
     final r = _rot(-b.grabLocal, b.angle);
     final iPivot = b.inertia + r.distanceSquared;
-    b.spin += r.dx * gravity / iPivot * h;
+    
+    if (mode == PhysicsMode.standard) {
+      b.spin += r.dx * gravity / iPivot * h;
+    } else if (mode == PhysicsMode.vortex) {
+      final center = Offset(bounds.width / 2, bounds.height / 2);
+      final d = center - b.pos;
+      final dist = math.max(d.distance, 10.0);
+      final pull = d / dist * (4000000 / math.max(dist, 100.0));
+      // Torque from radial pull
+      b.spin += _cross(r, pull) / iPivot * h;
+    }
+    
     b.spin *= 1 - 3.2 * h;
     b.angle += b.spin * h;
     b.pos = b.pointer + _rot(-b.grabLocal, b.angle);
@@ -380,7 +408,7 @@ class GravityEngine extends ChangeNotifier {
     if (vn >= 0) return;
 
     final rn = _cross(r, n);
-    final e = vn.abs() < 120 ? 0.0 : restitution;
+    final e = vn.abs() < 120 && mode == PhysicsMode.standard ? 0.0 : (mode == PhysicsMode.zeroG ? 1.0 : restitution);
     final j = -(1 + e) * vn / (1 + rn * rn / inertia);
     b.vel += n * j;
     b.spin += rn * j / inertia;

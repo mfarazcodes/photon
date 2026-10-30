@@ -155,12 +155,11 @@ class _EngineInspectorContentState extends State<EngineInspectorContent> {
         overlayShape: SliderComponentShape.noOverlay,
         thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 7),
       ),
-      // These write straight into the workspace's shared SimParams; every
-      // SimView and viewport reads them each frame, so changes are live.
       child: ListenableBuilder(
         listenable: params,
         builder: (context, _) => Column(
           children: [
+            _XyMorphPad(params: params),
             for (final f in fields)
               Padding(
                 padding: const EdgeInsets.symmetric(vertical: 6),
@@ -391,4 +390,139 @@ class _Stat extends StatelessWidget {
       ),
     );
   }
+}
+
+class _XyMorphPad extends StatefulWidget {
+  const _XyMorphPad({required this.params});
+  final SimParams params;
+
+  @override
+  State<_XyMorphPad> createState() => _XyMorphPadState();
+}
+
+class _XyMorphPadState extends State<_XyMorphPad> with SingleTickerProviderStateMixin {
+  late final AnimationController _sonar = AnimationController(
+    vsync: this, duration: const Duration(seconds: 2),
+  )..repeat();
+
+  final List<Offset> _trail = [];
+
+  void _update(Offset local, Size size) {
+    final x = (local.dx / size.width).clamp(0.0, 1.0);
+    final y = 1.0 - (local.dy / size.height).clamp(0.0, 1.0);
+    widget.params.update(turbulence: x, coherence: y);
+    setState(() {
+      _trail.add(Offset(x, y));
+      if (_trail.length > 20) _trail.removeAt(0);
+    });
+  }
+
+  @override
+  void dispose() {
+    _sonar.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final x = widget.params.turbulence;
+    final y = widget.params.coherence;
+    if (_trail.isNotEmpty) {
+      final last = _trail.last;
+      if ((last.dx - x).abs() > 0.01 || (last.dy - y).abs() > 0.01) {
+        _trail.clear();
+      }
+    }
+    return Container(
+      height: 180,
+      margin: const EdgeInsets.only(bottom: 16),
+      decoration: BoxDecoration(
+        color: const Color(0xFF111111),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: PC.hairline),
+      ),
+      child: LayoutBuilder(builder: (context, constraints) {
+        final size = constraints.biggest;
+        return GestureDetector(
+          onPanUpdate: (d) => _update(d.localPosition, size),
+          onPanDown: (d) => _update(d.localPosition, size),
+          child: AnimatedBuilder(
+            animation: _sonar,
+            builder: (context, _) => CustomPaint(
+              size: size,
+              painter: _XyMorphPainter(
+                x: x, y: y,
+                trail: _trail,
+                sonarProgress: _sonar.value,
+              ),
+            ),
+          ),
+        );
+      }),
+    );
+  }
+}
+
+class _XyMorphPainter extends CustomPainter {
+  _XyMorphPainter({required this.x, required this.y, required this.trail, required this.sonarProgress});
+  
+  final double x;
+  final double y;
+  final List<Offset> trail;
+  final double sonarProgress;
+  
+  @override
+  void paint(Canvas canvas, Size size) {
+    final px = x * size.width;
+    final py = (1.0 - y) * size.height;
+    
+    // Grid
+    final grid = Paint()..color = const Color(0xFF222222)..strokeWidth = 1;
+    for (var i = 1; i < 4; i++) {
+      canvas.drawLine(Offset(i * size.width / 4, 0), Offset(i * size.width / 4, size.height), grid);
+      canvas.drawLine(Offset(0, i * size.height / 4), Offset(size.width, i * size.height / 4), grid);
+    }
+    
+    // Motion trail
+    if (trail.isNotEmpty) {
+      final path = Path();
+      for (var i = 0; i < trail.length; i++) {
+        final tx = trail[i].dx * size.width;
+        final ty = (1.0 - trail[i].dy) * size.height;
+        if (i == 0) path.moveTo(tx, ty);
+        else path.lineTo(tx, ty);
+      }
+      path.lineTo(px, py);
+      canvas.drawPath(path, Paint()
+        ..color = PC.blue.withOpacity(0.5)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 4
+        ..strokeCap = StrokeCap.round
+        ..strokeJoin = StrokeJoin.round
+      );
+    }
+    
+    // Sonar ring
+    canvas.drawCircle(Offset(px, py), 4 + sonarProgress * 24, Paint()
+      ..color = PC.blue.withOpacity((1.0 - sonarProgress) * 0.8)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.5
+    );
+    
+    // Crosshair puck
+    final puck = Paint()..color = PC.white;
+    canvas.drawCircle(Offset(px, py), 6, puck);
+    canvas.drawLine(Offset(px - 14, py), Offset(px + 14, py), puck..strokeWidth = 1.5);
+    canvas.drawLine(Offset(px, py - 14), Offset(px, py + 14), puck..strokeWidth = 1.5);
+    
+    // Labels
+    final text = TextPainter(
+      text: TextSpan(text: 'XY MORPH', style: PT.mono(size: 10, color: const Color(0xFF666666))),
+      textDirection: TextDirection.ltr,
+    )..layout();
+    text.paint(canvas, const Offset(8, 8));
+  }
+  
+  @override
+  bool shouldRepaint(covariant _XyMorphPainter old) => true;
 }

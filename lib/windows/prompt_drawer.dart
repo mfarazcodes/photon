@@ -46,12 +46,29 @@ class _DrawerWindow extends StatefulWidget {
   State<_DrawerWindow> createState() => _DrawerWindowState();
 }
 
-class _DrawerWindowState extends State<_DrawerWindow> {
+class _DrawerWindowState extends State<_DrawerWindow> with SingleTickerProviderStateMixin {
   static const _checkLabels = [
     'Enable volumetric lighting and bloom passes.',
     'Temporal denoise with OptiX (adds ~12% render time).',
     'Export multi-pass EXR to the Render Library.*',
   ];
+
+  late final AnimationController _pulseController = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 300),
+  );
+  Offset? _hoverPoint;
+
+  @override
+  void dispose() {
+    _pulseController.dispose();
+    super.dispose();
+  }
+
+  void _triggerPulse() {
+    _pulseController.forward(from: 0.0);
+  }
+
 
   @override
   Widget build(BuildContext context) {
@@ -76,8 +93,17 @@ class _DrawerWindowState extends State<_DrawerWindow> {
               child: Stack(
                 children: [
                   Positioned.fill(
-                    child: TimeBuilder(
-                      builder: (_, t) => CustomPaint(painter: HalftoneBannerPainter(t)),
+                    child: MouseRegion(
+                      onHover: (e) => setState(() => _hoverPoint = e.localPosition),
+                      onExit: (_) => setState(() => _hoverPoint = null),
+                      child: TimeBuilder(
+                        builder: (_, t) => AnimatedBuilder(
+                          animation: _pulseController,
+                          builder: (_, __) => CustomPaint(
+                            painter: HalftoneBannerPainter(t, _hoverPoint, _pulseController.value),
+                          ),
+                        ),
+                      ),
                     ),
                   ),
                   Positioned(
@@ -118,15 +144,16 @@ class _DrawerWindowState extends State<_DrawerWindow> {
               errorText: error ? 'A scene prompt is required to render.' : null,
               onChanged: (_) {
                 if (draft.error.value) draft.error.value = false;
+                _triggerPulse();
               },
             ),
           ),
-          _Field(controller: draft.negative, hint: 'Negative Prompt'),
+          _Field(controller: draft.negative, hint: 'Negative Prompt', onChanged: (_) => _triggerPulse()),
           Row(
             children: [
-              Expanded(child: _Field(controller: draft.resolution, hint: 'Resolution')),
+              Expanded(child: _Field(controller: draft.resolution, hint: 'Resolution', onChanged: (_) => _triggerPulse())),
               const SizedBox(width: 24),
-              Expanded(child: _Field(controller: draft.frameRate, hint: 'Frame Rate')),
+              Expanded(child: _Field(controller: draft.frameRate, hint: 'Frame Rate', onChanged: (_) => _triggerPulse())),
             ],
           ),
           Row(
@@ -135,10 +162,11 @@ class _DrawerWindowState extends State<_DrawerWindow> {
                 child: _Field(
                   controller: draft.solver,
                   hint: 'Physics Solver (e.g. SPH, boids, caustics)',
+                  onChanged: (_) => _triggerPulse(),
                 ),
               ),
               const SizedBox(width: 24),
-              Expanded(child: _Field(controller: draft.seed, hint: 'Seed')),
+              Expanded(child: _Field(controller: draft.seed, hint: 'Seed', onChanged: (_) => _triggerPulse())),
             ],
           ),
           const SizedBox(height: 24),

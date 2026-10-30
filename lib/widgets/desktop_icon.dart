@@ -21,8 +21,18 @@ class DesktopIcon extends StatefulWidget {
   State<DesktopIcon> createState() => _DesktopIconState();
 }
 
-class _DesktopIconState extends State<DesktopIcon> {
+class _DesktopIconState extends State<DesktopIcon> with SingleTickerProviderStateMixin {
   bool _hover = false;
+  late final AnimationController _hoverController = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 220),
+  );
+
+  @override
+  void dispose() {
+    _hoverController.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -43,41 +53,48 @@ class _DesktopIconState extends State<DesktopIcon> {
     final selected = widget.selected;
     return MouseRegion(
       cursor: SystemMouseCursors.click,
-      onEnter: (_) => setState(() => _hover = true),
-      onExit: (_) => setState(() => _hover = false),
-      child: SizedBox.fromSize(
-        size: kIconBox,
-        child: Column(
-          children: [
-            AnimatedScale(
-              scale: _hover ? 1.05 : 1,
-              duration: const Duration(milliseconds: 220),
-              curve: Curves.easeOutBack,
-              child: AnimatedContainer(
-                duration: const Duration(milliseconds: 200),
-                width: kThumbSize + 8,
-                height: kThumbSize + 8,
-                padding: const EdgeInsets.all(4),
-                decoration: BoxDecoration(
-                  color: selected ? const Color(0x0F000000) : Colors.transparent,
-                  borderRadius: BorderRadius.circular(16),
-                  border: Border.all(
-                    color: selected ? const Color(0xFFD4D4D4) : Colors.transparent,
+      onEnter: (_) {
+        setState(() => _hover = true);
+        _hoverController.forward();
+      },
+      onExit: (_) {
+        setState(() => _hover = false);
+        _hoverController.reverse();
+      },
+      child: AnimatedBuilder(
+        animation: _hoverController,
+        builder: (context, _) => SizedBox.fromSize(
+          size: kIconBox,
+          child: Column(
+            children: [
+              AnimatedScale(
+                scale: 1.0 + (_hoverController.value * 0.05),
+                duration: Duration.zero,
+                child: Container(
+                  width: kThumbSize + 8,
+                  height: kThumbSize + 8,
+                  padding: const EdgeInsets.all(4),
+                  decoration: BoxDecoration(
+                    color: selected ? const Color(0x0F000000) : Colors.transparent,
+                    borderRadius: BorderRadius.circular(16),
+                    border: Border.all(
+                      color: selected ? const Color(0xFFD4D4D4) : Colors.transparent,
+                    ),
                   ),
+                  child: IconThumb(node: widget.node, hoverProgress: _hoverController.value),
                 ),
-                child: IconThumb(node: widget.node),
               ),
-            ),
-            const SizedBox(height: 6),
-            SizedBox(
-              height: 24,
-              width: kIconBox.width,
-              child: OverflowBox(
-                maxWidth: 320,
-                child: FileLabel(text: widget.node.label, selected: selected),
+              const SizedBox(height: 6),
+              SizedBox(
+                height: 24,
+                width: kIconBox.width,
+                child: OverflowBox(
+                  maxWidth: 320,
+                  child: FileLabel(text: widget.node.label, selected: selected),
+                ),
               ),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
     );
@@ -112,29 +129,36 @@ class FileLabel extends StatelessWidget {
 
 /// Procedural thumbnail for a node: folder glyph, pass strips or a live sim.
 class IconThumb extends StatelessWidget {
-  const IconThumb({super.key, required this.node, this.radius = 10});
+  const IconThumb({super.key, required this.node, this.radius = 10, this.hoverProgress = 0.0});
 
   final DesktopNode node;
   final double radius;
+  final double hoverProgress;
 
   @override
   Widget build(BuildContext context) {
     if (node.isFolder) {
-      return CustomPaint(
-        painter: FolderPainter(
-          tag: node.folderTag ?? '',
-          tagColor: node.tagColor ?? PC.blue,
+      return Transform.translate(
+        offset: Offset(0, -4.0 * hoverProgress),
+        child: CustomPaint(
+          painter: FolderPainter(
+            tag: node.folderTag ?? '',
+            tagColor: node.tagColor ?? PC.blue,
+            hoverProgress: hoverProgress,
+          ),
         ),
       );
     }
     final Widget content = node.kind == NodeKind.comp
         ? const PassStripsThumb()
-        : SimView(
-            kind: node.sim ?? SimKind.core,
-            thumb: true,
-            hoverReactive: true,
-            speed: 0.8,
-            params: WorkspaceScope.read(context).paramsFor(node),
+        : TimeBuilder(
+            builder: (context, time) => CustomPaint(
+              painter: VfxGlyphPainter(
+                kind: node.sim ?? SimKind.core,
+                hoverProgress: hoverProgress,
+                time: time.value,
+              ),
+            ),
           );
     return DecoratedBox(
       decoration: BoxDecoration(

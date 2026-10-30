@@ -4,14 +4,16 @@ import 'dart:ui';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/rendering.dart';
 
+import '../models/desktop_node.dart';
 import '../theme/photon_theme.dart';
 
 /// Black macOS-style folder with a tilted file-type sticker.
 class FolderPainter extends CustomPainter {
-  const FolderPainter({required this.tag, required this.tagColor});
+  const FolderPainter({required this.tag, required this.tagColor, this.hoverProgress = 0.0});
 
   final String tag;
   final Color tagColor;
+  final double hoverProgress;
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -28,7 +30,8 @@ class FolderPainter extends CustomPainter {
     canvas.drawRRect(
         RRect.fromRectAndRadius(Rect.fromLTWH(0, top, w, h * 0.78), r), back);
 
-    final front = Rect.fromLTWH(0, top + h * 0.1, w, h * 0.68);
+    final floatOffset = h * 0.04 * hoverProgress;
+    final front = Rect.fromLTWH(0, top + h * 0.1 - floatOffset, w, h * 0.68 + floatOffset);
     canvas.drawRRect(
       RRect.fromRectAndRadius(front, r),
       Paint()
@@ -72,7 +75,75 @@ class FolderPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant FolderPainter old) =>
-      old.tag != tag || old.tagColor != tagColor;
+      old.tag != tag || old.tagColor != tagColor || old.hoverProgress != hoverProgress;
+}
+
+class VfxGlyphPainter extends CustomPainter {
+  const VfxGlyphPainter({required this.kind, required this.hoverProgress, required this.time});
+  
+  final SimKind kind;
+  final double hoverProgress;
+  final double time;
+  
+  @override
+  void paint(Canvas canvas, Size size) {
+    final w = size.width, h = size.height;
+    final c = Offset(w / 2, h / 2);
+    
+    // Default background
+    canvas.drawRect(Offset.zero & size, Paint()..color = const Color(0xFF111111));
+    
+    if (kind == SimKind.liquid) {
+      // Liquid/balloon subtly inflate and shift specular
+      final radius = w * 0.25 + w * 0.06 * hoverProgress;
+      final paint = Paint()
+        ..shader = RadialGradient(
+          center: Alignment(-0.2 + hoverProgress * 0.15, -0.2 + hoverProgress * 0.15),
+          radius: 0.8,
+          colors: const [Color(0xFFFF7EB3), Color(0xFFFF758C), Color(0xFF5E0035)],
+        ).createShader(Rect.fromCircle(center: c, radius: radius));
+      canvas.drawCircle(c, radius, paint);
+      
+      // Specular highlight
+      final specRadius = radius * 0.35;
+      final specCenter = c + Offset(-radius * 0.4 + hoverProgress * 6, -radius * 0.4 + hoverProgress * 6);
+      canvas.drawOval(
+        Rect.fromCenter(center: specCenter, width: specRadius * 1.5, height: specRadius * 0.8),
+        Paint()..color = Colors.white.withOpacity(0.5)..maskFilter = const MaskFilter.blur(BlurStyle.normal, 2),
+      );
+    } else if (kind == SimKind.swarm) {
+      // Particle clusters swirl
+      final paint = Paint()..color = const Color(0xFF00FFCC);
+      final count = 12;
+      for (var i = 0; i < count; i++) {
+        final angle = (i * math.pi * 2 / count) + time * 1.5 + hoverProgress * math.pi * 1.2;
+        final r = w * 0.15 + w * 0.12 * hoverProgress * math.sin(time * 3 + i);
+        final px = c.dx + math.cos(angle) * r;
+        final py = c.dy + math.sin(angle) * r;
+        canvas.drawCircle(Offset(px, py), w * 0.04, paint);
+      }
+    } else if (kind == SimKind.chrome) {
+      // Chrome knots rotate their gradient
+      final rect = Rect.fromCenter(center: c, width: w * 0.6, height: h * 0.6);
+      final angle = time + hoverProgress * math.pi;
+      final paint = Paint()
+        ..shader = SweepGradient(
+          transform: GradientRotation(angle),
+          colors: const [Color(0xFFE0E0E0), Color(0xFF4A4A4A), Color(0xFFFFFFFF), Color(0xFF4A4A4A), Color(0xFFE0E0E0)],
+        ).createShader(rect)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = w * 0.14;
+      canvas.drawCircle(c, w * 0.25, paint);
+    } else {
+      // Fallback procedural
+      final radius = w * 0.2 + w * 0.05 * hoverProgress;
+      canvas.drawCircle(c, radius, Paint()..color = PC.blue);
+    }
+  }
+  
+  @override
+  bool shouldRepaint(covariant VfxGlyphPainter old) => 
+    old.kind != kind || old.hoverProgress != hoverProgress || old.time != time;
 }
 
 /// Planet-with-orbit glyph used in the Gravity pill.
@@ -110,9 +181,11 @@ class GravityGlyphPainter extends CustomPainter {
 
 /// Animated black-and-white halftone torus knot for the prompt drawer banner.
 class HalftoneBannerPainter extends CustomPainter {
-  HalftoneBannerPainter(this.time) : super(repaint: time);
+  HalftoneBannerPainter(this.time, this.hoverPoint, this.pulse) : super(repaint: time);
 
   final ValueListenable<double> time;
+  final Offset? hoverPoint;
+  final double pulse;
 
   static final Float32List _pts = _knot(9000);
   static Float32List _depth = Float32List(0);
@@ -143,7 +216,7 @@ class HalftoneBannerPainter extends CustomPainter {
     final t = time.value;
     final rect = Offset.zero & size;
     canvas.drawRect(rect, Paint()..color = const Color(0xFF000000));
-    const cell = 6.0;
+    final cell = 6.0 - 2.5 * pulse; // dot-matrix density pulse
     final cols = (size.width / cell).ceil(), rows = (size.height / cell).ceil();
     final cells = cols * rows;
     if (_depth.length < cells) {
@@ -156,7 +229,11 @@ class HalftoneBannerPainter extends CustomPainter {
     _depth.fillRange(0, cells, -99);
     _light.fillRange(0, cells, -1);
 
-    final yaw = t * 0.6, pitch = 0.5 + 0.25 * math.sin(t * 0.4);
+    final dx = hoverPoint != null ? (hoverPoint!.dx / size.width - 0.5) : 0;
+    final dy = hoverPoint != null ? (hoverPoint!.dy / size.height - 0.5) : 0;
+    
+    final yaw = t * 0.6 + dx * 1.5;
+    final pitch = 0.5 + 0.25 * math.sin(t * 0.4) + dy * 1.5;
     final cy = math.cos(yaw), sy = math.sin(yaw);
     final cp = math.cos(pitch), sp = math.sin(pitch);
     final scale = size.height * 0.3;
@@ -201,7 +278,8 @@ class HalftoneBannerPainter extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(covariant HalftoneBannerPainter old) => old.time != time;
+  bool shouldRepaint(covariant HalftoneBannerPainter old) => 
+      old.time != time || old.hoverPoint != hoverPoint || old.pulse != pulse;
 }
 
 /// Minimal telemetry sparkline.
