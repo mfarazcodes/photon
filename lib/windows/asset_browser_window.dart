@@ -42,6 +42,16 @@ const _prompts = [
   ('Orange wireframe terrain scan, black void, CRT glow', '2 days ago'),
 ];
 
+/// Wraps a built-in preset/render so it opens in the live viewport window.
+DesktopNode _adhoc(String name, SimKind sim, String solver) => DesktopNode(
+      id: 'asset:$name',
+      label: name,
+      kind: NodeKind.vfx,
+      home: Offset.zero,
+      sim: sim,
+      solver: solver,
+    );
+
 /// macOS Finder-style browser with a favourites sidebar.
 class AssetBrowserContent extends StatelessWidget {
   const AssetBrowserContent({super.key, required this.view});
@@ -270,10 +280,14 @@ class _PresetGrid extends StatefulWidget {
 }
 
 class _PresetGridState extends State<_PresetGrid> {
-  int? _selected;
-
   @override
   Widget build(BuildContext context) {
+    final ws = WorkspaceScope.of(context);
+    // Presets plus every .vfx node generated from the Prompt Drawer.
+    final items = [
+      for (final p in _presets) _adhoc(p.$1, p.$2, 'Preset'),
+      ...ws.nodes.where((n) => n.generated),
+    ];
     return GridView.builder(
       padding: const EdgeInsets.all(22),
       gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
@@ -282,11 +296,15 @@ class _PresetGridState extends State<_PresetGrid> {
         crossAxisSpacing: 18,
         childAspectRatio: 0.86,
       ),
-      itemCount: _presets.length,
+      itemCount: items.length,
       itemBuilder: (context, i) {
-        final (name, kind) = _presets[i];
+        final node = items[i];
+        final name = node.label;
+        final kind = node.sim ?? SimKind.core;
+        final sel = ws.selectedId == node.id;
         return GestureDetector(
-          onTap: () => setState(() => _selected = i),
+          onTap: () => ws.openNode(node),
+          onDoubleTap: () => ws.openNode(node),
           child: Column(
             children: [
               Expanded(
@@ -295,7 +313,8 @@ class _PresetGridState extends State<_PresetGrid> {
                   padding: const EdgeInsets.all(4),
                   decoration: BoxDecoration(
                     borderRadius: BorderRadius.circular(16),
-                    color: _selected == i ? const Color(0x0F000000) : Colors.transparent,
+                    color: sel ? const Color(0x142563EB) : Colors.transparent,
+                    border: Border.all(color: sel ? PC.blue : Colors.transparent, width: 2),
                   ),
                   child: ClipRRect(
                     borderRadius: BorderRadius.circular(12),
@@ -304,7 +323,7 @@ class _PresetGridState extends State<_PresetGrid> {
                 ),
               ),
               const SizedBox(height: 8),
-              FileLabel(text: name, selected: _selected == i, size: 13),
+              FileLabel(text: name, selected: sel, size: 13),
             ],
           ),
         );
@@ -354,6 +373,16 @@ class _RenderTable extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final head = PT.mono(size: 11, color: PC.muted, weight: FontWeight.w700);
+    final ws = WorkspaceScope.of(context);
+    // Newest generated renders first, then the built-in library.
+    final rows = <(DesktopNode, (String, String, String, String, SimKind))>[
+      for (final n in ws.nodes.where((n) => n.generated).toList().reversed)
+        (
+          n,
+          (n.label.replaceAll('.vfx', ''), n.solver, 'Today', 'EXR', n.sim ?? SimKind.core),
+        ),
+      for (final r in _renders) (_adhoc(r.$1, r.$5, r.$2), r),
+    ];
     return Column(
       children: [
         Padding(
@@ -371,8 +400,27 @@ class _RenderTable extends StatelessWidget {
         Expanded(
           child: ListView.builder(
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-            itemCount: _renders.length,
-            itemBuilder: (context, i) => _RenderRow(data: _renders[i]),
+            itemCount: rows.length,
+            itemBuilder: (context, i) {
+              final (node, data) = rows[i];
+              final sel = ws.selectedId == node.id;
+              return MouseRegion(
+                cursor: SystemMouseCursors.click,
+                child: GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onTap: () => ws.openNode(node),
+                  onDoubleTap: () => ws.openNode(node),
+                  child: DecoratedBox(
+                    decoration: BoxDecoration(
+                      color: sel ? const Color(0x142563EB) : null,
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: sel ? PC.blue : Colors.transparent, width: 2),
+                    ),
+                    child: _RenderRow(data: data),
+                  ),
+                ),
+              );
+            },
           ),
         ),
       ],

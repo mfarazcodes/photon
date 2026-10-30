@@ -139,7 +139,7 @@ class _CompositorContentState extends State<CompositorContent>
                   },
                   child: GestureDetector(
                     onTap: _focus == null ? () => _open(i) : null,
-                    child: _Slice(index: i, time: time, active: _hover == i),
+                    child: _Slice(index: i, time: time, active: _hover == i, focused: _focus == i),
                   ),
                 ),
               ),
@@ -268,8 +268,14 @@ class _CompositorContentState extends State<CompositorContent>
 }
 
 class _Slice extends StatelessWidget {
-  const _Slice({required this.index, required this.time, required this.active});
+  const _Slice({
+    required this.index,
+    required this.time,
+    required this.active,
+    this.focused = false,
+  });
 
+  final bool focused;
   final int index;
   final ValueListenable<double> time;
   final bool active;
@@ -280,7 +286,11 @@ class _Slice extends StatelessWidget {
       borderRadius: BorderRadius.circular(10),
       child: Stack(
         children: [
-          Positioned.fill(child: CustomPaint(painter: PassPainter(pass: index, time: time))),
+          Positioned.fill(
+            child: CustomPaint(
+              painter: PassPainter(pass: index, time: time, splitWipe: focused),
+            ),
+          ),
           Positioned.fill(
             child: AnimatedContainer(
               duration: const Duration(milliseconds: 300),

@@ -128,9 +128,18 @@ class _DesktopCanvasState extends State<DesktopCanvas>
   static double _labelHalf(DesktopNode node) =>
       math.max(kIconBox.width / 2, node.label.length * 4.4 + 10);
 
-  Offset _toCanvas(Offset global) {
+  /// Canvas origin in global coordinates, refreshed after every frame. Drag
+  /// events can arrive while the render tree is dirty (physics rebuilds it
+  /// every tick), where `globalToLocal` trips `!debugNeedsLayout`.
+  Offset _origin = Offset.zero;
+
+  Offset _toCanvas(Offset global) => global - _origin;
+
+  void _captureOrigin() {
     final box = _stackKey.currentContext?.findRenderObject() as RenderBox?;
-    return box == null ? global : box.globalToLocal(global);
+    if (box != null && box.attached && box.hasSize) {
+      _origin = box.localToGlobal(Offset.zero);
+    }
   }
 
   @override
@@ -138,6 +147,7 @@ class _DesktopCanvasState extends State<DesktopCanvas>
     final ws = WorkspaceScope.of(context);
     return LayoutBuilder(builder: (context, constraints) {
       final size = constraints.biggest;
+      WidgetsBinding.instance.addPostFrameCallback((_) => _captureOrigin());
       // Live window size drives the floor, walls and the dock obstacle.
       _engine.setBounds(size);
       final dockW = math.min(kDockMaxWidth, size.width - 32);

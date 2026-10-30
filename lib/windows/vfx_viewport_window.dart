@@ -240,8 +240,11 @@ class _RoundButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Tooltip(
-      message: tooltip,
+    // No Tooltip: the playback bar rebuilds every frame, which makes hover
+    // tooltips assert (target needs layout). Semantics label keeps a11y.
+    return Semantics(
+      label: tooltip,
+      button: true,
       child: MouseRegion(
         cursor: SystemMouseCursors.click,
         child: GestureDetector(

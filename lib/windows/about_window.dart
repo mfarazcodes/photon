@@ -1,3 +1,4 @@
+import 'package:flutter/gestures.dart' show PointerScrollEvent;
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 
@@ -68,6 +69,8 @@ class _AboutBody extends StatelessWidget {
     return ListView(
       padding: const EdgeInsets.fromLTRB(24, 26, 24, 30),
       children: [
+        const _HeroCard(),
+        const SizedBox(height: 26),
         Text('[ PHOTON ]', style: PT.label(size: 20, weight: FontWeight.w700)),
         const SizedBox(height: 6),
         FittedBox(
@@ -134,6 +137,120 @@ class _AboutBody extends StatelessWidget {
           ),
         ),
       ],
+    );
+  }
+}
+
+/// Dark hero card; click or scroll over it to switch editorial slides.
+class _HeroCard extends StatefulWidget {
+  const _HeroCard();
+
+  @override
+  State<_HeroCard> createState() => _HeroCardState();
+}
+
+class _HeroCardState extends State<_HeroCard> {
+  int _slide = 0;
+
+  void _toggle() => setState(() => _slide = 1 - _slide);
+
+  Widget _pill(String text) => Container(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+        decoration: BoxDecoration(color: PC.white, borderRadius: BorderRadius.circular(100)),
+        child: Text(text, style: PT.mono(size: 12, color: PC.ink, weight: FontWeight.w700)),
+      );
+
+  Widget _content(BuildContext context) {
+    if (_slide == 0) {
+      return Column(
+        key: const ValueKey(0),
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          _pill('[ Research ]'),
+          Text('[ PHOTON ]', style: PT.mono(size: 14, color: const Color(0xFF9A9A9A))),
+          Text('REAL-TIME NEURAL\nVFX STUDIO',
+              style: PT.display(size: 38, color: PC.white, weight: FontWeight.w800)),
+        ],
+      );
+    }
+    return Column(
+      key: const ValueKey(1),
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+      children: [
+        _pill('[ Architecture ]'),
+        Text('A NON-CONFORMIST\nRENDER ENGINE',
+            style: PT.display(size: 38, color: PC.white, weight: FontWeight.w800)),
+        MouseRegion(
+          cursor: SystemMouseCursors.click,
+          child: GestureDetector(
+            onTap: WorkspaceScope.read(context).openInspector,
+            child: Text('Explore Node Core ↗',
+                style: PT.label(size: 16, color: const Color(0xFF7FA6FF), weight: FontWeight.w500)),
+          ),
+        ),
+      ],
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Listener(
+      onPointerSignal: (e) {
+        if (e is PointerScrollEvent) _toggle();
+      },
+      child: MouseRegion(
+        cursor: SystemMouseCursors.click,
+        child: GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTap: _toggle,
+          child: Container(
+            height: 230,
+            padding: const EdgeInsets.all(22),
+            decoration: BoxDecoration(
+              color: PC.ink,
+              borderRadius: BorderRadius.circular(22),
+            ),
+            child: Stack(
+              children: [
+                Positioned.fill(
+                  child: AnimatedSwitcher(
+                    duration: const Duration(milliseconds: 420),
+                    transitionBuilder: (child, a) => FadeTransition(
+                      opacity: a,
+                      child: SlideTransition(
+                        position: Tween(begin: const Offset(0.08, 0), end: Offset.zero).animate(a),
+                        child: child,
+                      ),
+                    ),
+                    child: _content(context),
+                  ),
+                ),
+                Positioned(
+                  right: 0,
+                  top: 0,
+                  child: Row(
+                    children: [
+                      for (var i = 0; i < 2; i++)
+                        AnimatedContainer(
+                          duration: const Duration(milliseconds: 250),
+                          margin: const EdgeInsets.only(left: 6),
+                          width: i == _slide ? 18 : 6,
+                          height: 6,
+                          decoration: BoxDecoration(
+                            color: i == _slide ? PC.white : const Color(0xFF555555),
+                            borderRadius: BorderRadius.circular(3),
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
     );
   }
 }

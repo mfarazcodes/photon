@@ -182,7 +182,9 @@ class _IconTap extends StatelessWidget {
         ),
       ),
     );
-    return tooltip == null ? button : Tooltip(message: tooltip, child: button);
+    // No Tooltip here: this sits in a card that rebuilds every 100 ms, and a
+    // hovering Tooltip overlay asserts if its target is mid-relayout.
+    return button;
   }
 }
 
