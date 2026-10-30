@@ -86,10 +86,36 @@ class BottomExploreDock extends StatelessWidget {
   }
 }
 
-class _DockBar extends StatelessWidget {
+class _DockBar extends StatefulWidget {
   const _DockBar({required this.open});
 
   final bool open;
+
+  @override
+  State<_DockBar> createState() => _DockBarState();
+}
+
+class _DockBarState extends State<_DockBar> with SingleTickerProviderStateMixin {
+  // Drives the ☰ → ✕ morph in step with the container growing upward.
+  late final AnimationController _morph = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 460),
+    value: widget.open ? 1 : 0,
+  );
+
+  @override
+  void didUpdateWidget(_DockBar old) {
+    super.didUpdateWidget(old);
+    if (old.open != widget.open) {
+      widget.open ? _morph.forward() : _morph.reverse();
+    }
+  }
+
+  @override
+  void dispose() {
+    _morph.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -112,18 +138,11 @@ class _DockBar extends StatelessWidget {
                           size: 22, color: PC.white, weight: FontWeight.w700, spacing: 0.6)),
                 ),
               ),
-              AnimatedSwitcher(
-                duration: const Duration(milliseconds: 220),
-                transitionBuilder: (child, a) => RotationTransition(
-                  turns: Tween(begin: 0.75, end: 1.0).animate(a),
-                  child: FadeTransition(opacity: a, child: child),
-                ),
-                child: Icon(
-                  open ? Icons.close_rounded : Icons.menu_rounded,
-                  key: ValueKey(open),
-                  color: PC.white,
-                  size: 34,
-                ),
+              AnimatedIcon(
+                icon: AnimatedIcons.menu_close,
+                progress: CurvedAnimation(parent: _morph, curve: Curves.easeInOutCubic),
+                color: PC.white,
+                size: 34,
               ),
             ],
           ),

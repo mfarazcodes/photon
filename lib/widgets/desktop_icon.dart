@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import '../models/desktop_node.dart';
 import '../painters/glyph_painters.dart';
 import '../painters/pass_painter.dart';
+import '../state/workspace_controller.dart';
 import '../theme/photon_theme.dart';
 import 'sim_view.dart';
 
@@ -25,6 +26,20 @@ class _DesktopIconState extends State<DesktopIcon> {
 
   @override
   Widget build(BuildContext context) {
+    // Nodes created by a finished render pop onto the desktop.
+    return TweenAnimationBuilder<double>(
+      tween: Tween(begin: widget.node.generated ? 0 : 1, end: 1),
+      duration: const Duration(milliseconds: 560),
+      curve: Curves.easeOutBack,
+      builder: (context, t, child) => Opacity(
+        opacity: t.clamp(0.0, 1.0),
+        child: Transform.scale(scale: t, child: child),
+      ),
+      child: _icon(context),
+    );
+  }
+
+  Widget _icon(BuildContext context) {
     final selected = widget.selected;
     return MouseRegion(
       cursor: SystemMouseCursors.click,
@@ -119,6 +134,7 @@ class IconThumb extends StatelessWidget {
             thumb: true,
             hoverReactive: true,
             speed: 0.8,
+            params: WorkspaceScope.read(context).paramsFor(node),
           );
     return DecoratedBox(
       decoration: BoxDecoration(

@@ -1,5 +1,3 @@
-import 'dart:math' as math;
-
 import 'package:flutter/material.dart';
 
 import '../models/desktop_node.dart';
@@ -14,68 +12,75 @@ import 'vfx_viewport_window.dart';
 class WindowLayer extends StatelessWidget {
   const WindowLayer({super.key});
 
-  static const double _top = 82;
-  static const double _bottomDock = 104;
-
   @override
   Widget build(BuildContext context) {
     final ws = WorkspaceScope.of(context);
     return LayoutBuilder(builder: (context, c) {
-      final W = c.maxWidth, H = c.maxHeight;
+      final vp = c.biggest;
+      // Drag clamping lives in the controller and needs the live window area.
+      ws.setViewport(vp);
       return Stack(
         children: [
-          for (final w in ws.windows) _placed(ws, w, W, H),
+          for (final w in ws.windows) _placed(ws, w, vp),
         ],
       );
     });
   }
 
-  Widget _placed(WorkspaceController ws, OpenWindow w, double W, double H) {
-    late double left, top, width, height;
-    if (w.maximized) {
-      left = 16;
-      top = _top;
-      width = W - 32;
-      height = H - _top - _bottomDock;
-    } else {
-      width = math.min(w.size.width, W - 32);
-      height = math.min(w.size.height, H - _top - 16);
-      left = (W - width) / 2 + w.offset.dx;
-      top = _top + (H - _top - 16 - height) / 2 + w.offset.dy;
-      left = left.clamp(-width + 140, math.max(-width + 140, W - 140));
-      top = top.clamp(64.0, math.max(64.0, H - 70));
+  /// Where a minimized window shrinks to: the desktop node it came from.
+  Offset _minimizeTarget(WorkspaceController ws, OpenWindow w, Size vp) {
+    final node = w.node;
+    if (node != null) {
+      return Offset(node.home.dx * vp.width, node.home.dy * vp.height);
     }
-    width = math.max(width, 280);
-    height = math.max(height, 220);
+    return switch (w.type) {
+      WindowType.inspector => Offset(vp.width * 0.5, vp.height * 0.49),
+      _ => Offset(vp.width / 2, vp.height - 56),
+    };
+  }
+
+  Widget _placed(WorkspaceController ws, OpenWindow w, Size vp) {
+    final rect = w.rectIn(vp);
+    final target = _minimizeTarget(ws, w, vp);
+    final anchor = Alignment(
+      ((target.dx - rect.left) / rect.width * 2 - 1).clamp(-6.0, 6.0),
+      ((target.dy - rect.top) / rect.height * 2 - 1).clamp(-6.0, 6.0),
+    );
 
     return AnimatedPositioned(
       key: ValueKey(w.id),
       duration: w.dragging ? Duration.zero : const Duration(milliseconds: 360),
       curve: Curves.easeOutCubic,
-      left: left,
-      top: top,
-      width: width,
-      height: height,
+      left: rect.left,
+      top: rect.top,
+      width: rect.width,
+      height: rect.height,
       child: IgnorePointer(
         ignoring: w.minimized,
-        child: AnimatedScale(
-          scale: w.minimized ? 0.15 : 1,
-          alignment: Alignment.bottomCenter,
-          duration: const Duration(milliseconds: 380),
-          curve: Curves.easeInOutCubic,
-          child: AnimatedOpacity(
-            opacity: w.minimized ? 0 : 1,
-            duration: const Duration(milliseconds: 300),
-            child: MacWindow(
-              title: w.title,
-              onClose: () => ws.close(w.id),
-              onMinimize: () => ws.minimize(w.id),
-              onMaximize: () => ws.toggleMaximize(w.id),
-              onDrag: (d) => ws.dragWindow(w.id, d),
-              onDragEnd: () => ws.endDragWindow(w.id),
-              onFocus: () => ws.focus(w.id),
-              footer: _footer(ws, w),
-              child: _content(w),
+        // A minimized window is invisible; stop its animations too.
+        child: TickerMode(
+          enabled: !w.minimized,
+          child: AnimatedScale(
+            scale: w.minimized ? 0.06 : 1,
+            alignment: anchor,
+            duration: const Duration(milliseconds: 420),
+            curve: Curves.easeInOutCubic,
+            child: AnimatedOpacity(
+              opacity: w.minimized ? 0 : 1,
+              duration: const Duration(milliseconds: 320),
+              child: RepaintBoundary(
+                child: MacWindow(
+                  title: w.title,
+                  onClose: () => ws.close(w.id),
+                  onMinimize: () => ws.minimize(w.id),
+                  onMaximize: () => ws.toggleMaximize(w.id),
+                  onDrag: (d) => ws.dragWindow(w.id, d),
+                  onDragEnd: () => ws.endDragWindow(w.id),
+                  onFocus: () => ws.focus(w.id),
+                  footer: _footer(ws, w),
+                  child: _content(w),
+                ),
+              ),
             ),
           ),
         ),
@@ -84,7 +89,7 @@ class WindowLayer extends StatelessWidget {
   }
 
   Widget _content(OpenWindow w) => switch (w.type) {
-        WindowType.viewport => VfxViewportContent(node: w.node!),
+        WindowType.viewport => VfxViewportContent(key: ValueKey('vp:${w.id}'), node: w.node!),
         WindowType.compositor => const CompositorContent(),
         WindowType.inspector => const EngineInspectorContent(),
         WindowType.finder => AssetBrowserContent(view: w.finderView),
@@ -92,12 +97,14 @@ class WindowLayer extends StatelessWidget {
 
   Widget? _footer(WorkspaceController ws, OpenWindow w) => switch (w.type) {
         WindowType.viewport => WindowFooter(
-            caption: '${w.node!.solver}  ·  ${w.node!.blurb}',
+            caption: w.node!.generated
+                ? '${w.node!.solver}  ·  seeded from your prompt'
+                : '${w.node!.solver}  ·  ${w.node!.blurb}',
             action: 'Remix prompt',
             onAction: () => ws.openOverlay(StudioOverlay.promptDrawer),
           ),
         WindowType.compositor => WindowFooter(
-            caption: 'Hover a pass to expand · click to focus it full-frame.',
+            caption: 'Hover a pass to expand · click to compare it split-screen.',
             action: 'Export EXR',
             onAction: () => ws.openFinder(FinderView.renderLibrary),
           ),

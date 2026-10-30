@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 
-import '../models/desktop_node.dart';
 import '../painters/glyph_painters.dart';
 import '../state/workspace_controller.dart';
 import '../theme/photon_theme.dart';
@@ -8,7 +7,8 @@ import '../widgets/overlay_shell.dart';
 import '../widgets/sim_view.dart';
 import 'mac_window.dart';
 
-/// Right slide-over "GENERATE VFX." drawer over a blurred desktop.
+/// Right slide-over "GENERATE VFX." drawer over a blurred desktop. Its form
+/// lives in [WorkspaceController.draft]; submitting starts a render job.
 class PromptDrawer extends StatelessWidget {
   const PromptDrawer({super.key});
 
@@ -47,14 +47,6 @@ class _DrawerWindow extends StatefulWidget {
 }
 
 class _DrawerWindowState extends State<_DrawerWindow> {
-  final _prompt = TextEditingController();
-  final _negative = TextEditingController();
-  final _resolution = TextEditingController();
-  final _fps = TextEditingController();
-  final _solver = TextEditingController();
-  final _seed = TextEditingController();
-  final _checks = [true, false, true];
-
   static const _checkLabels = [
     'Enable volumetric lighting and bloom passes.',
     'Temporal denoise with OptiX (adds ~12% render time).',
@@ -62,33 +54,9 @@ class _DrawerWindowState extends State<_DrawerWindow> {
   ];
 
   @override
-  void dispose() {
-    for (final c in [_prompt, _negative, _resolution, _fps, _solver, _seed]) {
-      c.dispose();
-    }
-    super.dispose();
-  }
-
-  SimKind _guessSim(String text) {
-    final t = text.toLowerCase();
-    if (t.contains('chrome') || t.contains('metal')) return SimKind.chrome;
-    if (t.contains('liquid') || t.contains('goo') || t.contains('fluid')) return SimKind.liquid;
-    if (t.contains('marble') || t.contains('smoke')) return SimKind.marble;
-    if (t.contains('water') || t.contains('caustic') || t.contains('pool')) return SimKind.caustics;
-    if (t.contains('swarm') || t.contains('nano') || t.contains('particle')) return SimKind.swarm;
-    if (t.contains('cloth') || t.contains('vacuum') || t.contains('plastic')) return SimKind.cloth;
-    if (t.contains('wire') || t.contains('mesh')) return SimKind.wireframe;
-    return SimKind.fog;
-  }
-
-  void _launch() {
-    final ws = WorkspaceScope.read(context);
-    ws.launchRender(_prompt.text, _guessSim(_prompt.text));
-  }
-
-  @override
   Widget build(BuildContext context) {
     final ws = WorkspaceScope.read(context);
+    final draft = ws.draft;
     return MacWindow(
       title: 'PROMPT STUDIO',
       rim: false,
@@ -96,7 +64,7 @@ class _DrawerWindowState extends State<_DrawerWindow> {
       footer: WindowFooter(
         caption: 'Ready to render on Cloud GPU.',
         action: 'Launch Render Job',
-        onAction: _launch,
+        onAction: ws.submitPrompt,
       ),
       child: ListView(
         padding: const EdgeInsets.fromLTRB(24, 24, 24, 24),
@@ -141,28 +109,44 @@ class _DrawerWindowState extends State<_DrawerWindow> {
             style: PT.body(size: 17),
           ),
           const SizedBox(height: 22),
-          _Field(controller: _prompt, hint: 'Scene Prompt', maxLines: 3),
-          _Field(controller: _negative, hint: 'Negative Prompt'),
+          ValueListenableBuilder<bool>(
+            valueListenable: draft.error,
+            builder: (context, error, _) => _Field(
+              controller: draft.prompt,
+              hint: 'Scene Prompt',
+              maxLines: 3,
+              errorText: error ? 'A scene prompt is required to render.' : null,
+              onChanged: (_) {
+                if (draft.error.value) draft.error.value = false;
+              },
+            ),
+          ),
+          _Field(controller: draft.negative, hint: 'Negative Prompt'),
           Row(
             children: [
-              Expanded(child: _Field(controller: _resolution, hint: 'Resolution')),
+              Expanded(child: _Field(controller: draft.resolution, hint: 'Resolution')),
               const SizedBox(width: 24),
-              Expanded(child: _Field(controller: _fps, hint: 'Frame Rate')),
+              Expanded(child: _Field(controller: draft.frameRate, hint: 'Frame Rate')),
             ],
           ),
           Row(
             children: [
-              Expanded(child: _Field(controller: _solver, hint: 'Physics Solver')),
+              Expanded(
+                child: _Field(
+                  controller: draft.solver,
+                  hint: 'Physics Solver (e.g. SPH, boids, caustics)',
+                ),
+              ),
               const SizedBox(width: 24),
-              Expanded(child: _Field(controller: _seed, hint: 'Seed')),
+              Expanded(child: _Field(controller: draft.seed, hint: 'Seed')),
             ],
           ),
           const SizedBox(height: 24),
-          for (var i = 0; i < _checks.length; i++)
+          for (var i = 0; i < draft.checks.length; i++)
             _Check(
               label: _checkLabels[i],
-              value: _checks[i],
-              onChanged: () => setState(() => _checks[i] = !_checks[i]),
+              value: draft.checks[i],
+              onChanged: () => setState(() => draft.checks[i] = !draft.checks[i]),
             ),
         ],
       ),
@@ -171,11 +155,19 @@ class _DrawerWindowState extends State<_DrawerWindow> {
 }
 
 class _Field extends StatelessWidget {
-  const _Field({required this.controller, required this.hint, this.maxLines = 1});
+  const _Field({
+    required this.controller,
+    required this.hint,
+    this.maxLines = 1,
+    this.errorText,
+    this.onChanged,
+  });
 
   final TextEditingController controller;
   final String hint;
   final int maxLines;
+  final String? errorText;
+  final ValueChanged<String>? onChanged;
 
   @override
   Widget build(BuildContext context) {
@@ -183,18 +175,27 @@ class _Field extends StatelessWidget {
       padding: const EdgeInsets.only(top: 14),
       child: TextField(
         controller: controller,
+        onChanged: onChanged,
         minLines: 1,
         maxLines: maxLines,
         style: PT.label(size: 19, weight: FontWeight.w400),
         decoration: InputDecoration(
           hintText: hint,
           hintStyle: PT.label(size: 19, color: PC.muted, weight: FontWeight.w400),
+          errorText: errorText,
+          errorStyle: PT.label(size: 13, color: PC.red, weight: FontWeight.w500),
           contentPadding: const EdgeInsets.symmetric(vertical: 12),
           enabledBorder: const UnderlineInputBorder(
             borderSide: BorderSide(color: Color(0xFFC9C9C9)),
           ),
           focusedBorder: const UnderlineInputBorder(
             borderSide: BorderSide(color: PC.blue, width: 1.6),
+          ),
+          errorBorder: const UnderlineInputBorder(
+            borderSide: BorderSide(color: PC.red, width: 1.6),
+          ),
+          focusedErrorBorder: const UnderlineInputBorder(
+            borderSide: BorderSide(color: PC.red, width: 1.6),
           ),
         ),
       ),

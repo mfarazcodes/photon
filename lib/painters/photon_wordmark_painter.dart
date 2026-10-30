@@ -1,7 +1,9 @@
 import 'dart:math' as math;
 import 'dart:typed_data';
+import 'dart:ui' as ui;
 
-import 'package:flutter/rendering.dart';
+import 'package:flutter/foundation.dart' show ValueListenable;
+import 'package:flutter/widgets.dart';
 
 /// Where one letter of the wordmark ended up after the twist.
 class LetterPlacement {
@@ -171,4 +173,89 @@ class PhotonWordmarkPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant PhotonWordmarkPainter oldDelegate) => false;
+}
+
+/// The wordmark as a widget. The expensive blurred tube render is baked once
+/// into an image (re-baked only on resize); each frame just draws that image
+/// through a perspective matrix that tilts toward the cursor.
+class PhotonWordmark extends StatefulWidget {
+  const PhotonWordmark({super.key, required this.parallax});
+
+  /// Cursor position normalised to -1..1 on both axes.
+  final ValueListenable<Offset> parallax;
+
+  @override
+  State<PhotonWordmark> createState() => _PhotonWordmarkState();
+}
+
+class _PhotonWordmarkState extends State<PhotonWordmark> {
+  ui.Image? _image;
+  Size _size = Size.zero;
+  double _dpr = 1;
+
+  void _bake(Size size, double dpr) {
+    _image?.dispose();
+    final recorder = ui.PictureRecorder();
+    final canvas = Canvas(recorder);
+    canvas.scale(dpr);
+    const PhotonWordmarkPainter().paint(canvas, size);
+    final picture = recorder.endRecording();
+    _image = picture.toImageSync(
+      (size.width * dpr).ceil(),
+      (size.height * dpr).ceil(),
+    );
+    picture.dispose();
+    _size = size;
+    _dpr = dpr;
+  }
+
+  @override
+  void dispose() {
+    _image?.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return LayoutBuilder(builder: (context, constraints) {
+      final size = constraints.biggest;
+      if (size.isEmpty) return const SizedBox.shrink();
+      final dpr = MediaQuery.devicePixelRatioOf(context);
+      if (_image == null || size != _size || dpr != _dpr) _bake(size, dpr);
+      return CustomPaint(
+        painter: _WordmarkTiltPainter(_image!, dpr, widget.parallax),
+        size: Size.infinite,
+      );
+    });
+  }
+}
+
+class _WordmarkTiltPainter extends CustomPainter {
+  _WordmarkTiltPainter(this.image, this.dpr, this.parallax) : super(repaint: parallax);
+
+  final ui.Image image;
+  final double dpr;
+  final ValueListenable<Offset> parallax;
+  final Paint _paint = Paint()..filterQuality = FilterQuality.medium;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final p = parallax.value;
+    final c = Offset(size.width / 2, size.height * 0.47);
+    canvas.save();
+    canvas.translate(c.dx, c.dy);
+    final m = Matrix4.identity()
+      ..setEntry(3, 2, 0.0006)
+      ..rotateX(-p.dy * 0.10)
+      ..rotateY(p.dx * 0.14);
+    canvas.transform(m.storage);
+    canvas.translate(-c.dx - p.dx * 10, -c.dy - p.dy * 8);
+    canvas.scale(1 / dpr);
+    canvas.drawImage(image, Offset.zero, _paint);
+    canvas.restore();
+  }
+
+  @override
+  bool shouldRepaint(covariant _WordmarkTiltPainter old) =>
+      old.image != image || old.dpr != dpr;
 }

@@ -13,6 +13,7 @@ class OverlayShell extends StatefulWidget {
     required this.builder,
     this.blur = 12,
     this.scrim = const Color(0x14000000),
+    this.duration = const Duration(milliseconds: 520),
   });
 
   final bool open;
@@ -21,6 +22,9 @@ class OverlayShell extends StatefulWidget {
   final double blur;
   final Color scrim;
 
+  /// Opening time; closing is a little quicker.
+  final Duration duration;
+
   @override
   State<OverlayShell> createState() => _OverlayShellState();
 }
@@ -28,8 +32,8 @@ class OverlayShell extends StatefulWidget {
 class _OverlayShellState extends State<OverlayShell> with SingleTickerProviderStateMixin {
   late final AnimationController _c = AnimationController(
     vsync: this,
-    duration: const Duration(milliseconds: 520),
-    reverseDuration: const Duration(milliseconds: 320),
+    duration: widget.duration,
+    reverseDuration: widget.duration * 0.62,
     value: widget.open ? 1 : 0,
   )..addStatusListener((_) => setState(() {}));
   late final Animation<double> _curve =

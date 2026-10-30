@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import '../models/desktop_node.dart';
 import '../painters/glyph_painters.dart';
 import '../painters/pass_painter.dart';
+import '../state/workspace_controller.dart';
 import '../theme/photon_theme.dart';
 import '../widgets/sim_view.dart';
 
@@ -20,12 +21,6 @@ class _EngineInspectorContentState extends State<EngineInspectorContent> {
   final _rng = math.Random();
   int _seed = 884213;
   String _build = 'Stable 3.4.2';
-  final Map<String, double> _fields = {
-    'Viscosity': 0.42,
-    'Turbulence': 0.68,
-    'Particle Density': 0.8,
-    'Bloom Intensity': 0.35,
-  };
 
   @override
   Widget build(BuildContext context) {
@@ -143,6 +138,14 @@ class _EngineInspectorContentState extends State<EngineInspectorContent> {
   }
 
   Widget _fieldsSection() {
+    final params = WorkspaceScope.read(context).params;
+    final fields = <({String label, double min, double max, double Function() get, void Function(double) set})>[
+      (label: 'Turbulence', min: 0, max: 1, get: () => params.turbulence, set: (v) => params.update(turbulence: v)),
+      (label: 'Coherence', min: 0, max: 1, get: () => params.coherence, set: (v) => params.update(coherence: v)),
+      (label: 'Particle Density', min: 0, max: 1, get: () => params.density, set: (v) => params.update(density: v)),
+      (label: 'Chromatic Dispersion', min: 0, max: 1, get: () => params.dispersion, set: (v) => params.update(dispersion: v)),
+      (label: 'Time Scale', min: 0.25, max: 2, get: () => params.timeScale, set: (v) => params.update(timeScale: v)),
+    ];
     return SliderTheme(
       data: SliderTheme.of(context).copyWith(
         trackHeight: 2,
@@ -152,29 +155,36 @@ class _EngineInspectorContentState extends State<EngineInspectorContent> {
         overlayShape: SliderComponentShape.noOverlay,
         thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 7),
       ),
-      child: Column(
-        children: [
-          for (final e in _fields.entries)
-            Padding(
-              padding: const EdgeInsets.symmetric(vertical: 6),
-              child: Row(
-                children: [
-                  SizedBox(width: 170, child: Text(e.key, style: PT.label(size: 15))),
-                  Expanded(
-                    child: Slider(
-                      value: e.value,
-                      onChanged: (v) => setState(() => _fields[e.key] = v),
+      // These write straight into the workspace's shared SimParams; every
+      // SimView and viewport reads them each frame, so changes are live.
+      child: ListenableBuilder(
+        listenable: params,
+        builder: (context, _) => Column(
+          children: [
+            for (final f in fields)
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 6),
+                child: Row(
+                  children: [
+                    SizedBox(width: 170, child: Text(f.label, style: PT.label(size: 15))),
+                    Expanded(
+                      child: Slider(
+                        value: f.get().clamp(f.min, f.max),
+                        min: f.min,
+                        max: f.max,
+                        onChanged: f.set,
+                      ),
                     ),
-                  ),
-                  SizedBox(
-                    width: 52,
-                    child: Text(e.value.toStringAsFixed(2),
-                        textAlign: TextAlign.right, style: PT.mono(size: 13)),
-                  ),
-                ],
+                    SizedBox(
+                      width: 52,
+                      child: Text(f.get().toStringAsFixed(2),
+                          textAlign: TextAlign.right, style: PT.mono(size: 13)),
+                    ),
+                  ],
+                ),
               ),
-            ),
-        ],
+          ],
+        ),
       ),
     );
   }

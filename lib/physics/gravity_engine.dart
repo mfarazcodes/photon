@@ -49,8 +49,13 @@ class GravityEngine extends ChangeNotifier {
   static const double gravity = 2600;
   static const double restitution = 0.34;
   static const double friction = 0.55;
-  static const SpringDescription _spring =
-      SpringDescription(mass: 1, stiffness: 120, damping: 15);
+  // Critically damped (ratio 1.0): the return glides home with no overshoot.
+  static final SpringDescription _spring = SpringDescription.withDampingRatio(
+    mass: 1,
+    stiffness: 120,
+    ratio: 1.0,
+  );
+  static const double _maxSpin = 14;
   static const Tolerance _posTol = Tolerance(distance: 0.4, velocity: 4);
   static const Tolerance _angTol = Tolerance(distance: 0.004, velocity: 0.04);
 
@@ -58,6 +63,10 @@ class GravityEngine extends ChangeNotifier {
 
   /// User-dragged home positions, stored as fractions of the canvas.
   final Map<String, Offset> pinned = {};
+
+  /// Static axis-aligned obstacles (the explore dock) that falling bodies
+  /// bounce off and pile around. Canvas coordinates.
+  final List<Rect> obstacles = [];
 
   /// Phase changes are picked up by the next [step]; they never notify
   /// synchronously so they are safe to call from build-time callbacks.
@@ -82,7 +91,21 @@ class GravityEngine extends ChangeNotifier {
     }
   }
 
-  void setBounds(Size size) => bounds = size;
+  /// Called with the live canvas size. When the window resizes mid-fall,
+  /// bodies are pulled back inside so none can end up below the floor.
+  void setBounds(Size size) {
+    if (size == bounds) return;
+    final old = bounds;
+    bounds = size;
+    if (old.isEmpty || phase == GravityPhase.docked) return;
+    for (final b in bodies.values) {
+      final rx = math.min(b.size.width, b.size.height) / 2 + 4;
+      b.pos = Offset(
+        b.pos.dx.clamp(rx, math.max(rx, size.width - rx)),
+        b.pos.dy.clamp(rx, math.max(rx, size.height - rx)),
+      );
+    }
+  }
 
   // ---------------------------------------------------------------------------
   // Phase transitions
@@ -164,6 +187,11 @@ class GravityEngine extends ChangeNotifier {
       final speed = velocity.distance;
       const maxSpeed = 4200.0;
       b.vel = speed > maxSpeed ? velocity / speed * maxSpeed : velocity;
+      // Angular impulse from the throw: the pointer velocity applied at the
+      // grab point turns the body around its centre.
+      final r = b.pointer - b.pos;
+      final lever = b.inertia + r.distanceSquared;
+      b.spin = (b.spin + _cross(r, b.vel) / lever * 0.5).clamp(-_maxSpin, _maxSpin);
     } else if (phase == GravityPhase.returning) {
       _armSprings(b, 0);
     }
@@ -221,7 +249,9 @@ class GravityEngine extends ChangeNotifier {
       }
       _collideBodies(list);
       for (final b in list) {
-        if (!b.dragging) _collideBounds(b);
+        if (b.dragging) continue;
+        _collideBounds(b);
+        _collideRects(b);
       }
     }
     notifyListeners();
@@ -298,6 +328,46 @@ class GravityEngine extends ChangeNotifier {
       if (p.dy < top) _contact(b, r, top - p.dy, const Offset(0, 1));
       if (p.dx < left) _contact(b, r, left - p.dx, const Offset(1, 0));
       if (p.dx > right) _contact(b, r, p.dx - right, const Offset(-1, 0));
+    }
+  }
+
+  static const List<Offset> _corners = [
+    Offset(-1, -1),
+    Offset(1, -1),
+    Offset(1, 1),
+    Offset(-1, 1),
+  ];
+
+  /// Box-vs-AABB: any corner inside an obstacle is pushed out along the axis
+  /// of least penetration.
+  void _collideRects(Body b) {
+    if (obstacles.isEmpty) return;
+    final hw = b.size.width / 2, hh = b.size.height / 2;
+    final reach = math.sqrt(hw * hw + hh * hh);
+    for (final o in obstacles) {
+      if (b.pos.dx + reach < o.left ||
+          b.pos.dx - reach > o.right ||
+          b.pos.dy + reach < o.top ||
+          b.pos.dy - reach > o.bottom) {
+        continue;
+      }
+      for (final c in _corners) {
+        final r = _rot(Offset(c.dx * hw, c.dy * hh), b.angle);
+        final p = b.pos + r;
+        if (!o.contains(p)) continue;
+        final dTop = p.dy - o.top, dBottom = o.bottom - p.dy;
+        final dLeft = p.dx - o.left, dRight = o.right - p.dx;
+        final m = math.min(math.min(dTop, dBottom), math.min(dLeft, dRight));
+        if (m == dTop) {
+          _contact(b, r, dTop, const Offset(0, -1));
+        } else if (m == dBottom) {
+          _contact(b, r, dBottom, const Offset(0, 1));
+        } else if (m == dLeft) {
+          _contact(b, r, dLeft, const Offset(-1, 0));
+        } else {
+          _contact(b, r, dRight, const Offset(1, 0));
+        }
+      }
     }
   }
 

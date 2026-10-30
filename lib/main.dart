@@ -1,16 +1,17 @@
 // Photon VFX Studio: a spatial desktop for the Photon Text-to-VFX engine.
 //
 // Layer order (bottom to top):
-//   desktop canvas (studio floor, Photon Core, file nodes)
+//   desktop canvas (studio floor, wordmark, floaters, file nodes)
 //   floating windows
 //   top pill bar + render dropdown
 //   bottom explore dock
 //   overlays (prompt drawer, about, kinetic archive)
 //
+// Global shortcuts (Space, Ctrl+N, Escape) live in the desktop canvas.
+//
 // Run with: flutter run -d windows
 
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 
 import 'state/workspace_controller.dart';
 import 'theme/photon_theme.dart';
@@ -54,59 +55,48 @@ class _PhotonStudioState extends State<PhotonStudio> {
     super.dispose();
   }
 
-  void _escape() {
-    if (_ws.overlay != StudioOverlay.none) {
-      _ws.closeOverlay();
-    } else if (_ws.exploreOpen || _ws.renderDropdownOpen) {
-      _ws.closeTransient();
-    } else if (_ws.topWindow != null) {
-      _ws.close(_ws.topWindow!.id);
-    } else {
-      _ws.select(null);
-    }
-  }
-
   @override
   Widget build(BuildContext context) {
     return WorkspaceScope(
       controller: _ws,
-      child: CallbackShortcuts(
-        bindings: {const SingleActivator(LogicalKeyboardKey.escape): _escape},
-        child: Focus(
-          autofocus: true,
-          child: Material(
-            color: PC.canvasTop,
-            child: ListenableBuilder(
-              listenable: _ws,
-              builder: (context, _) {
-                final transient = _ws.exploreOpen || _ws.renderDropdownOpen;
-                return Stack(
-                  children: [
-                    const Positioned.fill(child: DesktopCanvas()),
-                    const Positioned.fill(child: WindowLayer()),
-                    if (transient)
-                      Positioned.fill(
-                        child: GestureDetector(
-                          behavior: HitTestBehavior.opaque,
-                          onTap: _ws.closeTransient,
-                        ),
-                      ),
-                    const Positioned(top: 0, left: 0, right: 0, child: TopPillBar()),
-                    const RenderDropdownLayer(),
-                    const Positioned(
-                      left: 0,
-                      right: 0,
-                      bottom: 18,
-                      child: Center(child: BottomExploreDock()),
+      child: Material(
+        color: PC.canvasTop,
+        child: ListenableBuilder(
+          listenable: _ws,
+          builder: (context, _) {
+            final transient = _ws.exploreOpen || _ws.renderDropdownOpen;
+            // The full-screen archive hides everything beneath it, so freeze
+            // the desktop's tickers (physics, sims, floaters) while it is up.
+            final covered = _ws.overlay == StudioOverlay.archive;
+            return Stack(
+              children: [
+                Positioned.fill(
+                  child: TickerMode(enabled: !covered, child: const DesktopCanvas()),
+                ),
+                Positioned.fill(
+                  child: TickerMode(enabled: !covered, child: const WindowLayer()),
+                ),
+                if (transient)
+                  Positioned.fill(
+                    child: GestureDetector(
+                      behavior: HitTestBehavior.opaque,
+                      onTap: _ws.closeTransient,
                     ),
-                    const Positioned.fill(child: AboutWindow()),
-                    const Positioned.fill(child: PromptDrawer()),
-                    const Positioned.fill(child: KineticArchive()),
-                  ],
-                );
-              },
-            ),
-          ),
+                  ),
+                const Positioned(top: 0, left: 0, right: 0, child: TopPillBar()),
+                const RenderDropdownLayer(),
+                const Positioned(
+                  left: 0,
+                  right: 0,
+                  bottom: 18,
+                  child: Center(child: BottomExploreDock()),
+                ),
+                const Positioned.fill(child: AboutWindow()),
+                const Positioned.fill(child: PromptDrawer()),
+                const Positioned.fill(child: KineticArchive()),
+              ],
+            );
+          },
         ),
       ),
     );

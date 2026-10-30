@@ -150,25 +150,33 @@ class _Header extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return GestureDetector(
-      behavior: HitTestBehavior.opaque,
-      onPanUpdate: onDrag == null ? null : (d) => onDrag!(d.delta),
-      onPanEnd: onDragEnd == null ? null : (_) => onDragEnd!(),
-      onDoubleTap: onMaximize,
-      child: SizedBox(
-        height: 58,
-        child: Stack(
-          alignment: Alignment.center,
-          children: [
-            Positioned(
-              left: 22,
-              child: TrafficLights(
-                onClose: onClose,
-                onMinimize: onMinimize,
-                onMaximize: onMaximize,
-              ),
+    // The drag / double-tap region sits *behind* the lights and title rather
+    // than around them. A double-tap recognizer above a button makes Flutter
+    // wait ~300 ms to rule out a double tap, which delayed every light click.
+    return SizedBox(
+      height: 58,
+      child: Stack(
+        alignment: Alignment.center,
+        children: [
+          Positioned.fill(
+            child: GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onPanUpdate: onDrag == null ? null : (d) => onDrag!(d.delta),
+              onPanEnd: onDragEnd == null ? null : (_) => onDragEnd!(),
+              onDoubleTap: onMaximize,
+              child: const SizedBox.expand(),
             ),
-            Padding(
+          ),
+          Positioned(
+            left: 22,
+            child: TrafficLights(
+              onClose: onClose,
+              onMinimize: onMinimize,
+              onMaximize: onMaximize,
+            ),
+          ),
+          IgnorePointer(
+            child: Padding(
               padding: const EdgeInsets.symmetric(horizontal: 110),
               child: Text(
                 title.toUpperCase(),
@@ -177,8 +185,8 @@ class _Header extends StatelessWidget {
                 style: PT.label(size: 15, color: dark ? PC.white : PC.ink, spacing: 0.6),
               ),
             ),
-          ],
-        ),
+          ),
+        ],
       ),
     );
   }
@@ -199,7 +207,7 @@ class TrafficLights extends StatefulWidget {
 class _TrafficLightsState extends State<TrafficLights> {
   bool _hover = false;
 
-  Widget _light(Color color, IconData icon, VoidCallback? onTap) {
+  Widget _light(Color color, String glyph, VoidCallback? onTap) {
     return MouseRegion(
       cursor: onTap == null ? MouseCursor.defer : SystemMouseCursors.click,
       child: GestureDetector(
@@ -216,7 +224,17 @@ class _TrafficLightsState extends State<TrafficLights> {
           child: AnimatedOpacity(
             opacity: _hover && onTap != null ? 1 : 0,
             duration: const Duration(milliseconds: 120),
-            child: Icon(icon, size: 10, color: const Color(0x99000000)),
+            child: Center(
+              child: Text(
+                glyph,
+                style: const TextStyle(
+                  fontSize: 12,
+                  height: 1,
+                  fontWeight: FontWeight.w800,
+                  color: Color(0xB3000000),
+                ),
+              ),
+            ),
           ),
         ),
       ),
@@ -231,9 +249,9 @@ class _TrafficLightsState extends State<TrafficLights> {
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          _light(PC.red, Icons.close_rounded, widget.onClose),
-          _light(PC.amber, Icons.remove_rounded, widget.onMinimize),
-          _light(PC.green, Icons.open_in_full_rounded, widget.onMaximize),
+          _light(PC.red, '×', widget.onClose),
+          _light(PC.amber, '−', widget.onMinimize),
+          _light(PC.green, '+', widget.onMaximize),
         ],
       ),
     );

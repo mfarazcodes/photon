@@ -1,3 +1,5 @@
+import 'dart:ui' show PointerDeviceKind;
+
 import 'package:flutter/material.dart';
 
 import '../models/desktop_node.dart';
@@ -35,7 +37,10 @@ class KineticArchive extends StatelessWidget {
     return OverlayShell(
       open: ws.overlay == StudioOverlay.archive,
       onDismiss: ws.closeOverlay,
-      blur: 0,
+      // A quick 200 ms blur-and-fade: the desktop defocuses while the black
+      // archive fades in over it.
+      duration: const Duration(milliseconds: 200),
+      blur: 18,
       scrim: const Color(0x00000000),
       builder: (context, a) => FadeTransition(
         opacity: a,
@@ -124,7 +129,7 @@ class _ArchiveBodyState extends State<_ArchiveBody> {
           onTap: () => setState(() => _pinned = _pinned == i ? null : i),
           child: Container(
             decoration: const BoxDecoration(
-              border: Border(bottom: BorderSide(color: Color(0xFF1C1C1C))),
+              border: Border(bottom: BorderSide(color: Color(0xFF222222), width: 1)),
             ),
             padding: const EdgeInsets.symmetric(vertical: 10),
             child: Column(
@@ -179,16 +184,34 @@ class _ArchiveBodyState extends State<_ArchiveBody> {
     );
   }
 
+  /// Numbered render frames, four columns wide; drag sideways (mouse, touch or
+  /// trackpad) to scroll to the rest.
+  static const int _frames = 8;
+
   Widget _strip(SimKind kind) {
     return Padding(
       padding: const EdgeInsets.only(top: 16, bottom: 12, left: 34),
       child: SizedBox(
         height: 230,
-        child: Row(
-          children: [
-            for (var f = 0; f < 4; f++) ...[
-              if (f > 0) const SizedBox(width: 10),
-              Expanded(
+        child: LayoutBuilder(builder: (context, c) {
+          const gap = 10.0;
+          final itemW = (c.maxWidth - gap * 3) / 4;
+          return ScrollConfiguration(
+            behavior: ScrollConfiguration.of(context).copyWith(
+              scrollbars: false,
+              dragDevices: {
+                PointerDeviceKind.mouse,
+                PointerDeviceKind.touch,
+                PointerDeviceKind.trackpad,
+              },
+            ),
+            child: ListView.separated(
+              scrollDirection: Axis.horizontal,
+              physics: const BouncingScrollPhysics(),
+              itemCount: _frames,
+              separatorBuilder: (_, _) => const SizedBox(width: gap),
+              itemBuilder: (context, f) => SizedBox(
+                width: itemW,
                 child: ClipRRect(
                   borderRadius: BorderRadius.circular(12),
                   child: Stack(
@@ -197,9 +220,9 @@ class _ArchiveBodyState extends State<_ArchiveBody> {
                         child: f.isOdd
                             ? ColorFiltered(
                                 colorFilter: _mono,
-                                child: SimView(kind: kind, speed: 0.6 + f * 0.45),
+                                child: SimView(kind: kind, speed: 0.6 + (f % 4) * 0.45),
                               )
-                            : SimView(kind: kind, speed: 0.6 + f * 0.45),
+                            : SimView(kind: kind, speed: 0.6 + (f % 4) * 0.45),
                       ),
                       Positioned(
                         left: 10,
@@ -214,9 +237,9 @@ class _ArchiveBodyState extends State<_ArchiveBody> {
                   ),
                 ),
               ),
-            ],
-          ],
-        ),
+            ),
+          );
+        }),
       ),
     );
   }

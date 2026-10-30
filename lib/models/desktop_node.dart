@@ -1,5 +1,7 @@
 import 'dart:ui';
 
+import 'sim_params.dart';
+
 /// Procedural shader previews. Each kind maps to a [VfxSim].
 enum SimKind { liquid, swarm, chrome, fog, wireframe, cloth, caustics, marble, core }
 
@@ -31,6 +33,10 @@ class DesktopNode {
     this.darkTile = false,
     this.solver = '',
     this.blurb = '',
+    this.prompt,
+    this.params,
+    this.seed,
+    this.generated = false,
   });
 
   final String id;
@@ -46,6 +52,13 @@ class DesktopNode {
   final bool darkTile;
   final String solver;
   final String blurb;
+
+  /// Set on nodes produced by the prompt-to-render workflow: the scene prompt,
+  /// the seeded shader parameters and the starting seed.
+  final String? prompt;
+  final SimParams? params;
+  final int? seed;
+  final bool generated;
 
   bool get isFolder => kind == NodeKind.folder;
 }

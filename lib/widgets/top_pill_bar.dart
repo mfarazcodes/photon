@@ -269,7 +269,7 @@ class _RenderCard extends StatelessWidget {
                               overflow: TextOverflow.ellipsis,
                               style: PT.label(size: 15, weight: FontWeight.w700)),
                           const SizedBox(height: 4),
-                          Text('${job.device} • ${job.vram}% VRAM',
+                          Text('${job.device} • ${q.vram}% VRAM • ${q.fps} FPS',
                               style: PT.mono(size: 12, color: PC.muted)),
                           const SizedBox(height: 6),
                           _StatusChip(paused: q.paused),
@@ -303,11 +303,19 @@ class _RenderCard extends StatelessWidget {
                 const SizedBox(height: 8),
                 Row(
                   children: [
-                    Text('FRAME ${q.frame.toString().padLeft(3, '0')} / ${job.frames}',
-                        style: PT.mono(size: 11.5, color: PC.muted)),
-                    const Spacer(),
-                    Text('${(q.progress * 100).toStringAsFixed(1)}%  ·  ETA ${_two(eta.inMinutes)}:${_two(eta.inSeconds % 60)}',
-                        style: PT.mono(size: 11.5, color: PC.muted)),
+                    Flexible(
+                      child: Text('FRAME ${q.frame.toString().padLeft(3, '0')} / ${job.frames}',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: PT.mono(size: 11.5, color: PC.muted)),
+                    ),
+                    const SizedBox(width: 8),
+                    Flexible(
+                      child: Text('${(q.progress * 100).toStringAsFixed(1)}%  ·  ETA ${_two(eta.inMinutes)}:${_two(eta.inSeconds % 60)}',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: PT.mono(size: 11.5, color: PC.muted)),
+                    ),
                   ],
                 ),
                 const SizedBox(height: 14),

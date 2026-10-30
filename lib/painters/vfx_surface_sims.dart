@@ -62,6 +62,7 @@ abstract class GridSim extends VfxSim {
   late final Float32List positions;
   late final Int32List colors;
   late final Uint16List indices;
+  final Paint _paint = Paint();
 
   int vertex(int i, int j) => j * (cols + 1) + i;
 
@@ -81,7 +82,7 @@ abstract class GridSim extends VfxSim {
     shade(size);
     final v = Vertices.raw(VertexMode.triangles, positions,
         colors: colors, indices: indices);
-    canvas.drawVertices(v, BlendMode.dst, Paint());
+    canvas.drawVertices(v, BlendMode.dst, _paint);
     v.dispose();
   }
 }
@@ -116,7 +117,7 @@ class ClothSim extends GridSim {
     super.step(dt, size);
     if (size.isEmpty) return;
     dt = dt.clamp(0.0, 1 / 30) / 2;
-    final breathe = 0.82 + 0.18 * math.sin(t * 1.3);
+    final breathe = 0.7 + 0.3 * params.turbulence + 0.18 * math.sin(t * 1.3);
     final p = pointer;
     final pu = p == null ? -9.0 : p.dx / size.width;
     final pv = p == null ? -9.0 : p.dy / size.height;
@@ -205,7 +206,7 @@ class CausticsSim extends GridSim {
     final p = pointer;
     final pu = p == null ? 0.0 : p.dx / size.width;
     final pv = p == null ? 0.0 : p.dy / size.height;
-    final time = t * 0.5 + 23;
+    final time = t * 0.5 * (0.5 + params.turbulence) + 23 + seed * 0.001;
     for (var j = 0; j <= rows; j++) {
       final v = j / rows;
       for (var i = 0; i <= cols; i++) {
@@ -245,6 +246,8 @@ class MarbleSim extends GridSim {
     final p = pointer;
     final pu = p == null ? 0.0 : p.dx / size.width * aspect * 3;
     final pv = p == null ? 0.0 : p.dy / size.height * 3;
+    final warp = 4 * (0.3 + params.turbulence);
+    final so = seed * 0.0007;
     for (var j = 0; j <= rows; j++) {
       for (var i = 0; i <= cols; i++) {
         var x = i / cols * aspect * 3;
@@ -257,9 +260,9 @@ class MarbleSim extends GridSim {
           x = pu + dx * ca - dy * sa;
           y = pv + dx * sa + dy * ca;
         }
-        final qx = fbm(x + 0.1 * t, y);
-        final qy = fbm(x + 5.2, y + 1.3 - 0.08 * t);
-        final r = fbm(x + 4 * qx, y + 4 * qy + 0.05 * t);
+        final qx = fbm(x + 0.1 * t + so, y);
+        final qy = fbm(x + 5.2 + so, y + 1.3 - 0.08 * t);
+        final r = fbm(x + warp * qx, y + warp * qy + 0.05 * t);
         final vein = math.sin((x + y * 0.4) * 3 + r * 7);
         final m = math.pow(vein.abs(), 0.3).toDouble();
         final base = 0.84 + 0.14 * qx;
@@ -316,6 +319,11 @@ class WireframeSim extends VfxSim {
   late final Float32List _theta, _phi, _sx, _sy, _sz, _front, _back;
   late final Int32List _edges;
   final double _yaw = 0, _pitch = -0.35;
+  final Paint _bgPaint = Paint()..color = const Color(0xFF0B0B0C);
+  final Paint _backLine = Paint()
+    ..color = const Color(0x997C3AED)
+    ..strokeWidth = 1;
+  final Paint _frontLine = Paint()..color = const Color(0xFFFF5A1F);
 
   // Jelly: every vertex is a spring in screen space. `_bx`/`_by` hold the
   // undeformed projection from the last paint, `_ox`/`_oy` the displacement.
@@ -371,7 +379,7 @@ class WireframeSim extends VfxSim {
   void paint(Canvas canvas, Size size) {
     final w = size.width, h = size.height, m = math.min(w, h);
     if (m <= 0) return;
-    canvas.drawRect(Offset.zero & size, Paint()..color = background);
+    canvas.drawRect(Offset.zero & size, _bgPaint);
 
     final yaw = _yaw + t * 0.4;
     final cy = math.cos(yaw), sy = math.sin(yaw);
@@ -379,7 +387,8 @@ class WireframeSim extends VfxSim {
     final scale = m * 0.34;
     for (var k = 0; k < _theta.length; k++) {
       final th = _theta[k], ph = _phi[k];
-      final r = 1 + 0.2 * math.sin(3 * th + t) * math.cos(2 * ph - t * 0.6);
+      final r = 1 +
+          0.2 * (0.3 + 1.4 * params.turbulence) * math.sin(3 * th + t) * math.cos(2 * ph - t * 0.6);
       final x = r * math.sin(th) * math.cos(ph);
       final y = r * math.cos(th);
       final z = r * math.sin(th) * math.sin(ph);
@@ -413,16 +422,12 @@ class WireframeSim extends VfxSim {
     canvas.drawRawPoints(
       PointMode.lines,
       Float32List.sublistView(_back, 0, nb),
-      Paint()
-        ..color = const Color(0x997C3AED)
-        ..strokeWidth = 1,
+      _backLine,
     );
     canvas.drawRawPoints(
       PointMode.lines,
       Float32List.sublistView(_front, 0, nf),
-      Paint()
-        ..color = const Color(0xFFFF5A1F)
-        ..strokeWidth = thumb ? 1.1 : 1.5,
+      _frontLine..strokeWidth = thumb ? 1.1 : 1.5,
     );
   }
 }
