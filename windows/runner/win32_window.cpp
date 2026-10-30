@@ -150,7 +150,8 @@ bool Win32Window::Create(const std::wstring& title,
 }
 
 bool Win32Window::Show() {
-  return ShowWindow(window_handle_, SW_SHOWNORMAL);
+  // Photon is a spatial desktop; open it filling the screen.
+  return ShowWindow(window_handle_, SW_SHOWMAXIMIZED);
 }
 
 // static
