@@ -9,9 +9,13 @@ import '../state/workspace_controller.dart';
 import '../theme/photon_theme.dart';
 import '../widgets/sim_view.dart';
 
+/// Labels of the three topology modes of a generated effect.
+const List<String> _kGenerativeModes = ['Mode 01', 'Mode 02', 'Mode 03'];
+
 /// Interactive procedural preview for `.vfx`, `.frag` and `.obj` nodes, with a
 /// floating playback bar. Generated nodes start from their prompt's seed and
-/// shader parameters; built-in nodes follow the inspector's live sliders.
+/// shader parameters and render the effect compiled from their prompt;
+/// built-in nodes follow the inspector's live sliders.
 class VfxViewportContent extends StatefulWidget {
   const VfxViewportContent({super.key, required this.node});
 
@@ -36,7 +40,9 @@ class _VfxViewportContentState extends State<VfxViewportContent> {
     final params = WorkspaceScope.read(context).paramsFor(node);
     final fg = node.darkTile ? PC.white : PC.ink;
     final chipBg = node.darkTile ? const Color(0x33FFFFFF) : const Color(0x14000000);
-    final liquid = node.sim == SimKind.liquid;
+    final dna = node.dna;
+    // The preset liquid has its own shapes; generated effects get three modes.
+    final showModes = dna != null || node.sim == SimKind.liquid;
     return Padding(
       padding: const EdgeInsets.all(16),
       child: ClipRRect(
@@ -46,6 +52,7 @@ class _VfxViewportContentState extends State<VfxViewportContent> {
             Positioned.fill(
               child: SimView(
                 kind: node.sim ?? SimKind.core,
+                dna: dna,
                 interactive: true,
                 params: params,
                 playback: _playback,
@@ -54,7 +61,7 @@ class _VfxViewportContentState extends State<VfxViewportContent> {
             Positioned(
               left: 14,
               top: 14,
-              right: liquid ? 400 : 170,
+              right: showModes ? 400 : 170,
               child: IgnorePointer(
                 child: Wrap(
                   spacing: 6,
@@ -71,13 +78,14 @@ class _VfxViewportContentState extends State<VfxViewportContent> {
                 ),
               ),
             ),
-            if (liquid)
+            if (showModes)
               Positioned(
                 right: 170,
                 top: 14,
                 child: ListenableBuilder(
                   listenable: _playback,
                   builder: (context, _) => _ModeToggle(
+                    labels: dna == null ? kLiquidModes : _kGenerativeModes,
                     selected: _playback.mode,
                     onSelect: _playback.setMode,
                   ),
@@ -124,10 +132,12 @@ class _Chip extends StatelessWidget {
   }
 }
 
-/// SPHERE / SPLASH / TYPE switch for LIQUID_MORPH.
+/// SPHERE / SPLASH / TYPE switch for LIQUID_MORPH; MODE 01 / 02 / 03 for
+/// generated effects.
 class _ModeToggle extends StatelessWidget {
-  const _ModeToggle({required this.selected, required this.onSelect});
+  const _ModeToggle({required this.labels, required this.selected, required this.onSelect});
 
+  final List<String> labels;
   final int selected;
   final ValueChanged<int> onSelect;
 
@@ -142,7 +152,7 @@ class _ModeToggle extends StatelessWidget {
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          for (var i = 0; i < kLiquidModes.length; i++)
+          for (var i = 0; i < labels.length; i++)
             MouseRegion(
               cursor: SystemMouseCursors.click,
               child: GestureDetector(
@@ -156,7 +166,7 @@ class _ModeToggle extends StatelessWidget {
                     borderRadius: BorderRadius.circular(100),
                   ),
                   child: Text(
-                    kLiquidModes[i].toUpperCase(),
+                    labels[i].toUpperCase(),
                     style: PT.mono(
                       size: 11,
                       color: i == selected ? PC.ink : PC.white,
@@ -332,13 +342,23 @@ class _TimelinePainter extends CustomPainter {
   bool shouldRepaint(covariant _TimelinePainter old) => old.progress != progress;
 }
 
+/// RGB vectorscope pill. While the engine is online its readout is the
+/// engine's frame time from telemetry; offline it shows the nominal 60 Hz.
 class _ScopeHud extends StatelessWidget {
   const _ScopeHud({required this.playback, required this.params});
   final Playback playback;
   final SimParams params;
 
+  String _readout(RenderQueue queue) {
+    if (!playback.playing) return 'PAUSED';
+    if (!queue.engineOnline) return '16.6ms';
+    if (queue.fps <= 0) return 'IDLE';
+    return '${(1000 / queue.fps).toStringAsFixed(1)}ms';
+  }
+
   @override
   Widget build(BuildContext context) {
+    final queue = WorkspaceScope.read(context).renderQueue;
     return Container(
       width: 140,
       height: 44,
@@ -348,7 +368,7 @@ class _ScopeHud extends StatelessWidget {
         borderRadius: BorderRadius.circular(100),
       ),
       child: ListenableBuilder(
-        listenable: playback,
+        listenable: Listenable.merge([playback, queue]),
         builder: (context, _) => Row(
           children: [
             Expanded(
@@ -362,7 +382,7 @@ class _ScopeHud extends StatelessWidget {
             ),
             const SizedBox(width: 8),
             Text(
-              playback.playing ? '16.6ms' : 'PAUSED',
+              _readout(queue),
               style: PT.mono(size: 10, color: playback.playing ? PC.white : PC.muted, weight: FontWeight.w700),
             ),
           ],

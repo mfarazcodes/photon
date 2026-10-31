@@ -1,6 +1,7 @@
 import 'dart:ui';
 
 import 'sim_params.dart';
+import 'vfx_dna.dart';
 
 /// Procedural shader previews. Each kind maps to a [VfxSim].
 enum SimKind { liquid, swarm, chrome, fog, wireframe, cloth, caustics, marble, core }
@@ -36,6 +37,7 @@ class DesktopNode {
     this.prompt,
     this.params,
     this.seed,
+    this.dna,
     this.generated = false,
   });
 
@@ -58,6 +60,10 @@ class DesktopNode {
   final String? prompt;
   final SimParams? params;
   final int? seed;
+
+  /// The effect compiled from the prompt. When set, every preview of this node
+  /// is synthesised from it rather than from the preset [sim] painters.
+  final VfxDna? dna;
   final bool generated;
 
   bool get isFolder => kind == NodeKind.folder;

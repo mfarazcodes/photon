@@ -5,6 +5,7 @@ import 'package:flutter/scheduler.dart';
 
 import '../models/desktop_node.dart';
 import '../painters/glyph_painters.dart';
+import '../services/engine_socket.dart';
 import '../state/workspace_controller.dart';
 import '../theme/photon_theme.dart';
 import 'sim_view.dart';
@@ -130,8 +131,9 @@ class RenderQueuePill extends StatelessWidget {
                 width: 38,
                 height: 38,
                 child: SimView(
-                  key: ValueKey(queue.current.sim),
+                  key: ValueKey(queue.current.dna ?? queue.current.sim),
                   kind: queue.current.sim,
+                  dna: queue.current.dna,
                   thumb: true,
                 ),
               ),
@@ -146,7 +148,7 @@ class RenderQueuePill extends StatelessWidget {
                 value: queue.progress,
                 strokeWidth: 2,
                 backgroundColor: PC.hairline,
-                color: queue.paused ? PC.amber : PC.blue,
+                color: queue.failed ? PC.red : queue.paused ? PC.amber : PC.blue,
               ),
             ),
             const SizedBox(width: 4),
@@ -258,7 +260,12 @@ class _RenderCard extends StatelessWidget {
                       child: SizedBox(
                         width: 64,
                         height: 64,
-                        child: SimView(key: ValueKey(job.sim), kind: job.sim, thumb: true),
+                        child: SimView(
+                          key: ValueKey(job.dna ?? job.sim),
+                          kind: job.sim,
+                          dna: job.dna,
+                          thumb: true,
+                        ),
                       ),
                     ),
                     const SizedBox(width: 14),
@@ -274,7 +281,7 @@ class _RenderCard extends StatelessWidget {
                           Text('${job.device} • ${q.vram}% VRAM • ${q.fps} FPS',
                               style: PT.mono(size: 12, color: PC.muted)),
                           const SizedBox(height: 6),
-                          _StatusChip(paused: q.paused),
+                          _StatusChip(queue: q),
                         ],
                       ),
                     ),
@@ -365,20 +372,27 @@ class _RenderCard extends StatelessWidget {
 }
 
 class _StatusChip extends StatelessWidget {
-  const _StatusChip({required this.paused});
+  const _StatusChip({required this.queue});
 
-  final bool paused;
+  final RenderQueue queue;
 
   @override
   Widget build(BuildContext context) {
-    final color = paused ? PC.amber : PC.blue;
+    final status = queue.engineStatus;
+    final (label, color) = queue.failed
+        ? ((status ?? 'failed').toUpperCase(), PC.red)
+        : queue.paused
+            ? ('PAUSED', PC.amber)
+            : (queue.isRemoteJob && status != null ? status.toUpperCase() : 'RENDERING', PC.blue);
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
       decoration: BoxDecoration(
         color: color.withValues(alpha: 0.12),
         borderRadius: BorderRadius.circular(100),
       ),
-      child: Text(paused ? 'PAUSED' : 'RENDERING',
+      child: Text(label,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
           style: PT.mono(size: 10.5, color: color, weight: FontWeight.w700)),
     );
   }
@@ -512,6 +526,19 @@ class _TelemetryPillState extends State<TelemetryPill>
 
   @override
   Widget build(BuildContext context) {
+    final engine = WorkspaceScope.of(context).engine;
+    return ValueListenableBuilder<EngineConnection>(
+      valueListenable: engine.state,
+      builder: (context, state, _) => _pill(state),
+    );
+  }
+
+  Widget _pill(EngineConnection state) {
+    final (label, dot) = switch (state) {
+      EngineConnection.connected => ('Online', PC.blue),
+      EngineConnection.connecting => ('Connecting', PC.amber),
+      EngineConnection.disconnected => ('Offline', PC.muted),
+    };
     return Pill(
       child: Row(
         children: [
@@ -528,13 +555,13 @@ class _TelemetryPillState extends State<TelemetryPill>
                     height: 8 + 10 * p,
                     decoration: BoxDecoration(
                       shape: BoxShape.circle,
-                      color: PC.blue.withValues(alpha: 0.35 * (1 - p)),
+                      color: dot.withValues(alpha: 0.35 * (1 - p)),
                     ),
                   ),
                   Container(
                     width: 8,
                     height: 8,
-                    decoration: const BoxDecoration(shape: BoxShape.circle, color: PC.blue),
+                    decoration: BoxDecoration(shape: BoxShape.circle, color: dot),
                   ),
                 ],
               ),
@@ -544,7 +571,7 @@ class _TelemetryPillState extends State<TelemetryPill>
           Text(_stamp, style: PT.label(size: 17)),
           const SizedBox(width: 10),
           Text(
-            widget.compact ? '• $_fps FPS' : '• Engine Ready | $_fps FPS',
+            widget.compact ? '• $_fps FPS' : '• $label | $_fps FPS',
             style: PT.mono(size: 13, color: PC.muted),
           ),
         ],

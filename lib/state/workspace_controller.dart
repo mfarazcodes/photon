@@ -5,6 +5,8 @@ import 'package:flutter/widgets.dart';
 
 import '../models/desktop_node.dart';
 import '../models/sim_params.dart';
+import '../models/vfx_dna.dart';
+import '../services/engine_socket.dart';
 
 enum WindowType { viewport, compositor, inspector, finder }
 
@@ -82,13 +84,17 @@ class OpenWindow {
 }
 
 class RenderJob {
-  const RenderJob(this.name, this.device, this.vram, this.frames, this.sim);
+  const RenderJob(this.name, this.device, this.vram, this.frames, this.sim, {this.dna});
 
   final String name;
   final String device;
   final int vram;
   final int frames;
   final SimKind sim;
+
+  /// Set on user renders: the effect compiled from their prompt, so the queue
+  /// thumbnail previews it rather than a preset [sim].
+  final VfxDna? dna;
 }
 
 /// Everything the Prompt Studio form collects for one render.
@@ -102,6 +108,8 @@ class PromptSpec {
     required this.seed,
     required this.volumetric,
     required this.denoise,
+    required this.exportExr,
+    this.dna,
   });
 
   final String prompt;
@@ -112,6 +120,56 @@ class PromptSpec {
   final int seed;
   final bool volumetric;
   final bool denoise;
+  final bool exportExr;
+
+  /// The visual effect compiled from this form, once [compileDna] has run.
+  final VfxDna? dna;
+
+  /// Compiles the form into a [VfxDna]. [overrides] is the optional `dna`
+  /// object from the render server.
+  VfxDna compileDna({Map<String, dynamic>? overrides}) => VfxDna.compile(
+        prompt: prompt,
+        negative: negative,
+        solver: solver,
+        seed: seed,
+        resolution: resolution,
+        frameRate: frameRate,
+        volumetric: volumetric,
+        denoise: denoise,
+        overrides: overrides,
+      );
+
+  PromptSpec withDna(VfxDna value) => PromptSpec(
+        prompt: prompt,
+        negative: negative,
+        resolution: resolution,
+        frameRate: frameRate,
+        solver: solver,
+        seed: seed,
+        volumetric: volumetric,
+        denoise: denoise,
+        exportExr: exportExr,
+        dna: value,
+      );
+
+  /// Form fields as sent to the engine. Blank optional fields are null so the
+  /// server can apply its own defaults.
+  Map<String, Object?> toJson() {
+    String? orNull(String s) => s.isEmpty ? null : s;
+    return {
+      'prompt': prompt,
+      'negative_prompt': orNull(negative),
+      'resolution': orNull(resolution),
+      'frame_rate': orNull(frameRate),
+      'solver': orNull(solver),
+      'seed': seed,
+      'options': {
+        'volumetric': volumetric,
+        'denoise': denoise,
+        'export_exr': exportExr,
+      },
+    };
+  }
 
   /// Short uppercase file-style title from the first words of the prompt.
   String get title {
@@ -191,6 +249,11 @@ class PromptDraft {
 }
 
 /// Background render queue shown in the top-right pill.
+///
+/// While the Python engine is online, a user render runs there and the
+/// engine's telemetry drives its progress, status and the FPS readout.
+/// Offline, a user render falls back to a local preview that takes
+/// [userRenderSeconds].
 class RenderQueue extends ChangeNotifier {
   RenderQueue() {
     _timer = Timer.periodic(const Duration(milliseconds: 100), (_) => _tick());
@@ -218,14 +281,40 @@ class RenderQueue extends ChangeNotifier {
   PromptSpec? _spec;
   double _userProgress = 0;
 
+  /// Engine-side id of the active user job; null for a local preview.
+  String? _jobId;
+
+  /// `dna` overrides the engine sent for the active job, applied when it
+  /// completes.
+  Map<String, dynamic>? _dnaOverride;
+
   /// Called once when a user-launched render reaches 100%.
   void Function(PromptSpec spec)? onComplete;
 
-  /// Live telemetry, drifting toward the active job's load.
+  /// Forwards pause/resume of an engine job to the server.
+  void Function(String action)? onControl;
+
+  /// Live telemetry. VRAM drifts toward the active job's load; FPS is
+  /// simulated offline and reported by the engine online.
   int vram = 78;
   int fps = 60;
 
+  /// True while the Python engine is reachable.
+  bool engineOnline = false;
+
+  /// Last status string reported by the engine, e.g. "rendering".
+  String? engineStatus;
+
+  /// The active engine job failed or lost its connection. It stays in the
+  /// queue, frozen, until skipped.
+  bool failed = false;
+
+  static const _doneStatuses = {'complete', 'completed', 'done', 'finished'};
+  static const _failedStatuses = {'error', 'failed', 'cancelled', 'canceled'};
+
   bool get hasUserJob => _user != null;
+  bool get isRemoteJob => _jobId != null;
+  String? get jobId => _jobId;
   RenderJob get current => _user ?? jobs[index];
   double get progress => _user != null ? _userProgress : _ambient;
   int get frame => (progress * current.frames).floor();
@@ -237,15 +326,13 @@ class RenderQueue extends ChangeNotifier {
   void _tick() {
     if (!paused) {
       if (_user != null) {
-        _userProgress += _tickSeconds / userRenderSeconds;
-        if (_userProgress >= 0.9999) {
-          final spec = _spec!;
-          _user = null;
-          _spec = null;
-          _userProgress = 0;
-          notifyListeners();
-          onComplete?.call(spec);
-          return;
+        // Engine jobs advance only through [applyTelemetry].
+        if (_jobId == null) {
+          _userProgress += _tickSeconds / userRenderSeconds;
+          if (_userProgress >= 0.9999) {
+            _finish();
+            return;
+          }
         }
       } else {
         _ambient += 0.0011;
@@ -259,29 +346,119 @@ class RenderQueue extends ChangeNotifier {
     vram = (vram + (load - vram) * 0.25 + (_rng.nextDouble() - 0.5) * 3)
         .round()
         .clamp(40, 99);
-    fps = paused
-        ? 0
-        : (60 - (_user != null ? _userProgress * 6 : 0) - _rng.nextInt(4)).round();
+    if (!engineOnline) {
+      fps = paused
+          ? 0
+          : (60 - (_user != null ? _userProgress * 6 : 0) - _rng.nextInt(4)).round();
+    }
     notifyListeners();
+  }
+
+  void _clearUser() {
+    _user = null;
+    _spec = null;
+    _jobId = null;
+    _dnaOverride = null;
+    _userProgress = 0;
+    failed = false;
+  }
+
+  void _finish() {
+    // Whatever happened, the finished render carries a compiled effect, with
+    // the engine's overrides on top when it sent any.
+    var spec = _spec!;
+    final override = _dnaOverride;
+    if (override != null) {
+      spec = spec.withDna((spec.dna ?? spec.compileDna()).withOverrides(override));
+    } else if (spec.dna == null) {
+      spec = spec.withDna(spec.compileDna());
+    }
+    _clearUser();
+    notifyListeners();
+    onComplete?.call(spec);
   }
 
   void togglePause() {
     paused = !paused;
+    if (_jobId != null && !failed) onControl?.call(paused ? 'pause' : 'resume');
     notifyListeners();
   }
 
   void skip() {
-    if (_user != null) return;
+    if (_user != null) {
+      // A live user job runs to completion; only a failed one is dismissable.
+      if (!failed) return;
+      _clearUser();
+      notifyListeners();
+      return;
+    }
     index = (index + 1) % jobs.length;
     _ambient = 0;
     notifyListeners();
   }
 
-  void launch(PromptSpec spec) {
+  /// Starts a user render. With a [jobId] the engine is rendering it and
+  /// telemetry drives progress; without one it runs as a local preview.
+  void launch(PromptSpec spec, {String? jobId}) {
     _spec = spec;
-    _user = RenderJob('${spec.title}.exr', 'Cloud GPU', 62, 240, spec.sim);
+    _jobId = jobId;
+    _user = RenderJob(
+      '${spec.title}.exr',
+      jobId != null ? 'Photon Engine' : 'Local Preview',
+      62,
+      240,
+      spec.sim,
+      dna: spec.dna,
+    );
+    _dnaOverride = null;
     _userProgress = 0;
+    failed = false;
+    engineStatus = null;
     paused = false;
+    notifyListeners();
+  }
+
+  void setEngineOnline(bool online) {
+    if (online == engineOnline) return;
+    engineOnline = online;
+    if (!online && _jobId != null && !failed) {
+      failed = true;
+      engineStatus = 'engine offline';
+    }
+    notifyListeners();
+  }
+
+  /// Applies a `{"type": "telemetry", "progress": 0..1, "fps": n,
+  /// "status": "..."}` frame; every field is optional. Progress and status
+  /// only touch the active engine job, and only when the frame's `job_id`, if
+  /// present, matches it. A frame may also carry a `"dna": {...}` object (see
+  /// [VfxDna.withOverrides]); the last one received before the job completes,
+  /// normally on the `complete` frame, overrides the locally compiled effect.
+  void applyTelemetry(Map<String, dynamic> msg) {
+    final fps = msg['fps'];
+    if (fps is num && fps.isFinite) this.fps = fps.round().clamp(0, 999);
+    final status = msg['status'];
+    final id = msg['job_id'];
+    final ours = _jobId != null && !failed && (id == null || id == _jobId);
+    if (!ours) {
+      if (status is String && _user == null) engineStatus = status;
+      notifyListeners();
+      return;
+    }
+    if (status is String) engineStatus = status;
+    final dna = msg['dna'];
+    if (dna is Map<String, dynamic>) _dnaOverride = dna;
+    final progress = msg['progress'];
+    if (progress is num && progress.isFinite) {
+      _userProgress = progress.toDouble().clamp(0.0, 1.0);
+    }
+    final s = engineStatus?.toLowerCase();
+    if (_failedStatuses.contains(s)) {
+      failed = true;
+    } else if (_userProgress >= 1 || _doneStatuses.contains(s)) {
+      _finish();
+      return;
+    }
     notifyListeners();
   }
 
@@ -294,9 +471,19 @@ class RenderQueue extends ChangeNotifier {
 
 /// Single source of truth for the spatial desktop.
 class WorkspaceController extends ChangeNotifier {
-  WorkspaceController() {
+  /// Takes ownership of [engine] and, if [connectEngine], connects it.
+  WorkspaceController({EngineSocket? engine, bool connectEngine = true})
+      : engine = engine ?? EngineSocket() {
     renderQueue.onComplete = _onRenderComplete;
+    renderQueue.onControl = _sendControl;
+    this.engine.state.addListener(_onEngineState);
+    _engineSub = this.engine.messages.listen(_onEngineMessage);
+    if (connectEngine) this.engine.connect();
   }
+
+  /// Link to the local Python render server.
+  final EngineSocket engine;
+  late final StreamSubscription<Map<String, dynamic>> _engineSub;
 
   final RenderQueue renderQueue = RenderQueue();
   final PromptDraft draft = PromptDraft();
@@ -529,7 +716,7 @@ class WorkspaceController extends ChangeNotifier {
       return false;
     }
     final seed = int.tryParse(draft.seed.text.trim()) ?? (100000 + math.Random().nextInt(899999));
-    final spec = PromptSpec(
+    final form = PromptSpec(
       prompt: text,
       negative: draft.negative.text.trim(),
       resolution: draft.resolution.text.trim(),
@@ -538,14 +725,43 @@ class WorkspaceController extends ChangeNotifier {
       seed: seed,
       volumetric: draft.checks[0],
       denoise: draft.checks[1],
+      exportExr: draft.checks[2],
     );
-    renderQueue.launch(spec);
+    final spec = form.withDna(form.compileDna());
+    final jobId = 'job_${DateTime.now().microsecondsSinceEpoch}';
+    final sent = engine.send(_renderPayload(spec, jobId));
+    renderQueue.launch(spec, jobId: sent ? jobId : null);
     draft.reset();
     overlay = StudioOverlay.none;
     exploreOpen = false;
     renderDropdownOpen = true;
     notifyListeners();
     return true;
+  }
+
+  /// The `render` request for the engine: the form plus the inspector's
+  /// live sliders (the XY pad writes turbulence as x, coherence as y).
+  Map<String, Object?> _renderPayload(PromptSpec spec, String jobId) => {
+        'type': 'render',
+        'job_id': jobId,
+        ...spec.toJson(),
+        'params': {
+          'turbulence': params.turbulence,
+          'coherence': params.coherence,
+          'density': params.density,
+          'dispersion': params.dispersion,
+          'time_scale': params.timeScale,
+        },
+      };
+
+  void _onEngineState() => renderQueue.setEngineOnline(engine.isConnected);
+
+  void _onEngineMessage(Map<String, dynamic> msg) {
+    if (msg['type'] == 'telemetry') renderQueue.applyTelemetry(msg);
+  }
+
+  void _sendControl(String action) {
+    engine.send({'type': 'control', 'action': action, 'job_id': renderQueue.jobId});
   }
 
   static const List<Offset> _slots = [
@@ -557,8 +773,12 @@ class WorkspaceController extends ChangeNotifier {
     Offset(0.60, 0.15),
   ];
 
-  /// A finished render becomes a new desktop node and opens in a viewport.
+  /// A finished render becomes a new desktop node and opens in a viewport,
+  /// taking the place of any earlier render viewport rather than stacking on
+  /// top of it.
   void _onRenderComplete(PromptSpec spec) {
+    renderDropdownOpen = false;
+    final dna = spec.dna ?? spec.compileDna();
     final n = _generated++;
     final slot = _slots[n % _slots.length] + Offset(0.012, 0.012) * (n ~/ _slots.length).toDouble();
     final node = DesktopNode(
@@ -567,19 +787,41 @@ class WorkspaceController extends ChangeNotifier {
       kind: NodeKind.vfx,
       home: slot,
       sim: spec.sim,
-      solver: spec.solver.isEmpty ? 'Photon Auto Solver' : spec.solver,
+      solver: spec.solver.isEmpty ? dna.label : spec.solver,
       blurb: spec.prompt,
       prompt: spec.prompt,
       params: spec.params(),
       seed: spec.seed,
+      dna: dna,
       generated: true,
     );
     nodes.add(node);
+
+    // Windows are ordered back to front, so the last match is the topmost.
+    final earlier = [
+      for (final w in windows)
+        if (w.type == WindowType.viewport && (w.node?.generated ?? false)) w,
+    ];
+    windows.removeWhere(earlier.contains);
+    final cascade = _cascade;
     openNode(node);
+    if (earlier.isNotEmpty) {
+      // Reuse the old window's slot so the new render appears where it was.
+      _cascade = cascade;
+      final w = topWindow!
+        ..offset = earlier.last.offset
+        ..maximized = earlier.last.maximized;
+      if (viewport != Size.zero) w.clampOffset(viewport);
+      notifyListeners();
+    }
   }
 
   @override
   void dispose() {
+    // Detach first: disposing the socket reports a final state change.
+    _engineSub.cancel();
+    engine.state.removeListener(_onEngineState);
+    engine.dispose();
     renderQueue.dispose();
     draft.dispose();
     params.dispose();

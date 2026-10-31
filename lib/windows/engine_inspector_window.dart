@@ -3,6 +3,7 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 
 import '../models/desktop_node.dart';
+import '../models/sim_params.dart';
 import '../painters/glyph_painters.dart';
 import '../painters/pass_painter.dart';
 import '../state/workspace_controller.dart';

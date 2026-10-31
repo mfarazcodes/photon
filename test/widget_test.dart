@@ -5,8 +5,10 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:photon/main.dart';
 import 'package:photon/models/desktop_node.dart';
+import 'package:photon/models/vfx_dna.dart';
 import 'package:photon/state/workspace_controller.dart';
 import 'package:photon/widgets/desktop_canvas.dart';
+import 'package:photon/widgets/sim_view.dart';
 import 'package:photon/windows/compositor_window.dart';
 import 'package:photon/windows/vfx_viewport_window.dart';
 
@@ -21,7 +23,7 @@ Future<WorkspaceController> boot(WidgetTester tester) async {
   tester.view.physicalSize = const Size(1920, 1080);
   tester.view.devicePixelRatio = 1.0;
   addTearDown(tester.view.reset);
-  await tester.pumpWidget(const PhotonApp());
+  await tester.pumpWidget(const PhotonApp(connectEngine: false));
   await pumpFrames(tester, 5);
   return WorkspaceScope.read(tester.element(find.byType(DesktopCanvas)));
 }
@@ -204,6 +206,84 @@ void main() {
     expect(find.text('PINK_LIQUID_SLIME.VFX'), findsOneWidget);
     // The form was cleared for the next prompt.
     expect(ws.draft.prompt.text, isEmpty);
+  });
+
+  testWidgets('generated renders get their own compiled effect, close the queue and '
+      'replace the previous render window', (tester) async {
+    final ws = await boot(tester);
+    Iterable<SimView> generative() =>
+        tester.widgetList<SimView>(find.byType(SimView)).where((s) => s.dna != null);
+    int renderWindows() => ws.windows
+        .where((w) => w.type == WindowType.viewport && (w.node?.generated ?? false))
+        .length;
+
+    // The default desktop only ever uses the preset sims.
+    expect(generative(), isEmpty);
+    ws.openNode(node(ws, 'chrome_shader'));
+    await pumpFrames(tester, 10);
+    expect(generative(), isEmpty);
+
+    ws.draft.prompt.text = 'Neon cyberpunk fluid simulation';
+    expect(ws.submitPrompt(), isTrue);
+    await tester.pump();
+    // The queue pill already previews the compiled effect, not a preset.
+    expect(ws.renderQueue.current.dna?.primary, VfxSolver.metaballFluid);
+    expect(generative(), isNotEmpty);
+    await tester.pump(const Duration(seconds: 2));
+    await tester.pump(const Duration(milliseconds: 2400));
+    await pumpFrames(tester, 10);
+
+    final first = ws.nodes.last;
+    expect(first.generated, isTrue);
+    expect(first.dna?.paletteName, 'neon');
+    expect(first.solver, isNotEmpty);
+    expect(ws.renderDropdownOpen, isFalse, reason: 'queue dropdown closes on completion');
+    expect(ws.topWindow!.node!.id, first.id);
+    expect(renderWindows(), 1);
+    expect(ws.windows.any((w) => w.id == 'node:chrome_shader'), isTrue,
+        reason: 'built-in windows are left alone');
+
+    // The viewport and the desktop icon both render the compiled DNA.
+    final vp = find.byKey(ValueKey('vp:node:${first.id}'));
+    expect(
+      tester.widget<SimView>(find.descendant(of: vp, matching: find.byType(SimView))).dna,
+      same(first.dna),
+    );
+    expect(generative().where((s) => identical(s.dna, first.dna)), hasLength(greaterThan(1)));
+
+    // Generated effects get MODE 01/02/03 instead of the liquid shape names.
+    for (final label in ['MODE 01', 'MODE 02', 'MODE 03']) {
+      expect(find.text(label), findsOneWidget);
+    }
+    expect(find.text('SPLASH'), findsNothing);
+    for (final label in ['MODE 02', 'MODE 03', 'MODE 01']) {
+      await tester.tap(find.text(label));
+      await pumpFrames(tester, 15);
+    }
+
+    // A second render takes over the first one's window, where it was left.
+    final id = ws.topWindow!.id;
+    ws.dragWindow(id, const Offset(40, 30));
+    ws.endDragWindow(id);
+    final placed = ws.topWindow!.offset;
+    ws.draft.prompt.text = 'Golden solar shockwave vortex';
+    expect(ws.submitPrompt(), isTrue);
+    await tester.pump();
+    expect(renderWindows(), 1, reason: 'the old render stays until the new one lands');
+    await tester.pump(const Duration(seconds: 2));
+    await tester.pump(const Duration(milliseconds: 2400));
+    await pumpFrames(tester, 10);
+
+    final second = ws.nodes.last;
+    expect(second.id, isNot(first.id));
+    expect(second.dna?.paletteName, 'gold+fire');
+    expect(second.dna?.primary, VfxSolver.shockwaveRings);
+    expect(second.dna!.colors, isNot(first.dna!.colors));
+    expect(ws.renderDropdownOpen, isFalse);
+    expect(renderWindows(), 1, reason: 'replaced, not stacked');
+    expect(ws.topWindow!.node!.id, second.id);
+    expect(ws.topWindow!.offset, placed);
+    expect(ws.nodes, contains(first), reason: 'the first render stays on the desktop');
   });
 
   testWidgets('viewport playback bar: pause, scrub, reroll, liquid shape toggle',

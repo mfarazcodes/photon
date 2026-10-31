@@ -149,8 +149,12 @@ class IconThumb extends StatelessWidget {
         ),
       );
     }
+    final dna = node.dna;
     final Widget content = node.kind == NodeKind.comp
         ? const PassStripsThumb()
+        : dna != null
+        // Generated files preview the effect compiled from their prompt.
+        ? SimView(kind: node.sim ?? SimKind.core, dna: dna, thumb: true, hoverReactive: true)
         : TimeBuilder(
             builder: (context, time) => CustomPaint(
               painter: VfxGlyphPainter(

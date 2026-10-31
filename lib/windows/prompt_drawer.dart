@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../painters/glyph_painters.dart';
+import '../services/engine_socket.dart';
 import '../state/workspace_controller.dart';
 import '../theme/photon_theme.dart';
 import '../widgets/overlay_shell.dart';
@@ -78,10 +79,17 @@ class _DrawerWindowState extends State<_DrawerWindow> with SingleTickerProviderS
       title: 'PROMPT STUDIO',
       rim: false,
       onClose: ws.closeOverlay,
-      footer: WindowFooter(
-        caption: 'Ready to render on Cloud GPU.',
-        action: 'Launch Render Job',
-        onAction: ws.submitPrompt,
+      footer: ValueListenableBuilder<EngineConnection>(
+        valueListenable: ws.engine.state,
+        builder: (context, state, _) => WindowFooter(
+          caption: switch (state) {
+            EngineConnection.connected => 'Ready to render on Photon Engine.',
+            EngineConnection.connecting => 'Connecting to Photon Engine…',
+            EngineConnection.disconnected => 'Engine offline: renders run as a local preview.',
+          },
+          action: 'Launch Render Job',
+          onAction: ws.submitPrompt,
+        ),
       ),
       child: ListView(
         padding: const EdgeInsets.fromLTRB(24, 24, 24, 24),

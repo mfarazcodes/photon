@@ -26,7 +26,11 @@ import 'windows/window_layer.dart';
 void main() => runApp(const PhotonApp());
 
 class PhotonApp extends StatelessWidget {
-  const PhotonApp({super.key});
+  const PhotonApp({super.key, this.connectEngine = true});
+
+  /// Whether to connect to the Python render server. Widget tests pass false:
+  /// flutter_test mocks all HTTP, and a WebSocket handshake can't survive it.
+  final bool connectEngine;
 
   @override
   Widget build(BuildContext context) {
@@ -34,20 +38,22 @@ class PhotonApp extends StatelessWidget {
       debugShowCheckedModeBanner: false,
       title: 'Photon VFX Studio',
       theme: photonTheme(),
-      home: const PhotonStudio(),
+      home: PhotonStudio(connectEngine: connectEngine),
     );
   }
 }
 
 class PhotonStudio extends StatefulWidget {
-  const PhotonStudio({super.key});
+  const PhotonStudio({super.key, this.connectEngine = true});
+
+  final bool connectEngine;
 
   @override
   State<PhotonStudio> createState() => _PhotonStudioState();
 }
 
 class _PhotonStudioState extends State<PhotonStudio> {
-  final WorkspaceController _ws = WorkspaceController();
+  late final WorkspaceController _ws = WorkspaceController(connectEngine: widget.connectEngine);
 
   @override
   void dispose() {

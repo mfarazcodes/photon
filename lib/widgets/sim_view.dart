@@ -4,12 +4,18 @@ import 'package:flutter/widgets.dart';
 
 import '../models/desktop_node.dart';
 import '../models/sim_params.dart';
+import '../models/vfx_dna.dart';
+import '../painters/generative_vfx_painter.dart';
 import '../painters/vfx_sims.dart';
 
 final SimParams _defaultParams = SimParams();
 
 /// Hosts a [VfxSim] with its own ticker. When [interactive] is true the sim
 /// receives hover position, press state and drag deltas.
+///
+/// A non-null [dna] (any effect generated from a prompt) replaces the preset
+/// sim for [kind] with a [GenerativeVfxPainter]; [kind] then only matters as
+/// a fallback. The built-in [SimKind] sims are for the default desktop files.
 ///
 /// [params] are the live shader parameters (re-read every frame, so a slider
 /// change shows immediately; [SimParams.timeScale] scales time and
@@ -19,6 +25,7 @@ class SimView extends StatefulWidget {
   const SimView({
     super.key,
     required this.kind,
+    this.dna,
     this.thumb = false,
     this.interactive = false,
     this.hoverReactive = false,
@@ -28,6 +35,7 @@ class SimView extends StatefulWidget {
   });
 
   final SimKind kind;
+  final VfxDna? dna;
   final bool thumb;
   final bool interactive;
 
@@ -43,7 +51,9 @@ class SimView extends StatefulWidget {
 }
 
 class _SimViewState extends State<SimView> with SingleTickerProviderStateMixin {
-  late VfxSim _sim = createSim(widget.kind, thumb: widget.thumb);
+  // Exactly one of these is set: the preset sim, or the generative painter.
+  VfxSim? _sim;
+  GenerativeVfxPainter? _gen;
   final ValueNotifier<int> _frame = ValueNotifier(0);
   late final Ticker _ticker;
   Duration _last = Duration.zero;
@@ -57,7 +67,36 @@ class _SimViewState extends State<SimView> with SingleTickerProviderStateMixin {
   @override
   void initState() {
     super.initState();
+    _rebuildSim();
     _ticker = createTicker(_onTick)..start();
+  }
+
+  void _rebuildSim() {
+    final dna = widget.dna;
+    if (dna == null) {
+      _gen = null;
+      _sim = createSim(widget.kind, thumb: widget.thumb);
+    } else {
+      _sim = null;
+      _gen = GenerativeVfxPainter(
+        dna: dna,
+        params: _params,
+        playback: widget.playback,
+        repaint: _frame,
+        thumb: widget.thumb,
+      );
+    }
+  }
+
+  void _setPointer(Offset? p) {
+    _sim?.pointer = p;
+    _gen?.mouse =
+        (p == null || _size.isEmpty) ? null : Offset(p.dx / _size.width, p.dy / _size.height);
+  }
+
+  void _setPressed(bool down) {
+    _sim?.pressed = down;
+    _gen?.pressed = down;
   }
 
   void _onTick(Duration elapsed) {
@@ -73,17 +112,29 @@ class _SimViewState extends State<SimView> with SingleTickerProviderStateMixin {
 
     final pb = widget.playback;
     final params = _params;
-    _sim
-      ..params = params
-      ..seed = pb?.seed ?? _sim.seed
-      ..mode = pb?.mode ?? _sim.mode;
-
-    final step = (pb?.playing ?? true) ? dt * widget.speed * params.timeScale : 0.0;
-    _sim.step(step, _size);
+    final sim = _sim, gen = _gen;
+    final speed = widget.speed * params.timeScale * (widget.dna?.speed ?? 1);
+    final step = (pb?.playing ?? true) ? dt * speed : 0.0;
+    if (gen != null) {
+      gen
+        ..params = params
+        ..playback = pb
+        ..step(step, _size);
+    } else if (sim != null) {
+      sim
+        ..params = params
+        ..seed = pb?.seed ?? sim.seed
+        ..mode = pb?.mode ?? sim.mode
+        ..step(step, _size);
+    }
     if (pb != null) {
       pb.advance(step);
       // Keep the sim clock on the timeline so scrubbing re-poses analytic sims.
-      _sim.t = pb.clock;
+      if (gen != null) {
+        gen.time = pb.clock;
+      } else {
+        sim?.t = pb.clock;
+      }
       _fpsFrames++;
       final span = elapsed - _fpsMark;
       if (span >= const Duration(milliseconds: 500)) {
@@ -98,8 +149,10 @@ class _SimViewState extends State<SimView> with SingleTickerProviderStateMixin {
   @override
   void didUpdateWidget(SimView old) {
     super.didUpdateWidget(old);
-    if (old.kind != widget.kind || old.thumb != widget.thumb) {
-      _sim = createSim(widget.kind, thumb: widget.thumb);
+    if (old.kind != widget.kind ||
+        old.thumb != widget.thumb ||
+        !identical(old.dna, widget.dna)) {
+      _rebuildSim();
     }
   }
 
@@ -115,33 +168,34 @@ class _SimViewState extends State<SimView> with SingleTickerProviderStateMixin {
     return LayoutBuilder(builder: (context, constraints) {
       _size = constraints.biggest;
       Widget child = CustomPaint(
-        painter: _SimPainter(_sim, _frame, _params, allowDispersion: !widget.thumb),
+        painter: _gen ?? _SimPainter(_sim!, _frame, _params, allowDispersion: !widget.thumb),
         size: Size.infinite,
       );
       if (widget.interactive) {
         child = Listener(
           onPointerDown: (e) {
-            _sim.pressed = true;
-            _sim.pointer = e.localPosition;
+            _setPressed(true);
+            _setPointer(e.localPosition);
           },
-          onPointerUp: (_) => _sim.pressed = false,
-          onPointerCancel: (_) => _sim.pressed = false,
+          onPointerUp: (_) => _setPressed(false),
+          onPointerCancel: (_) => _setPressed(false),
           onPointerMove: (e) {
-            _sim.pointer = e.localPosition;
-            if (_sim.pressed) _sim.drag(e.delta);
+            _setPointer(e.localPosition);
+            final sim = _sim;
+            if (sim != null && sim.pressed) sim.drag(e.delta);
           },
           child: MouseRegion(
             cursor: SystemMouseCursors.precise,
-            onHover: (e) => _sim.pointer = e.localPosition,
-            onExit: (_) => _sim.pointer = null,
+            onHover: (e) => _setPointer(e.localPosition),
+            onExit: (_) => _setPointer(null),
             child: child,
           ),
         );
       }
       if (!widget.interactive && widget.hoverReactive) {
         child = MouseRegion(
-          onHover: (e) => _sim.pointer = e.localPosition,
-          onExit: (_) => _sim.pointer = null,
+          onHover: (e) => _setPointer(e.localPosition),
+          onExit: (_) => _setPointer(null),
           child: child,
         );
       }
@@ -160,20 +214,6 @@ class _SimPainter extends CustomPainter {
 
   final Paint _bg = Paint();
 
-  // One colour-matrix paint per channel; `plus` adds the three passes back
-  // together, so an offset between them shows as chromatic dispersion.
-  static final List<Paint> _channels = [
-    for (var c = 0; c < 3; c++)
-      Paint()
-        ..blendMode = BlendMode.plus
-        ..colorFilter = ColorFilter.matrix([
-          if (c == 0) ...[1, 0, 0, 0, 0] else ...[0, 0, 0, 0, 0],
-          if (c == 1) ...[0, 1, 0, 0, 0] else ...[0, 0, 0, 0, 0],
-          if (c == 2) ...[0, 0, 1, 0, 0] else ...[0, 0, 0, 0, 0],
-          0, 0, 0, 1, 0,
-        ]),
-  ];
-
   void _scene(Canvas canvas, Size size) {
     _bg.color = sim.background;
     canvas.drawRect((Offset.zero & size).inflate(24), _bg);
@@ -189,15 +229,7 @@ class _SimPainter extends CustomPainter {
       _scene(canvas, size);
       return;
     }
-    final shift = d * 7;
-    canvas.saveLayer(rect, Paint());
-    for (var c = 0; c < 3; c++) {
-      canvas.saveLayer(rect, _channels[c]);
-      canvas.translate((c - 1) * shift, 0);
-      _scene(canvas, size);
-      canvas.restore();
-    }
-    canvas.restore();
+    paintChannelSplit(canvas, rect, d * 7, () => _scene(canvas, size));
   }
 
   @override

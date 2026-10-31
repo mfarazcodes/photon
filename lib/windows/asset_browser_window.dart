@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../models/desktop_node.dart';
+import '../models/vfx_dna.dart';
 import '../state/workspace_controller.dart';
 import '../theme/photon_theme.dart';
 import '../widgets/desktop_icon.dart';
@@ -318,7 +319,7 @@ class _PresetGridState extends State<_PresetGrid> {
                   ),
                   child: ClipRRect(
                     borderRadius: BorderRadius.circular(12),
-                    child: SimView(kind: kind, thumb: true, speed: 0.7),
+                    child: SimView(kind: kind, dna: node.dna, thumb: true, speed: 0.7),
                   ),
                 ),
               ),
@@ -416,7 +417,7 @@ class _RenderTable extends StatelessWidget {
                       borderRadius: BorderRadius.circular(12),
                       border: Border.all(color: sel ? PC.blue : Colors.transparent, width: 2),
                     ),
-                    child: _RenderRow(data: data),
+                    child: _RenderRow(data: data, dna: node.dna),
                   ),
                 ),
               );
@@ -429,9 +430,12 @@ class _RenderTable extends StatelessWidget {
 }
 
 class _RenderRow extends StatefulWidget {
-  const _RenderRow({required this.data});
+  const _RenderRow({required this.data, this.dna});
 
   final (String, String, String, String, SimKind) data;
+
+  /// Set for rows backed by a generated render.
+  final VfxDna? dna;
 
   @override
   State<_RenderRow> createState() => _RenderRowState();
@@ -461,7 +465,11 @@ class _RenderRowState extends State<_RenderRow> {
               child: Row(
                 children: [
                   ClipOval(
-                    child: SizedBox(width: 38, height: 38, child: SimView(kind: kind, thumb: true)),
+                    child: SizedBox(
+                      width: 38,
+                      height: 38,
+                      child: SimView(kind: kind, dna: widget.dna, thumb: true),
+                    ),
                   ),
                   const SizedBox(width: 12),
                   Flexible(

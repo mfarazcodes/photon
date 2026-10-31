@@ -109,7 +109,7 @@ class VfxGlyphPainter extends CustomPainter {
       final specCenter = c + Offset(-radius * 0.4 + hoverProgress * 6, -radius * 0.4 + hoverProgress * 6);
       canvas.drawOval(
         Rect.fromCenter(center: specCenter, width: specRadius * 1.5, height: specRadius * 0.8),
-        Paint()..color = Colors.white.withOpacity(0.5)..maskFilter = const MaskFilter.blur(BlurStyle.normal, 2),
+        Paint()..color = const Color(0x80FFFFFF)..maskFilter = const MaskFilter.blur(BlurStyle.normal, 2),
       );
     } else if (kind == SimKind.swarm) {
       // Particle clusters swirl
