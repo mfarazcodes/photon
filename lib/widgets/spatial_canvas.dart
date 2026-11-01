@@ -1,4 +1,5 @@
 import 'dart:math' as math;
+import 'dart:typed_data';
 import 'dart:ui' show PointMode;
 
 import 'package:flutter/material.dart';
@@ -33,7 +34,7 @@ class SpatialCanvas extends StatelessWidget {
         fit: StackFit.expand,
         children: [
           RepaintBoundary(
-            child: CustomPaint(painter: _DotMatrixPainter(color: c.ghost.withValues(alpha: 0.4))),
+            child: _DotMatrixSubstrate(color: c.ghost.withValues(alpha: 0.4)),
           ),
           SafeArea(
             child: LayoutBuilder(
@@ -121,24 +122,71 @@ class SpatialCanvas extends StatelessWidget {
   }
 }
 
+/// Interleaved `x, y` coordinates of the dot grid, rebuilt only when the size
+/// changes. Repaints (theme change, route transitions) reuse the same list
+/// instead of allocating thousands of [Offset]s each time.
+class DotGridCache {
+  static const double pitch = 16;
+
+  Size? _size;
+  Float32List? _coords;
+
+  Float32List coordsFor(Size size) {
+    final cached = _coords;
+    if (cached != null && _size == size) return cached;
+    final coords = Float32List(_cells(size.width) * _cells(size.height) * 2);
+    var i = 0;
+    for (var y = pitch / 2; y < size.height; y += pitch) {
+      for (var x = pitch / 2; x < size.width; x += pitch) {
+        coords[i++] = x;
+        coords[i++] = y;
+      }
+    }
+    _size = size;
+    return _coords = coords;
+  }
+
+  /// Dots along one axis; counted with the same loop that fills the list.
+  static int _cells(double extent) {
+    var n = 0;
+    for (var p = pitch / 2; p < extent; p += pitch) {
+      n++;
+    }
+    return n;
+  }
+}
+
 /// Dot-matrix substrate behind the floating windows (16px pitch).
-class _DotMatrixPainter extends CustomPainter {
-  const _DotMatrixPainter({required this.color});
+class _DotMatrixSubstrate extends StatefulWidget {
+  const _DotMatrixSubstrate({required this.color});
 
   final Color color;
 
   @override
+  State<_DotMatrixSubstrate> createState() => _DotMatrixSubstrateState();
+}
+
+class _DotMatrixSubstrateState extends State<_DotMatrixSubstrate> {
+  final DotGridCache _cache = DotGridCache();
+
+  @override
+  Widget build(BuildContext context) =>
+      CustomPaint(painter: _DotMatrixPainter(color: widget.color, cache: _cache));
+}
+
+class _DotMatrixPainter extends CustomPainter {
+  const _DotMatrixPainter({required this.color, required this.cache});
+
+  final Color color;
+  final DotGridCache cache;
+
+  @override
   void paint(Canvas canvas, Size size) {
-    const pitch = 16.0;
     final paint = Paint()
       ..color = color
       ..strokeWidth = 1.2
       ..strokeCap = StrokeCap.round;
-    final points = <Offset>[
-      for (var y = pitch / 2; y < size.height; y += pitch)
-        for (var x = pitch / 2; x < size.width; x += pitch) Offset(x, y),
-    ];
-    canvas.drawPoints(PointMode.points, points, paint);
+    canvas.drawRawPoints(PointMode.points, cache.coordsFor(size), paint);
   }
 
   @override

@@ -1,0 +1,293 @@
+import 'dart:typed_data';
+import 'dart:ui' show PointMode;
+
+import 'package:flutter/material.dart';
+
+import '../state/studio_controller.dart';
+import '../theme/photon_theme.dart';
+
+/// Interactive before/after wipe: raw Monte Carlo samples on the left of the
+/// curtain, the denoised render on the right.
+///
+/// [render] is the clean render surface (Pass B). Pass A is the engine's
+/// `raw_frame` when one has arrived; otherwise it is [render] under synthetic
+/// path-tracing noise that fades as the render converges.
+///
+/// [imageWrapper] wraps only the image layers (e.g. false color) so the
+/// curtain and its badges are never tinted.
+class AbRenderWipe extends StatelessWidget {
+  const AbRenderWipe({
+    super.key,
+    required this.studio,
+    required this.render,
+    this.imageWrapper,
+    this.showCurtain = true,
+    this.badgeTop = 10,
+  });
+
+  final StudioController studio;
+  final Widget render;
+  final Widget Function(Widget passes)? imageWrapper;
+
+  /// False for the loupe's magnified copy, which must not carry the handle.
+  final bool showCurtain;
+  final double badgeTop;
+
+  /// Width of the draggable zone around the divider.
+  static const double hitZoneWidth = 28;
+  static const Key curtainKey = ValueKey('ab-curtain');
+
+  @override
+  Widget build(BuildContext context) {
+    return LayoutBuilder(
+      builder: (context, box) {
+        final w = box.maxWidth;
+        return ValueListenableBuilder<double>(
+          valueListenable: studio.abSplit,
+          builder: (context, split, _) {
+            final splitX = w * split;
+            final passes = Stack(
+              fit: StackFit.expand,
+              children: [
+                render,
+                ClipRect(
+                  clipper: _LeftOfClipper(splitX),
+                  child: _RawPass(studio: studio, render: render),
+                ),
+              ],
+            );
+            return Stack(
+              fit: StackFit.expand,
+              children: [
+                imageWrapper?.call(passes) ?? passes,
+                if (showCurtain) ..._curtain(context, w: w, split: split, splitX: splitX),
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
+
+  List<Widget> _curtain(
+    BuildContext context, {
+    required double w,
+    required double split,
+    required double splitX,
+  }) {
+    final t = context.photon;
+    final violet = t.colors.violet;
+    final label = t.text.mono(size: 8, weight: FontWeight.w600, height: 1.2, color: Colors.white);
+    const halo = hitZoneWidth / 2;
+
+    Widget badge(String text) => Container(
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
+      decoration: BoxDecoration(
+        color: const Color(0xFF0E0E10).withValues(alpha: 0.74),
+        borderRadius: BorderRadius.circular(PhotonRadius.pill),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.1)),
+      ),
+      child: Text(text, style: label),
+    );
+
+    return [
+      // 1.5px divider with a caustic glow.
+      Positioned(
+        left: splitX - 0.75,
+        top: 0,
+        bottom: 0,
+        width: 1.5,
+        child: IgnorePointer(
+          child: DecoratedBox(
+            decoration: BoxDecoration(
+              color: violet,
+              boxShadow: [BoxShadow(color: violet.withValues(alpha: 0.55), blurRadius: 8)],
+            ),
+          ),
+        ),
+      ),
+      // Badges sit just off the divider; they drop out when there is no room.
+      if (splitX > 84)
+        Positioned(
+          right: w - splitX + 10,
+          top: badgeTop,
+          child: IgnorePointer(child: badge('RAW PT')),
+        ),
+      if (w - splitX > 120)
+        Positioned(
+          left: splitX + 10,
+          top: badgeTop,
+          child: IgnorePointer(child: badge('OIDN DENOISED')),
+        ),
+      // Full-height hit zone: dragging it moves the curtain, never the camera.
+      Positioned(
+        left: splitX - halo,
+        top: 0,
+        bottom: 0,
+        width: hitZoneWidth,
+        child: Semantics(
+          slider: true,
+          label: 'A/B render wipe',
+          value: '${(split * 100).round()} percent',
+          increasedValue: '${((split + 0.05).clamp(0.05, 0.95) * 100).round()} percent',
+          decreasedValue: '${((split - 0.05).clamp(0.05, 0.95) * 100).round()} percent',
+          onIncrease: () => studio.setAbSplit(split + 0.05),
+          onDecrease: () => studio.setAbSplit(split - 0.05),
+          child: MouseRegion(
+            cursor: SystemMouseCursors.resizeColumn,
+            child: GestureDetector(
+              key: curtainKey,
+              behavior: HitTestBehavior.opaque,
+              onHorizontalDragUpdate: (d) => studio.setAbSplit(studio.abSplit.value + d.delta.dx / w),
+              onDoubleTap: studio.resetAbSplit,
+              child: Center(child: _Handle(violet: violet)),
+            ),
+          ),
+        ),
+      ),
+    ];
+  }
+}
+
+class _LeftOfClipper extends CustomClipper<Rect> {
+  const _LeftOfClipper(this.x);
+
+  final double x;
+
+  @override
+  Rect getClip(Size size) => Rect.fromLTRB(0, 0, x, size.height);
+
+  @override
+  bool shouldReclip(_LeftOfClipper old) => old.x != x;
+}
+
+/// 24x36 Matte Carbon pill with micro-arrows.
+class _Handle extends StatelessWidget {
+  const _Handle({required this.violet});
+
+  final Color violet;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = context.photon;
+    return Container(
+      width: 24,
+      height: 36,
+      alignment: Alignment.center,
+      decoration: BoxDecoration(
+        color: const Color(0xFF0E0E10),
+        borderRadius: BorderRadius.circular(PhotonRadius.pill),
+        border: Border.all(color: violet),
+        boxShadow: [BoxShadow(color: violet.withValues(alpha: 0.35), blurRadius: 10, spreadRadius: -2)],
+      ),
+      child: Text(
+        '◄|►',
+        maxLines: 1,
+        softWrap: false,
+        style: t.text.mono(size: 7, weight: FontWeight.w700, height: 1, color: Colors.white),
+      ),
+    );
+  }
+}
+
+/// Pass A: the engine's raw frame, or the render under synthetic noise.
+class _RawPass extends StatelessWidget {
+  const _RawPass({required this.studio, required this.render});
+
+  final StudioController studio;
+  final Widget render;
+
+  @override
+  Widget build(BuildContext context) {
+    Widget synthetic() => Semantics(
+      label: 'Raw Monte Carlo pass (synthetic noise)',
+      child: Stack(
+        fit: StackFit.expand,
+        children: [
+          render,
+          IgnorePointer(
+            child: CustomPaint(painter: MonteCarloNoisePainter(studio: studio), size: Size.infinite),
+          ),
+        ],
+      ),
+    );
+
+    return ValueListenableBuilder<Uint8List?>(
+      valueListenable: studio.rawFrame,
+      builder: (context, raw, _) {
+        if (raw == null) return synthetic();
+        return Image.memory(
+          raw,
+          gaplessPlayback: true,
+          fit: BoxFit.cover,
+          filterQuality: FilterQuality.medium,
+          semanticLabel: 'Raw Monte Carlo pass',
+          errorBuilder: (_, _, _) => synthetic(),
+        );
+      },
+    );
+  }
+}
+
+/// Deterministic speckle and fireflies that stand in for unfiltered Monte
+/// Carlo samples. The pattern is a pure function of the sample count, so it
+/// holds still once the render converges, and it fades as convergence rises.
+class MonteCarloNoisePainter extends CustomPainter {
+  MonteCarloNoisePainter({required this.studio}) : super(repaint: studio.samples);
+
+  final StudioController studio;
+
+  /// Speckle tint layers: color and base opacity.
+  static const _layers = <(Color, double)>[
+    (Color(0xFFFFFFFF), 0.55),
+    (Color(0xFFFFB27A), 0.50),
+    (Color(0xFFFF4FD8), 0.45),
+    (Color(0xFF4FE0FF), 0.45),
+  ];
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (size.isEmpty) return;
+    final strength = 1.0 - studio.convergence * 0.75;
+    final total = (size.width * size.height / 90).clamp(0, 6000).round();
+    final perLayer = total ~/ _layers.length;
+    // Re-roll every few samples so accumulation reads as shimmer.
+    var state = ((studio.samples.value ~/ 3) * 0x9E3779B1 + 0x85EBCA6B) & 0xFFFFFFFF;
+    double next() {
+      state = (state * 1664525 + 1013904223) & 0xFFFFFFFF;
+      return state / 4294967296.0;
+    }
+
+    Float32List scatter(int count) {
+      final points = Float32List(count * 2);
+      for (var i = 0; i < points.length; i += 2) {
+        points[i] = next() * size.width;
+        points[i + 1] = next() * size.height;
+      }
+      return points;
+    }
+
+    for (final (color, alpha) in _layers) {
+      canvas.drawRawPoints(
+        PointMode.points,
+        scatter(perLayer),
+        Paint()
+          ..color = color.withValues(alpha: alpha * strength)
+          ..strokeWidth = 1
+          ..strokeCap = StrokeCap.square,
+      );
+    }
+    // Sparse bright fireflies.
+    canvas.drawRawPoints(
+      PointMode.points,
+      scatter((total / 60).round()),
+      Paint()
+        ..color = Colors.white.withValues(alpha: 0.9 * strength)
+        ..strokeWidth = 2.5
+        ..strokeCap = StrokeCap.square,
+    );
+  }
+
+  @override
+  bool shouldRepaint(MonteCarloNoisePainter old) => old.studio != studio;
+}

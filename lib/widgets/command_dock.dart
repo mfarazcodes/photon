@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -9,6 +11,10 @@ import 'photon_primitives.dart';
 
 /// Bottom command dock: "P." monogram, scene prompt field, quick-action pills
 /// and the trigger that dispatches the prompt JSON over the WebSocket.
+///
+/// Items swell toward the pointer (Gaussian proximity magnification), the pills
+/// share one continuous hit strip, and a light beam circles the dock while the
+/// prompt has focus.
 ///
 /// On wide windows everything sits on one bar; below [_inlineWidth] the pills
 /// move to their own strip above the bar (companion layout).
@@ -25,6 +31,10 @@ class _CommandDockState extends State<CommandDock> {
   final TextEditingController _text = TextEditingController();
   final FocusNode _focus = FocusNode(debugLabel: 'scene-prompt');
 
+  /// Pointer x in global coordinates, or null when it is off the dock. Items
+  /// listen to this directly, so hovering never rebuilds the dock itself.
+  final ValueNotifier<double?> _hoverX = ValueNotifier(null);
+
   static const _presets = <String, String>{
     'bsdf': 'Brushed gold BSDF, roughness 0.35, soft studio key light',
     'archive': 'Load archived scene: ',
@@ -35,19 +45,31 @@ class _CommandDockState extends State<CommandDock> {
   void initState() {
     super.initState();
     HardwareKeyboard.instance.addHandler(_onKey);
+    _focus.addListener(_onFocusChanged);
   }
 
   @override
   void dispose() {
     HardwareKeyboard.instance.removeHandler(_onKey);
+    _focus.removeListener(_onFocusChanged);
+    _hoverX.dispose();
     _text.dispose();
     _focus.dispose();
     super.dispose();
   }
 
-  /// Ctrl+K (⌘K on macOS) jumps to the prompt from anywhere in the app.
+  void _onFocusChanged() => setState(() {});
+
+  /// Ctrl+K (⌘K on macOS) jumps to the prompt from anywhere in the app, and
+  /// Escape lets go of it so single-key shortcuts are not trapped in the field.
   bool _onKey(KeyEvent event) {
-    if (event is! KeyDownEvent || event.logicalKey != LogicalKeyboardKey.keyK) return false;
+    if (event is! KeyDownEvent) return false;
+    if (event.logicalKey == LogicalKeyboardKey.escape) {
+      if (!_focus.hasFocus) return false;
+      _focus.unfocus();
+      return true;
+    }
+    if (event.logicalKey != LogicalKeyboardKey.keyK) return false;
     final kb = HardwareKeyboard.instance;
     if (!(kb.isControlPressed || kb.isMetaPressed)) return false;
     _focus.requestFocus();
@@ -72,20 +94,25 @@ class _CommandDockState extends State<CommandDock> {
     final studio = StudioScope.of(context);
     final c = context.photon.colors;
 
+    Widget swell(Widget child, String id) =>
+        _ProximityScale(key: ValueKey('proximity-$id'), hoverX: _hoverX, child: child);
+
     final pills = [
-      _QuickPill(emoji: '⚡', label: 'RENDER PROMPT', onTap: _send),
-      _QuickPill(emoji: '🎛️', label: 'BSDF SHADERS', onTap: () => _applyPreset('bsdf')),
-      _QuickPill(emoji: '📁', label: 'SCENE ARCHIVE', onTap: () => _applyPreset('archive')),
-      _QuickPill(emoji: '🎥', label: 'CAMERA OPTICS', onTap: () => _applyPreset('camera')),
+      swell(_QuickPill(emoji: '⚡', label: 'RENDER PROMPT', onTap: _send), 'render'),
+      swell(_QuickPill(emoji: '🎛️', label: 'BSDF SHADERS', onTap: () => _applyPreset('bsdf')), 'bsdf'),
+      swell(_QuickPill(emoji: '📁', label: 'SCENE ARCHIVE', onTap: () => _applyPreset('archive')), 'archive'),
+      swell(_QuickPill(emoji: '🎥', label: 'CAMERA OPTICS', onTap: () => _applyPreset('camera')), 'camera'),
     ];
 
     return LayoutBuilder(
       builder: (context, box) {
         final inline = box.maxWidth >= _inlineWidth;
         final bar = _DockSurface(
+          hoverX: _hoverX,
+          beam: _focus.hasFocus,
           child: Row(
             children: [
-              const _Monogram(),
+              swell(const _Monogram(), 'monogram'),
               const SizedBox(width: PhotonSpace.md),
               Expanded(
                 child: _PromptField(
@@ -96,13 +123,15 @@ class _CommandDockState extends State<CommandDock> {
                 ),
               ),
               if (inline) ...[
-                const SizedBox(width: PhotonSpace.md),
-                for (final p in pills) ...[p, const SizedBox(width: PhotonSpace.sm)],
-                _LinkButton(link: studio.link),
+                const SizedBox(width: PhotonSpace.sm),
+                // No spacers: each pill carries its own padding as hit area.
+                ...pills,
+                const SizedBox(width: PhotonSpace.sm),
+                swell(_LinkButton(link: studio.link), 'link'),
                 const SizedBox(width: PhotonSpace.sm),
               ] else
                 const SizedBox(width: PhotonSpace.sm),
-              _SendButton(onPressed: _send, accent: c.violet),
+              swell(_SendButton(onPressed: _send, accent: c.violet), 'send'),
             ],
           ),
         );
@@ -112,13 +141,10 @@ class _CommandDockState extends State<CommandDock> {
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             _DockSurface(
+              hoverX: _hoverX,
               child: SingleChildScrollView(
                 scrollDirection: Axis.horizontal,
-                child: Row(
-                  children: [
-                    for (final p in pills) ...[p, if (p != pills.last) const SizedBox(width: PhotonSpace.sm)],
-                  ],
-                ),
+                child: Row(children: pills),
               ),
             ),
             const SizedBox(height: PhotonSpace.sm),
@@ -130,33 +156,172 @@ class _CommandDockState extends State<CommandDock> {
   }
 }
 
-/// Matte Carbon dock surface with a hairline highlight and deep ambient shadow.
-class _DockSurface extends StatelessWidget {
-  const _DockSurface({required this.child});
+/// Swells and lifts [child] by its horizontal distance to the pointer:
+/// weight `exp(-(d / 72)^2)`, scale 1 to 1.16, lift up to 3.5px.
+class _ProximityScale extends StatelessWidget {
+  const _ProximityScale({super.key, required this.hoverX, required this.child});
+
+  final ValueListenable<double?> hoverX;
+  final Widget child;
+
+  static const double sigma = 72;
+  static const double extraScale = 0.16;
+  static const double lift = 3.5;
+
+  double _weight(BuildContext context, double pointerX) {
+    final box = context.findRenderObject();
+    if (box is! RenderBox || !box.attached || !box.hasSize) return 0;
+    final centerX = box.localToGlobal(box.size.center(Offset.zero)).dx;
+    final d = (pointerX - centerX) / sigma;
+    return math.exp(-d * d);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return ValueListenableBuilder<double?>(
+      valueListenable: hoverX,
+      child: child,
+      builder: (context, x, child) {
+        final target = x == null ? 0.0 : _weight(context, x);
+        return TweenAnimationBuilder<double>(
+          tween: Tween<double>(end: target),
+          duration: const Duration(milliseconds: 70),
+          curve: Curves.easeOut,
+          child: child,
+          builder: (context, w, child) => Transform.translate(
+            offset: Offset(0, -lift * w),
+            child: Transform.scale(scale: 1 + extraScale * w, child: child),
+          ),
+        );
+      },
+    );
+  }
+}
+
+/// Matte Carbon dock surface with a hairline highlight and deep ambient
+/// shadow. While [beam] is set, a violet-to-rose light travels its perimeter.
+class _DockSurface extends StatefulWidget {
+  const _DockSurface({required this.child, required this.hoverX, this.beam = false});
 
   final Widget child;
+  final ValueNotifier<double?> hoverX;
+  final bool beam;
+
+  @override
+  State<_DockSurface> createState() => _DockSurfaceState();
+}
+
+class _DockSurfaceState extends State<_DockSurface> with SingleTickerProviderStateMixin {
+  late final AnimationController _orbit = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 2800),
+  );
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.beam) _orbit.repeat();
+  }
+
+  @override
+  void didUpdateWidget(_DockSurface old) {
+    super.didUpdateWidget(old);
+    if (widget.beam && !_orbit.isAnimating) {
+      _orbit.repeat();
+    } else if (!widget.beam && _orbit.isAnimating) {
+      _orbit.stop();
+    }
+  }
+
+  @override
+  void dispose() {
+    _orbit.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
     final c = context.photon.colors;
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: PhotonSpace.md, vertical: PhotonSpace.sm),
-      decoration: BoxDecoration(
-        color: c.dock,
-        borderRadius: BorderRadius.circular(PhotonRadius.window + 4),
-        border: Border.all(color: Colors.white.withValues(alpha: 0.1)),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: 0.35),
-            blurRadius: 42,
-            spreadRadius: -12,
-            offset: const Offset(0, 20),
+    const radius = PhotonRadius.window + 4;
+    return MouseRegion(
+      onHover: (e) => widget.hoverX.value = e.position.dx,
+      onExit: (_) => widget.hoverX.value = null,
+      child: Stack(
+        // Hand the parent's tight width straight to the surface.
+        fit: StackFit.passthrough,
+        children: [
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: PhotonSpace.md, vertical: PhotonSpace.sm),
+            decoration: BoxDecoration(
+              color: c.dock,
+              borderRadius: BorderRadius.circular(radius),
+              border: Border.all(color: Colors.white.withValues(alpha: 0.1)),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: 0.35),
+                  blurRadius: 42,
+                  spreadRadius: -12,
+                  offset: const Offset(0, 20),
+                ),
+              ],
+            ),
+            child: widget.child,
           ),
+          if (widget.beam)
+            Positioned.fill(
+              child: IgnorePointer(
+                child: CustomPaint(
+                  key: const ValueKey('dock-beam'),
+                  painter: _BeamBorderPainter(
+                    progress: _orbit,
+                    radius: radius,
+                    violet: c.violetInk,
+                    rose: c.rose,
+                  ),
+                ),
+              ),
+            ),
         ],
       ),
-      child: child,
     );
   }
+}
+
+/// 1px perimeter stroke lit by a rotating sweep gradient.
+class _BeamBorderPainter extends CustomPainter {
+  _BeamBorderPainter({
+    required this.progress,
+    required this.radius,
+    required this.violet,
+    required this.rose,
+  }) : super(repaint: progress);
+
+  final Animation<double> progress;
+  final double radius;
+  final Color violet;
+  final Color rose;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final rect = Offset.zero & size;
+    final clear = violet.withValues(alpha: 0);
+    final shader = SweepGradient(
+      colors: [clear, violet, rose, clear, clear],
+      stops: const [0.0, 0.1, 0.2, 0.32, 1.0],
+      transform: GradientRotation(progress.value * 2 * math.pi),
+    ).createShader(rect);
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(rect.deflate(0.5), Radius.circular(radius)),
+      Paint()
+        ..shader = shader
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.2,
+    );
+  }
+
+  @override
+  bool shouldRepaint(_BeamBorderPainter old) =>
+      old.violet != violet || old.rose != rose || old.radius != radius;
 }
 
 class _Monogram extends StatelessWidget {
@@ -266,12 +431,17 @@ class _PromptField extends StatelessWidget {
   }
 }
 
+/// Quick-action pill. The visible capsule is inset inside a taller, wider hit
+/// area, so neighbouring pills touch and there is no dead space between them.
 class _QuickPill extends StatelessWidget {
   const _QuickPill({required this.emoji, required this.label, required this.onTap});
 
   final String emoji;
   final String label;
   final VoidCallback onTap;
+
+  /// Half the visual gap between pills; each pill owns this much on both sides.
+  static const double hitPadding = PhotonSpace.xs;
 
   @override
   Widget build(BuildContext context) {
@@ -282,26 +452,33 @@ class _QuickPill extends StatelessWidget {
       child: HoverBuilder(
         cursor: SystemMouseCursors.click,
         builder: (context, hovered) => GestureDetector(
+          key: ValueKey('pill-hit-$label'),
           behavior: HitTestBehavior.opaque,
           onTap: onTap,
-          child: AnimatedContainer(
-            duration: const Duration(milliseconds: 120),
-            height: 28,
-            padding: const EdgeInsets.symmetric(horizontal: PhotonSpace.md),
-            decoration: BoxDecoration(
-              color: Colors.white.withValues(alpha: hovered ? 0.2 : 0.12),
-              borderRadius: BorderRadius.circular(PhotonRadius.pill),
-            ),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text(emoji, style: const TextStyle(fontSize: 11, height: 1.2)),
-                const SizedBox(width: PhotonSpace.sm - 2),
-                Text(
-                  label,
-                  style: t.text.labelCaps.copyWith(color: t.colors.onDock, fontWeight: FontWeight.w600),
-                ),
-              ],
+          child: Container(
+            height: 36,
+            padding: const EdgeInsets.symmetric(horizontal: hitPadding),
+            alignment: Alignment.center,
+            child: AnimatedContainer(
+              duration: const Duration(milliseconds: 120),
+              height: 28,
+              padding: const EdgeInsets.symmetric(horizontal: PhotonSpace.md),
+              alignment: Alignment.center,
+              decoration: BoxDecoration(
+                color: Colors.white.withValues(alpha: hovered ? 0.2 : 0.12),
+                borderRadius: BorderRadius.circular(PhotonRadius.pill),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(emoji, style: const TextStyle(fontSize: 11, height: 1.2)),
+                  const SizedBox(width: PhotonSpace.sm - 2),
+                  Text(
+                    label,
+                    style: t.text.labelCaps.copyWith(color: t.colors.onDock, fontWeight: FontWeight.w600),
+                  ),
+                ],
+              ),
             ),
           ),
         ),

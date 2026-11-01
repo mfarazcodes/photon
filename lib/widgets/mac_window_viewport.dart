@@ -1,18 +1,22 @@
 import 'dart:math' as math;
-import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../services/render_socket.dart';
 import '../state/studio_controller.dart';
 import '../theme/photon_theme.dart';
+import 'ab_render_wipe.dart';
 import 'photon_primitives.dart';
+import 'pixel_loupe_probe.dart';
+import 'rauno_tick_scrubber.dart';
 
 /// The centerpiece floating window: `SCENE_VIEWPORT.rt`.
 ///
 /// Shows engine frames when the WebSocket is streaming and the bundled Stitch
 /// caustic render otherwise. Dragging across it orbits the camera; dropping a
-/// `Draggable<String>` asset on it loads that asset.
+/// `Draggable<String>` asset on it loads that asset. The titlebar carries the
+/// viewport tools: A/B wipe, pixel loupe, false color and the camera minimap.
 class MacWindowViewport extends StatefulWidget {
   const MacWindowViewport({super.key, this.stageAspectRatio});
 
@@ -21,6 +25,10 @@ class MacWindowViewport extends StatefulWidget {
   final double? stageAspectRatio;
 
   static const String fallbackAsset = 'assets/images/caustic_wave.jpg';
+
+  /// Below this window width the tools move from the titlebar to a strip
+  /// under it, so they never collide with the centered title.
+  static const double compactWidth = 800;
 
   @override
   State<MacWindowViewport> createState() => _MacWindowViewportState();
@@ -49,6 +57,7 @@ class _MacWindowViewportState extends State<MacWindowViewport> with SingleTicker
       onAcceptWithDetails: (details) => studio.loadAsset(details.data),
       builder: (context, candidate, rejected) {
         final dropping = candidate.isNotEmpty;
+        final stage = _Stage(studio: studio, spin: _spin, dropAsset: dropping ? candidate.first : null);
         return AnimatedContainer(
           duration: const Duration(milliseconds: 140),
           decoration: BoxDecoration(
@@ -58,26 +67,123 @@ class _MacWindowViewportState extends State<MacWindowViewport> with SingleTicker
             boxShadow: dropping ? t.causticGlow : t.level2,
           ),
           clipBehavior: Clip.antiAlias,
-          child: Column(
-            mainAxisSize: widget.stageAspectRatio == null ? MainAxisSize.max : MainAxisSize.min,
-            children: [
-              MacTitlebar(
-                title: 'SCENE_VIEWPORT.rt',
-                titleSuffix: _LinkChip(link: studio.link),
-              ),
-              if (widget.stageAspectRatio != null)
-                AspectRatio(
-                  aspectRatio: widget.stageAspectRatio!,
-                  child: _Stage(studio: studio, spin: _spin, dropAsset: dropping ? candidate.first : null),
-                )
-              else
-                Expanded(
-                  child: _Stage(studio: studio, spin: _spin, dropAsset: dropping ? candidate.first : null),
-                ),
-            ],
+          child: LayoutBuilder(
+            builder: (context, box) {
+              final compact = box.maxWidth < MacWindowViewport.compactWidth;
+              return Column(
+                mainAxisSize: widget.stageAspectRatio == null ? MainAxisSize.max : MainAxisSize.min,
+                children: [
+                  MacTitlebar(
+                    title: 'SCENE_VIEWPORT.rt',
+                    titleSuffix: _LinkChip(link: studio.link),
+                    trailing: compact ? null : _ViewportTools(studio: studio),
+                  ),
+                  if (compact) _ToolStrip(studio: studio),
+                  if (widget.stageAspectRatio != null)
+                    AspectRatio(aspectRatio: widget.stageAspectRatio!, child: stage)
+                  else
+                    Expanded(child: stage),
+                ],
+              );
+            },
           ),
         );
       },
+    );
+  }
+}
+
+/// A/B WIPE, LOUPE and FALSE COLOR toggles plus the camera minimap.
+class _ViewportTools extends StatelessWidget {
+  const _ViewportTools({required this.studio});
+
+  final StudioController studio;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        _ToolToggle(
+          label: 'A/B WIPE',
+          selected: studio.abWipeEnabled,
+          onTap: () => studio.setAbWipeEnabled(!studio.abWipeEnabled),
+        ),
+        _ToolToggle(label: 'LOUPE', selected: studio.loupeEnabled, onTap: studio.toggleLoupe),
+        _ToolToggle(label: 'FALSE COLOR', selected: studio.falseColorEnabled, onTap: studio.toggleFalseColor),
+        const SizedBox(width: PhotonSpace.sm),
+        RaunoViewportMinimap(studio: studio),
+      ],
+    );
+  }
+}
+
+/// The same tools on their own row, for narrow windows.
+class _ToolStrip extends StatelessWidget {
+  const _ToolStrip({required this.studio});
+
+  final StudioController studio;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.photon.colors;
+    return Container(
+      height: 30,
+      padding: const EdgeInsets.symmetric(horizontal: PhotonSpace.sm),
+      decoration: BoxDecoration(border: Border(bottom: BorderSide(color: c.border))),
+      child: Align(alignment: Alignment.centerRight, child: _ViewportTools(studio: studio)),
+    );
+  }
+}
+
+/// Titlebar toggle. Its hit area is the full bar height and the toggles abut,
+/// so there is no dead space between them.
+class _ToolToggle extends StatelessWidget {
+  const _ToolToggle({required this.label, required this.selected, required this.onTap});
+
+  final String label;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = context.photon;
+    final c = t.colors;
+    return Semantics(
+      button: true,
+      toggled: selected,
+      label: label,
+      child: HoverBuilder(
+        cursor: SystemMouseCursors.click,
+        builder: (context, hovered) => GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTap: onTap,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 2, vertical: 6),
+            child: AnimatedContainer(
+              duration: const Duration(milliseconds: 120),
+              height: 18,
+              padding: const EdgeInsets.symmetric(horizontal: PhotonSpace.sm),
+              alignment: Alignment.center,
+              decoration: BoxDecoration(
+                color: selected ? c.violet.withValues(alpha: 0.12) : (hovered ? c.hoverFill : Colors.transparent),
+                borderRadius: BorderRadius.circular(PhotonRadius.pill),
+                border: Border.all(
+                  color: selected
+                      ? c.violet
+                      : hovered
+                      ? c.violet.withValues(alpha: 0.4)
+                      : c.border,
+                ),
+              ),
+              child: Text(
+                label,
+                style: t.text.labelCaps.copyWith(fontSize: 8, color: selected ? c.violetInk : c.textMuted),
+              ),
+            ),
+          ),
+        ),
+      ),
     );
   }
 }
@@ -114,7 +220,7 @@ class _LinkChip extends StatelessWidget {
   }
 }
 
-class _Stage extends StatelessWidget {
+class _Stage extends StatefulWidget {
   const _Stage({required this.studio, required this.spin, required this.dropAsset});
 
   final StudioController studio;
@@ -122,45 +228,138 @@ class _Stage extends StatelessWidget {
   final String? dropAsset;
 
   @override
+  State<_Stage> createState() => _StageState();
+}
+
+class _StageState extends State<_Stage> {
+  /// Holding Alt opens the loupe without the toggle.
+  bool _altHeld = HardwareKeyboard.instance.isAltPressed;
+
+  @override
+  void initState() {
+    super.initState();
+    HardwareKeyboard.instance.addHandler(_onKey);
+  }
+
+  @override
+  void dispose() {
+    HardwareKeyboard.instance.removeHandler(_onKey);
+    super.dispose();
+  }
+
+  bool _onKey(KeyEvent event) {
+    final alt = HardwareKeyboard.instance.isAltPressed;
+    if (alt != _altHeld && mounted) setState(() => _altHeld = alt);
+    return false;
+  }
+
+  void _probe(Offset local, Size size) {
+    if (size.isEmpty) return;
+    widget.studio.probePosition.value = Offset(
+      (local.dx / size.width).clamp(0.0, 1.0).toDouble(),
+      (local.dy / size.height).clamp(0.0, 1.0).toDouble(),
+    );
+  }
+
+  /// Everything that is image: the render, the wipe passes, false color.
+  /// The loupe builds a second copy of it, magnified and without the curtain.
+  Widget _imageLayers({required bool magnified, required double badgeTop}) {
+    final studio = widget.studio;
+    final render = _RenderSurface(studio: studio, magnified: magnified);
+    Widget falseColor(Widget child) =>
+        FalseColorShaderWrapper(enabled: studio.falseColorEnabled, child: child);
+    if (!studio.abWipeEnabled) return falseColor(render);
+    return AbRenderWipe(
+      studio: studio,
+      render: render,
+      imageWrapper: falseColor,
+      showCurtain: !magnified,
+      badgeTop: badgeTop,
+    );
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final studio = widget.studio;
     final c = context.photon.colors;
-    return MouseRegion(
-      cursor: SystemMouseCursors.grab,
-      child: GestureDetector(
-        behavior: HitTestBehavior.opaque,
-        onPanUpdate: (d) => studio.orbitBy(d.delta.dx, d.delta.dy),
-        child: ClipRect(
-          child: ColoredBox(
-            color: c.viewportMatte,
-            child: Stack(
-              fit: StackFit.expand,
-              children: [
-                _RenderSurface(studio: studio),
-                IgnorePointer(child: _ProbeCrosshair(studio: studio, spin: spin)),
-                Positioned(left: 10, top: 10, child: IgnorePointer(child: _TopLeftHud(studio: studio))),
-                Positioned(right: 10, top: 10, child: IgnorePointer(child: _TelemetryStrip(studio: studio))),
-                const Positioned(left: 10, bottom: 10, child: IgnorePointer(child: _ResolutionTag())),
-                Positioned(right: 10, bottom: 10, child: IgnorePointer(child: _ConvergenceGauge(studio: studio))),
-                if (dropAsset != null) IgnorePointer(child: _DropOverlay(asset: dropAsset!)),
-              ],
+
+    return LayoutBuilder(
+      builder: (context, box) {
+        final size = box.biggest;
+        final narrow = size.width < 560;
+        final loupeOn = studio.loupeEnabled || _altHeld;
+        final badgeTop = narrow ? 40.0 : 10.0;
+
+        return MouseRegion(
+          cursor: loupeOn ? SystemMouseCursors.precise : SystemMouseCursors.grab,
+          onHover: (e) => _probe(e.localPosition, size),
+          onExit: (_) => studio.probePosition.value = null,
+          child: GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onPanUpdate: (d) {
+              studio.orbitBy(d.delta.dx, d.delta.dy);
+              _probe(d.localPosition, size);
+            },
+            child: ClipRect(
+              child: ColoredBox(
+                color: c.viewportMatte,
+                child: Stack(
+                  fit: StackFit.expand,
+                  children: [
+                    _imageLayers(magnified: false, badgeTop: badgeTop),
+                    IgnorePointer(child: _ProbeCrosshair(studio: studio, spin: widget.spin)),
+                    Positioned(left: 10, top: 10, child: IgnorePointer(child: _TopLeftHud(studio: studio))),
+                    Positioned(right: 10, top: 10, child: IgnorePointer(child: _TelemetryStrip(studio: studio))),
+                    const Positioned(left: 10, bottom: 10, child: IgnorePointer(child: _ResolutionTag())),
+                    Positioned(
+                      right: 10,
+                      bottom: 10,
+                      child: IgnorePointer(child: _ConvergenceGauge(studio: studio)),
+                    ),
+                    if (studio.falseColorEnabled)
+                      Positioned(
+                        left: 0,
+                        right: 0,
+                        // Clear of the corner HUDs when the stage is narrow.
+                        bottom: narrow ? 62 : 10,
+                        child: const IgnorePointer(child: Center(child: IreExposureLegend())),
+                      ),
+                    if (widget.dropAsset != null) IgnorePointer(child: _DropOverlay(asset: widget.dropAsset!)),
+                    if (loupeOn)
+                      PixelLoupeOverlay(
+                        studio: studio,
+                        stageSize: size,
+                        magnifiedContent: SizedBox.fromSize(
+                          size: size,
+                          child: _imageLayers(magnified: true, badgeTop: badgeTop),
+                        ),
+                      ),
+                  ],
+                ),
+              ),
             ),
           ),
-        ),
-      ),
+        );
+      },
     );
   }
 }
 
-/// Engine frame when streaming, bundled caustic render otherwise.
+/// Engine frame when one is held, bundled caustic render otherwise.
+///
+/// Always `BoxFit.cover`, in both studio modes, so toggling Dark Grading never
+/// crops differently or shifts the pixel under the loupe.
 class _RenderSurface extends StatelessWidget {
-  const _RenderSurface({required this.studio});
+  const _RenderSurface({required this.studio, required this.magnified});
 
   final StudioController studio;
 
+  /// The loupe's copy samples without smoothing so pixels stay square.
+  final bool magnified;
+
   @override
   Widget build(BuildContext context) {
-    // Daylight fills the window; grading mode letterboxes on the gray matte.
-    final fit = studio.darkGrading ? BoxFit.contain : BoxFit.cover;
+    final quality = magnified ? FilterQuality.none : FilterQuality.medium;
 
     Widget fallback() => ValueListenableBuilder<Offset>(
       valueListenable: studio.orbit,
@@ -171,8 +370,8 @@ class _RenderSurface extends StatelessWidget {
       ),
       child: Image.asset(
         MacWindowViewport.fallbackAsset,
-        fit: fit,
-        filterQuality: FilterQuality.medium,
+        fit: BoxFit.cover,
+        filterQuality: quality,
         semanticLabel: 'Path-traced refractive liquid glass and chrome caustics',
       ),
     );
@@ -184,8 +383,8 @@ class _RenderSurface extends StatelessWidget {
         return Image.memory(
           bytes,
           gaplessPlayback: true,
-          fit: fit,
-          filterQuality: FilterQuality.medium,
+          fit: BoxFit.cover,
+          filterQuality: quality,
           errorBuilder: (_, _, _) => fallback(),
         );
       },

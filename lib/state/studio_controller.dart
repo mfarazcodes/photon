@@ -146,20 +146,41 @@ const List<SceneAsset> kSceneAssets = [
 /// High-frequency state (incoming frames, sample counter, orbit, FPS) lives in
 /// its own [ValueNotifier] so a 60 fps stream does not rebuild the workspace.
 class StudioController extends ChangeNotifier {
-  StudioController({RenderSocket? socket, bool autoConnect = true})
-    : socket = socket ?? RenderSocket() {
+  /// [now] replaces the wall clock for the idle-frame check (tests).
+  StudioController({
+    RenderSocket? socket,
+    bool autoConnect = true,
+    DateTime Function()? now,
+  }) : socket = socket ?? RenderSocket(),
+       _now = now ?? DateTime.now {
     for (final p in kOpticsParams) {
       _params[p.id] = p.initial;
     }
     this.socket.link.addListener(_onLinkChanged);
-    _messageSub = this.socket.messages.listen(_onMessage);
-    _ticker = Timer.periodic(const Duration(milliseconds: 100), (_) => _tick());
+    _messageSub = this.socket.messages.listen(handleMessage);
+    _ensureTicking();
     if (autoConnect) this.socket.connect();
   }
 
   final RenderSocket socket;
+  final DateTime Function() _now;
   late final StreamSubscription<Map<String, dynamic>> _messageSub;
-  late final Timer _ticker;
+
+  /// Drives convergence and the idle-frame check. It only exists while one of
+  /// those has work left, so a converged, idle studio schedules no timers.
+  Timer? _ticker;
+  bool _disposed = false;
+
+  void _ensureTicking() {
+    if (_disposed) return;
+    _ticker ??= Timer.periodic(const Duration(milliseconds: 100), (_) => _tick());
+  }
+
+  @visibleForTesting
+  bool get tickerActive => _ticker != null;
+
+  @visibleForTesting
+  void debugTick() => _tick();
 
   // --- Theme -----------------------------------------------------------
 
@@ -177,37 +198,41 @@ class StudioController extends ChangeNotifier {
 
   RenderLink get link => socket.link.value;
 
-  /// Latest decoded engine frame, or null when offline or idle.
+  /// Latest decoded engine frame. It stays on screen when the stream goes
+  /// quiet; only a lost link or [resetFrames] clears it.
   final ValueNotifier<Uint8List?> frame = ValueNotifier(null);
 
-  /// Measured arrival rate of engine frames.
+  /// Unfiltered Monte Carlo pass, when the engine sends `raw_frame`.
+  final ValueNotifier<Uint8List?> rawFrame = ValueNotifier(null);
+
+  /// Measured arrival rate of engine frames; decays to 0 when they stop.
   final ValueNotifier<double> fps = ValueNotifier(0);
 
   DateTime? _lastFrameAt;
   static const _idleAfter = Duration(seconds: 3);
 
   void _onLinkChanged() {
-    if (socket.link.value != RenderLink.live) _clearFrame();
+    if (socket.link.value != RenderLink.live) resetFrames();
     notifyListeners();
   }
 
-  void _clearFrame() {
+  /// Drops every held frame so the viewport falls back to the preview render.
+  void resetFrames() {
     frame.value = null;
+    rawFrame.value = null;
     fps.value = 0;
     _lastFrameAt = null;
   }
 
-  void _onMessage(Map<String, dynamic> data) {
-    final raw = data['frame'];
-    if (raw is! String) return;
-    final Uint8List bytes;
-    try {
-      bytes = base64Decode(raw);
-    } on FormatException catch (e) {
-      debugPrint('StudioController: dropped undecodable frame ($e)');
-      return;
-    }
-    final now = DateTime.now();
+  /// Applies one decoded engine message (`frame`, `raw_frame`). The socket
+  /// feeds this; tests call it directly.
+  void handleMessage(Map<String, dynamic> data) {
+    final raw = _decodeImage(data['raw_frame']);
+    if (raw != null) rawFrame.value = raw;
+
+    final bytes = _decodeImage(data['frame']);
+    if (bytes == null) return;
+    final now = _now();
     final last = _lastFrameAt;
     if (last != null) {
       final dt = now.difference(last).inMicroseconds;
@@ -218,6 +243,17 @@ class StudioController extends ChangeNotifier {
     }
     _lastFrameAt = now;
     frame.value = bytes;
+    _ensureTicking();
+  }
+
+  Uint8List? _decodeImage(Object? value) {
+    if (value is! String) return null;
+    try {
+      return base64Decode(value);
+    } on FormatException catch (e) {
+      debugPrint('StudioController: dropped undecodable image ($e)');
+      return null;
+    }
   }
 
   // --- Parameters ------------------------------------------------------
@@ -252,6 +288,7 @@ class StudioController extends ChangeNotifier {
   void _restartConvergence() {
     _samplesF = 0;
     samples.value = 0;
+    _ensureTicking();
   }
 
   void _tick() {
@@ -263,7 +300,16 @@ class StudioController extends ChangeNotifier {
       samples.value = _samplesF >= target - 0.5 ? target : _samplesF.floor();
     }
     final last = _lastFrameAt;
-    if (last != null && DateTime.now().difference(last) > _idleAfter) _clearFrame();
+    if (last != null && _now().difference(last) > _idleAfter) {
+      // The stream went quiet. The last frame is a finished render and stays
+      // on screen; only the measured rate is stale.
+      fps.value = 0;
+      _lastFrameAt = null;
+    }
+    if (_samplesF >= target && _lastFrameAt == null) {
+      _ticker?.cancel();
+      _ticker = null;
+    }
   }
 
   // --- Viewport interaction -------------------------------------------
@@ -280,6 +326,57 @@ class StudioController extends ChangeNotifier {
     _restartConvergence();
     socket.send({'orbit_dx': dx, 'orbit_dy': dy});
   }
+
+  /// Recenters the camera.
+  void resetOrbit() {
+    orbit.value = Offset.zero;
+    _restartConvergence();
+    socket.send({'orbit_reset': true});
+  }
+
+  // --- Viewport tools --------------------------------------------------
+
+  bool _abWipeEnabled = true;
+  bool get abWipeEnabled => _abWipeEnabled;
+
+  void setAbWipeEnabled(bool value) {
+    if (_abWipeEnabled == value) return;
+    _abWipeEnabled = value;
+    notifyListeners();
+  }
+
+  /// Curtain position for the A/B wipe, as a fraction of the stage width.
+  final ValueNotifier<double> abSplit = ValueNotifier(0.5);
+
+  void setAbSplit(double value) => abSplit.value = value.clamp(0.05, 0.95).toDouble();
+
+  void resetAbSplit() => abSplit.value = 0.5;
+
+  bool _falseColorEnabled = false;
+  bool get falseColorEnabled => _falseColorEnabled;
+
+  void setFalseColor(bool value) {
+    if (_falseColorEnabled == value) return;
+    _falseColorEnabled = value;
+    notifyListeners();
+  }
+
+  void toggleFalseColor() => setFalseColor(!_falseColorEnabled);
+
+  bool _loupeEnabled = false;
+  bool get loupeEnabled => _loupeEnabled;
+
+  void setLoupe(bool value) {
+    if (_loupeEnabled == value) return;
+    _loupeEnabled = value;
+    notifyListeners();
+  }
+
+  void toggleLoupe() => setLoupe(!_loupeEnabled);
+
+  /// Pointer position over the stage, normalized to 0..1; null when the
+  /// pointer is elsewhere.
+  final ValueNotifier<Offset?> probePosition = ValueNotifier(null);
 
   // --- Assets ----------------------------------------------------------
 
@@ -343,15 +440,20 @@ class StudioController extends ChangeNotifier {
 
   @override
   void dispose() {
-    _ticker.cancel();
+    _disposed = true;
+    _ticker?.cancel();
+    _ticker = null;
     _toastTimer?.cancel();
     _messageSub.cancel();
     socket.link.removeListener(_onLinkChanged);
     socket.dispose();
     frame.dispose();
+    rawFrame.dispose();
     fps.dispose();
     samples.dispose();
     orbit.dispose();
+    abSplit.dispose();
+    probePosition.dispose();
     toast.dispose();
     super.dispose();
   }

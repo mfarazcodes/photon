@@ -6,6 +6,7 @@ import '../services/render_socket.dart';
 import '../state/studio_controller.dart';
 import '../theme/photon_theme.dart';
 import 'photon_primitives.dart';
+import 'rauno_tick_scrubber.dart';
 
 /// `OPTICS_PARAMETERS`: scrubbers, diagnostic read-outs and the 2px
 /// path-tracing scrub track, in a floating window below the viewport.
@@ -159,7 +160,7 @@ class _Grid extends StatelessWidget {
   }
 }
 
-/// Label on the left (label-caps), tabular value on the right, violet track.
+/// One parameter card: the whole card scrubs (see [RaunoTickScrubber]).
 class _ParamScrubber extends StatelessWidget {
   const _ParamScrubber({required this.param, required this.studio});
 
@@ -168,74 +169,11 @@ class _ParamScrubber extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final t = context.photon;
-    final c = t.colors;
-    final value = studio.param(param.id);
-    final sliderTheme = SliderTheme.of(context).copyWith(
-      trackHeight: 2,
-      activeTrackColor: c.violet,
-      inactiveTrackColor: c.ghost.withValues(alpha: 0.35),
-      thumbColor: c.carbon,
-      overlayColor: c.violet.withValues(alpha: 0.16),
-      thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 4, elevation: 0, pressedElevation: 0),
-      overlayShape: const RoundSliderOverlayShape(overlayRadius: 10),
-      trackShape: const RectangularSliderTrackShape(),
-      tickMarkShape: SliderTickMarkShape.noTickMark,
-    );
-
-    return HoverBuilder(
-      cursor: SystemMouseCursors.resizeLeftRight,
-      builder: (context, hovered) => AnimatedContainer(
-        duration: const Duration(milliseconds: 120),
-        padding: const EdgeInsets.fromLTRB(PhotonSpace.sm, PhotonSpace.sm - 2, PhotonSpace.sm, 2),
-        decoration: BoxDecoration(
-          color: c.substrate,
-          borderRadius: BorderRadius.circular(PhotonRadius.control),
-          border: Border.all(color: hovered ? c.violet : c.border),
-        ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Row(
-              crossAxisAlignment: CrossAxisAlignment.center,
-              children: [
-                Flexible(
-                  child: Tooltip(
-                    message: param.hint ?? param.label,
-                    child: Text(
-                      param.label.toUpperCase(),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: t.text.labelCaps,
-                    ),
-                  ),
-                ),
-                const SizedBox(width: PhotonSpace.sm),
-                Text(
-                  param.format(value),
-                  textAlign: TextAlign.right,
-                  style: t.text.telemetryMd.copyWith(fontWeight: FontWeight.w600),
-                ),
-              ],
-            ),
-            SizedBox(
-              height: 20,
-              child: SliderTheme(
-                data: sliderTheme,
-                child: Slider(
-                  value: value,
-                  min: param.min,
-                  max: param.max,
-                  divisions: param.integer ? (param.max - param.min).round() : null,
-                  semanticFormatterCallback: param.format,
-                  onChanged: (v) => studio.setParam(param.id, v),
-                ),
-              ),
-            ),
-          ],
-        ),
-      ),
+    return RaunoTickScrubber(
+      key: ValueKey('scrub-${param.id}'),
+      param: param,
+      value: studio.param(param.id),
+      onChanged: (v) => studio.setParam(param.id, v),
     );
   }
 }
