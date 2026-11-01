@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 
 import '../theme/photon_theme.dart';
@@ -223,11 +225,27 @@ class _PhotonButtonState extends State<PhotonButton> {
   }
 }
 
-/// The three macOS window-control pips.
+/// The three macOS window-control pips, wired to window actions.
+///
+/// Red resets the panel, yellow collapses it to its titlebar, green maximizes
+/// it. As on macOS, the glyphs appear when the pointer is over the group. A
+/// pip with no callback is inert. [id] namespaces the test keys
+/// (`pip-close-<id>`, `pip-minimize-<id>`, `pip-zoom-<id>`).
 class MacWindowPips extends StatelessWidget {
-  const MacWindowPips({super.key, this.size = 10});
+  const MacWindowPips({
+    super.key,
+    this.id = 'window',
+    this.size = 12,
+    this.onClose,
+    this.onMinimize,
+    this.onZoom,
+  });
 
+  final String id;
   final double size;
+  final VoidCallback? onClose;
+  final VoidCallback? onMinimize;
+  final VoidCallback? onZoom;
 
   static const _close = Color(0xFFFF5F56);
   static const _minimize = Color(0xFFFFBD2E);
@@ -235,26 +253,234 @@ class MacWindowPips extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    Widget pip(Color c) => Container(
-      width: size,
-      height: size,
-      decoration: BoxDecoration(
-        color: c,
-        shape: BoxShape.circle,
-        border: Border.all(color: Colors.black.withValues(alpha: 0.12), width: 0.5),
+    return HoverBuilder(
+      builder: (context, hovered) => Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          _WindowPip(
+            key: ValueKey('pip-close-$id'),
+            color: _close,
+            glyph: '×',
+            tooltip: 'Reset panel',
+            size: size,
+            showGlyph: hovered,
+            onTap: onClose,
+          ),
+          _WindowPip(
+            key: ValueKey('pip-minimize-$id'),
+            color: _minimize,
+            glyph: '−',
+            tooltip: 'Collapse / expand panel',
+            size: size,
+            showGlyph: hovered,
+            onTap: onMinimize,
+          ),
+          _WindowPip(
+            key: ValueKey('pip-zoom-$id'),
+            color: _zoom,
+            glyph: '+',
+            tooltip: 'Maximize / focus panel',
+            size: size,
+            showGlyph: hovered,
+            onTap: onZoom,
+          ),
+        ],
       ),
     );
-    return Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        pip(_close),
-        const SizedBox(width: 6),
-        pip(_minimize),
-        const SizedBox(width: 6),
-        pip(_zoom),
-      ],
+  }
+}
+
+/// One pip. The hit area is the pip plus its share of the gap, and the full
+/// titlebar height, so neighbouring pips leave no dead space.
+class _WindowPip extends StatelessWidget {
+  const _WindowPip({
+    super.key,
+    required this.color,
+    required this.glyph,
+    required this.tooltip,
+    required this.size,
+    required this.showGlyph,
+    required this.onTap,
+  });
+
+  final Color color;
+  final String glyph;
+  final String tooltip;
+  final double size;
+  final bool showGlyph;
+  final VoidCallback? onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final enabled = onTap != null;
+    return Tooltip(
+      message: tooltip,
+      child: Semantics(
+        button: true,
+        enabled: enabled,
+        label: tooltip,
+        child: MouseRegion(
+          cursor: enabled ? SystemMouseCursors.click : MouseCursor.defer,
+          child: GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTap: onTap,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 3, vertical: 7),
+              child: Container(
+                width: size,
+                height: size,
+                alignment: Alignment.center,
+                decoration: BoxDecoration(
+                  color: color,
+                  shape: BoxShape.circle,
+                  border: Border.all(color: Colors.black.withValues(alpha: 0.12), width: 0.5),
+                ),
+                child: AnimatedOpacity(
+                  duration: const Duration(milliseconds: 90),
+                  opacity: showGlyph && enabled ? 1 : 0,
+                  child: Text(
+                    glyph,
+                    style: TextStyle(
+                      fontSize: size * 0.8,
+                      height: 1,
+                      fontWeight: FontWeight.w800,
+                      color: Colors.black.withValues(alpha: 0.6),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
     );
   }
+}
+
+/// Minimal Photon mark: a Matte Carbon tile, a violet hexagonal aperture ring,
+/// an incoming white photon ray from the top-left, and a refracted rose and
+/// violet dispersion exiting from a glowing focal point.
+///
+/// The geometry matches `windows/runner/resources/app_icon.ico`.
+class PhotonLogoMark extends StatelessWidget {
+  const PhotonLogoMark({super.key, this.size = 22, this.semanticLabel});
+
+  final double size;
+  final String? semanticLabel;
+
+  @override
+  Widget build(BuildContext context) {
+    final mark = SizedBox.square(
+      dimension: size,
+      child: const CustomPaint(painter: _PhotonLogoPainter()),
+    );
+    if (semanticLabel == null) return ExcludeSemantics(child: mark);
+    return Semantics(label: semanticLabel, image: true, child: mark);
+  }
+}
+
+class _PhotonLogoPainter extends CustomPainter {
+  const _PhotonLogoPainter();
+
+  static const _carbon = Color(0xFF0E0E10);
+  static const _violet = Color(0xFF8A2BE2);
+  static const _beamViolet = Color(0xFFB57BFF);
+  static const _rose = Color(0xFFFF2D78);
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final s = size.shortestSide;
+    Offset p(double x, double y) => Offset(x * s, y * s);
+    Paint stroke(Color c, double w) => Paint()
+      ..color = c
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = w
+      ..strokeCap = StrokeCap.round
+      ..strokeJoin = StrokeJoin.round
+      ..isAntiAlias = true;
+
+    // Tile.
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(Rect.fromLTRB(0.03 * s, 0.03 * s, 0.97 * s, 0.97 * s), Radius.circular(0.22 * s)),
+      Paint()..color = _carbon,
+    );
+
+    // Hexagonal aperture ring (flat-top), 1.5px at the default size.
+    final ring = Path();
+    for (var i = 0; i < 6; i++) {
+      final a = i * math.pi / 3;
+      final pt = p(0.5 + 0.30 * math.cos(a), 0.5 + 0.30 * math.sin(a));
+      i == 0 ? ring.moveTo(pt.dx, pt.dy) : ring.lineTo(pt.dx, pt.dy);
+    }
+    ring.close();
+    canvas.drawPath(ring, stroke(_violet, math.max(1.5, s * 0.06)));
+
+    final focal = p(0.5, 0.5);
+    final beam = math.max(1.0, s * 0.035);
+    canvas.drawLine(focal, p(0.87, 0.82), stroke(_beamViolet.withValues(alpha: 0.95), beam));
+    canvas.drawLine(focal, p(0.93, 0.58), stroke(_rose.withValues(alpha: 0.95), beam));
+    canvas.drawLine(p(0.12, 0.16), focal, stroke(Colors.white, math.max(1.0, s * 0.04)));
+
+    // Focal glow and core.
+    canvas.drawCircle(
+      focal,
+      0.15 * s,
+      Paint()
+        ..shader = RadialGradient(
+          colors: [const Color(0xFFD9A6FF).withValues(alpha: 0.7), const Color(0x00D9A6FF)],
+        ).createShader(Rect.fromCircle(center: focal, radius: 0.15 * s)),
+    );
+    canvas.drawCircle(focal, math.max(1.0, 0.04 * s), Paint()..color = Colors.white);
+  }
+
+  @override
+  bool shouldRepaint(_PhotonLogoPainter old) => false;
+}
+
+/// Double-tap detection from raw pointer events.
+///
+/// Flutter's `DoubleTapGestureRecognizer` holds a pointer in the gesture arena
+/// until the second tap can no longer arrive, which delays drags that share the
+/// widget. This watches pointers directly instead, so nothing is held back.
+///
+/// Only a press that stayed put and was released quickly counts as a tap, so a
+/// drag followed straight away by another drag is never mistaken for a double
+/// tap. Timestamps come from the pointer events themselves.
+class FastDoubleTap {
+  static const Duration window = Duration(milliseconds: 260);
+  static const double slop = 8;
+
+  Duration? _lastTapUp;
+  Duration? _downAt;
+  Offset? _downPosition;
+  bool _moved = false;
+  bool _completedDouble = false;
+
+  /// Call on pointer-down. Returns true when this press completes a double tap.
+  bool down(PointerDownEvent event) {
+    final last = _lastTapUp;
+    _lastTapUp = null;
+    _downAt = event.timeStamp;
+    _downPosition = event.position;
+    _moved = false;
+    _completedDouble = last != null && event.timeStamp - last <= window;
+    return _completedDouble;
+  }
+
+  void move(PointerMoveEvent event) {
+    final origin = _downPosition;
+    if (origin != null && (event.position - origin).distance > slop) _moved = true;
+  }
+
+  void up(PointerUpEvent event) {
+    final at = _downAt;
+    if (!_completedDouble && !_moved && at != null && event.timeStamp - at <= window) {
+      _lastTapUp = event.timeStamp;
+    }
+    _downAt = null;
+  }
+
+  void cancel() => _downAt = null;
 }
 
 /// 32px floating-window titlebar with a 1px hairline divider underneath.
@@ -267,6 +493,9 @@ class MacTitlebar extends StatelessWidget {
   final Widget? titleSuffix;
 
   static const double height = 32;
+
+  /// Space reserved either side of the title: the three pips plus a margin.
+  static const double titleClearance = 70;
 
   @override
   Widget build(BuildContext context) {
@@ -284,21 +513,30 @@ class MacTitlebar extends StatelessWidget {
             alignment: Alignment.centerLeft,
             child: leading ?? const MacWindowPips(),
           ),
-          Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text(
-                title,
-                style: t.text.telemetrySm.copyWith(
-                  fontWeight: FontWeight.w600,
-                  letterSpacing: 0.4,
-                ),
+          // Kept clear of the pips on the left (and a matching margin on the
+          // right): in a narrow window the title scales down instead of
+          // sliding over the window controls.
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: titleClearance),
+            child: FittedBox(
+              fit: BoxFit.scaleDown,
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    title,
+                    style: t.text.telemetrySm.copyWith(
+                      fontWeight: FontWeight.w600,
+                      letterSpacing: 0.4,
+                    ),
+                  ),
+                  if (titleSuffix != null) ...[
+                    const SizedBox(width: PhotonSpace.sm),
+                    titleSuffix!,
+                  ],
+                ],
               ),
-              if (titleSuffix != null) ...[
-                const SizedBox(width: PhotonSpace.sm),
-                titleSuffix!,
-              ],
-            ],
+            ),
           ),
           if (trailing != null) Align(alignment: Alignment.centerRight, child: trailing),
         ],

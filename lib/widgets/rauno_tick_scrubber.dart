@@ -1,10 +1,12 @@
 import 'dart:math' as math;
 
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../state/studio_controller.dart';
 import '../theme/photon_theme.dart';
+import 'photon_primitives.dart';
 
 /// Neutral hairline gray for micro instrumentation.
 const Color kRaunoGray = Color(0xFF8F8F8F);
@@ -12,9 +14,10 @@ const Color kRaunoGray = Color(0xFF8F8F8F);
 /// A whole parameter card that scrubs: no handle to find, no dead zone.
 ///
 /// * Dragging anywhere on the card moves the value by
-///   `(max - min) * dx / cardWidth`; holding Shift drops that to 0.1x for
-///   vernier control.
-/// * Double-tap resets to [OpticsParam.initial].
+///   `1.25 * (max - min) * dx / cardWidth`, starting on the first pixel of
+///   movement; holding Shift drops that to 0.12x for vernier control.
+/// * A double tap (read from raw pointer events, so it never delays the drag)
+///   resets to [OpticsParam.initial].
 /// * A 25-tick ruler along the bottom swells (4px to 12px, violet) around the
 ///   current value, with a 2px needle at the exact position.
 /// * Arrow keys nudge it when focused (Shift for fine), and it exposes slider
@@ -33,12 +36,20 @@ class RaunoTickScrubber extends StatefulWidget {
 
   static const double rulerHeight = 18;
 
+  /// Fraction of the parameter range covered per card width of drag. Above 1,
+  /// so the whole range is reachable without leaving the card.
+  static const double coarseSensitivity = 1.25;
+
+  /// The same with Shift held (vernier).
+  static const double fineSensitivity = 0.12;
+
   @override
   State<RaunoTickScrubber> createState() => _RaunoTickScrubberState();
 }
 
 class _RaunoTickScrubberState extends State<RaunoTickScrubber> {
   final FocusNode _focus = FocusNode(debugLabel: 'param-scrubber');
+  final FastDoubleTap _doubleTap = FastDoubleTap();
   bool _hovered = false;
   bool _dragging = false;
   bool _fine = false;
@@ -71,7 +82,10 @@ class _RaunoTickScrubberState extends State<RaunoTickScrubber> {
     final width = context.size?.width ?? 0;
     if (width <= 0) return;
     final fine = HardwareKeyboard.instance.isShiftPressed;
-    _dragValue = (_dragValue + (_p.max - _p.min) * (d.delta.dx / width) * (fine ? 0.1 : 1.0))
+    final sensitivity = fine ? RaunoTickScrubber.fineSensitivity : RaunoTickScrubber.coarseSensitivity;
+    // Clamped as it accumulates: overshoot past an end would otherwise have to
+    // be unwound before a reversed drag moved the value again (dead-zone lag).
+    _dragValue = (_dragValue + (_p.max - _p.min) * (d.delta.dx / width) * sensitivity)
         .clamp(_p.min, _p.max)
         .toDouble();
     if (fine != _fine) setState(() => _fine = fine);
@@ -90,6 +104,11 @@ class _RaunoTickScrubberState extends State<RaunoTickScrubber> {
 
   void _nudge(int direction, {required bool fine}) {
     widget.onChanged(_p.clamp(widget.value + direction * _step(fine: fine)));
+  }
+
+  void _onPointerDown(PointerDownEvent e) {
+    _focus.requestFocus();
+    if (_doubleTap.down(e)) widget.onChanged(_p.initial);
   }
 
   KeyEventResult _onKey(FocusNode node, KeyEvent event) {
@@ -138,7 +157,7 @@ class _RaunoTickScrubberState extends State<RaunoTickScrubber> {
               borderRadius: BorderRadius.circular(PhotonRadius.control - 2),
             ),
             child: Text(
-              'FINE ×0.1',
+              'FINE ×0.12',
               style: t.text.labelCaps.copyWith(fontSize: 7, color: c.violetInk),
             ),
           ),
@@ -202,18 +221,22 @@ class _RaunoTickScrubberState extends State<RaunoTickScrubber> {
           cursor: SystemMouseCursors.resizeLeftRight,
           onEnter: (_) => setState(() => _hovered = true),
           onExit: (_) => setState(() => _hovered = false),
-          // Focus on pointer-down: a tap recognizer would wait out its press
-          // deadline first, and the card should answer at once.
+          // Focus and double-tap are read from raw pointer events: no
+          // recognizer waits in the gesture arena, so a drag starts on the very
+          // first pixel of movement.
           child: Listener(
             behavior: HitTestBehavior.opaque,
-            onPointerDown: (_) => _focus.requestFocus(),
+            onPointerDown: _onPointerDown,
+            onPointerMove: _doubleTap.move,
+            onPointerUp: _doubleTap.up,
+            onPointerCancel: (_) => _doubleTap.cancel(),
             child: GestureDetector(
               behavior: HitTestBehavior.opaque,
+              dragStartBehavior: DragStartBehavior.down,
               onHorizontalDragStart: _onDragStart,
               onHorizontalDragUpdate: _onDragUpdate,
               onHorizontalDragEnd: _onDragEnd,
               onHorizontalDragCancel: _onDragEnd,
-              onDoubleTap: () => widget.onChanged(_p.initial),
               child: card,
             ),
           ),

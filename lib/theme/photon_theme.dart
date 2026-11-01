@@ -110,22 +110,23 @@ class PhotonPalette {
     shadow: Color(0xFF0E0E10),
   );
 
-  /// Dark Grading Mode: obsidian/slate chrome around a neutral mid-gray matte.
+  /// Dark Studio (the default): charcoal canvas, architectural panels, and a
+  /// neutral mid-gray matte around the render.
   static const PhotonPalette grading = PhotonPalette(
     brightness: Brightness.dark,
-    canvas: Color(0xFF0B0B0D),
-    surface: Color(0xFF111114),
-    substrate: Color(0xFF17171B),
-    carbon: Color(0xFFEDEDF0),
+    canvas: Color(0xFF18191C),
+    surface: Color(0xFF1E1F22),
+    substrate: Color(0xFF141417),
+    carbon: Color(0xFFF3F3F5),
     onCarbon: Color(0xFF0E0E10),
     violet: Color(0xFF8A2BE2),
     violetInk: Color(0xFFB57BFF),
-    rose: Color(0xFFFF4D8D),
-    border: Color(0xFF2A2A31),
+    rose: Color(0xFFFF2D78),
+    border: Color(0xFF2A2B30),
     textMuted: Color(0xFF9A9AA4),
     ghost: Color(0xFF55555E),
-    hoverFill: Color(0xFF212127),
-    dock: Color(0xFF1E1E23),
+    hoverFill: Color(0xFF25262B),
+    dock: Color(0xFF101012),
     onDock: Color(0xFFF3F3F5),
     viewportMatte: Color(0xFF767679),
     shadow: Color(0xFF000000),

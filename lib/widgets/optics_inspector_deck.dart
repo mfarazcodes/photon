@@ -33,6 +33,12 @@ class OpticsInspectorDeck extends StatelessWidget {
         children: [
           MacTitlebar(
             title: 'OPTICS_PARAMETERS',
+            leading: MacWindowPips(
+              id: 'optics',
+              onClose: studio.resetAllParams,
+              onMinimize: studio.toggleOpticsCollapsed,
+              onZoom: () => studio.toggleMaximizedPanel('optics'),
+            ),
             trailing: Container(
               padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
               decoration: BoxDecoration(
@@ -45,6 +51,8 @@ class OpticsInspectorDeck extends StatelessWidget {
               ),
             ),
           ),
+          // Collapsed: only the titlebar remains.
+          if (!studio.opticsCollapsed)
           Padding(
             padding: const EdgeInsets.all(PhotonSpace.md),
             child: LayoutBuilder(
@@ -87,7 +95,7 @@ class OpticsInspectorDeck extends StatelessWidget {
               },
             ),
           ),
-          _ScrubTrack(studio: studio),
+          if (!studio.opticsCollapsed) _ScrubTrack(studio: studio),
         ],
       ),
     );
@@ -100,9 +108,10 @@ class OpticsInspectorDeck extends StatelessWidget {
       dot: _DiagDot.violet,
       caption: 'Prismatic Dispersion',
     ),
-    const _DiagCard(
+    // Follows the viewport HUD's integrator.
+    _DiagCard(
       label: 'CAUSTICS',
-      value: 'Cauchy',
+      value: studio.integrator.solverCaption,
       valueAccent: true,
       dot: _DiagDot.green,
       caption: 'Spectral Solver',

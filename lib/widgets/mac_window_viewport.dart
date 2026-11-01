@@ -1,5 +1,6 @@
 import 'dart:math' as math;
 
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -70,19 +71,29 @@ class _MacWindowViewportState extends State<MacWindowViewport> with SingleTicker
           child: LayoutBuilder(
             builder: (context, box) {
               final compact = box.maxWidth < MacWindowViewport.compactWidth;
+              final collapsed = studio.viewportCollapsed;
               return Column(
-                mainAxisSize: widget.stageAspectRatio == null ? MainAxisSize.max : MainAxisSize.min,
+                mainAxisSize: (widget.stageAspectRatio == null && !collapsed) ? MainAxisSize.max : MainAxisSize.min,
                 children: [
                   MacTitlebar(
                     title: 'SCENE_VIEWPORT.rt',
                     titleSuffix: _LinkChip(link: studio.link),
-                    trailing: compact ? null : _ViewportTools(studio: studio),
+                    leading: MacWindowPips(
+                      id: 'viewport',
+                      onClose: studio.resetViewportStage,
+                      onMinimize: studio.toggleViewportCollapsed,
+                      onZoom: () => studio.toggleMaximizedPanel('viewport'),
+                    ),
+                    trailing: (compact || collapsed) ? null : _ViewportTools(studio: studio),
                   ),
-                  if (compact) _ToolStrip(studio: studio),
-                  if (widget.stageAspectRatio != null)
-                    AspectRatio(aspectRatio: widget.stageAspectRatio!, child: stage)
-                  else
-                    Expanded(child: stage),
+                  // Collapsed: only the titlebar remains.
+                  if (!collapsed) ...[
+                    if (compact) _ToolStrip(studio: studio),
+                    if (widget.stageAspectRatio != null)
+                      AspectRatio(aspectRatio: widget.stageAspectRatio!, child: stage)
+                    else
+                      Expanded(child: stage),
+                  ],
                 ],
               );
             },
@@ -296,6 +307,8 @@ class _StageState extends State<_Stage> {
           onExit: (_) => studio.probePosition.value = null,
           child: GestureDetector(
             behavior: HitTestBehavior.opaque,
+            // Orbit from the first pixel of movement, not after the touch slop.
+            dragStartBehavior: DragStartBehavior.down,
             onPanUpdate: (d) {
               studio.orbitBy(d.delta.dx, d.delta.dy);
               _probe(d.localPosition, size);
@@ -309,7 +322,19 @@ class _StageState extends State<_Stage> {
                     _imageLayers(magnified: false, badgeTop: badgeTop),
                     IgnorePointer(child: _ProbeCrosshair(studio: studio, spin: widget.spin)),
                     Positioned(left: 10, top: 10, child: IgnorePointer(child: _TopLeftHud(studio: studio))),
-                    Positioned(right: 10, top: 10, child: IgnorePointer(child: _TelemetryStrip(studio: studio))),
+                    // Interactive (bounces, integrator, reconnect), so no IgnorePointer.
+                    Positioned(
+                      right: 10,
+                      top: 10,
+                      child: ConstrainedBox(
+                        constraints: BoxConstraints(maxWidth: math.max(0, size.width - 20)),
+                        child: FittedBox(
+                          fit: BoxFit.scaleDown,
+                          alignment: Alignment.centerRight,
+                          child: _TelemetryStrip(studio: studio),
+                        ),
+                      ),
+                    ),
                     const Positioned(left: 10, bottom: 10, child: IgnorePointer(child: _ResolutionTag())),
                     Positioned(
                       right: 10,
@@ -412,6 +437,9 @@ class _Hud extends StatelessWidget {
   );
 }
 
+/// Top-right HUD: stream status, bounce depth and integrator. All three are
+/// controls: the status reconnects, the bounce pill steps/scrolls/drags, and
+/// the integrator pill cycles the path-tracing algorithm.
 class _TelemetryStrip extends StatelessWidget {
   const _TelemetryStrip({required this.studio});
 
@@ -424,32 +452,156 @@ class _TelemetryStrip extends StatelessWidget {
     Widget sep() => Container(
       width: 1,
       height: 10,
-      margin: const EdgeInsets.symmetric(horizontal: PhotonSpace.sm),
+      margin: const EdgeInsets.symmetric(horizontal: 2),
       color: Colors.white.withValues(alpha: 0.25),
     );
     return _Hud(
       pill: true,
-      child: ValueListenableBuilder<double>(
-        valueListenable: studio.fps,
-        builder: (context, fps, _) {
-          final live = studio.link == RenderLink.live && fps > 0;
-          return Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text(
-                live ? '${fps.round()} FPS' : 'PREVIEW',
-                style: style.copyWith(
-                  color: live ? const Color(0xFF34D399) : const Color(0xFFFBBF24),
-                  fontWeight: FontWeight.w500,
+      padding: const EdgeInsets.all(2),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          ValueListenableBuilder<double>(
+            valueListenable: studio.fps,
+            builder: (context, fps, _) {
+              final live = studio.link == RenderLink.live && fps > 0;
+              return _HudPill(
+                key: const Key('hud-link-pill'),
+                tooltip: 'Reconnect / refresh render stream',
+                onTap: () {
+                  studio.socket.connect();
+                  studio.resetFrames();
+                },
+                child: Text(
+                  live ? '${fps.round()} FPS' : 'PREVIEW',
+                  style: style.copyWith(
+                    color: live ? const Color(0xFF34D399) : const Color(0xFFFBBF24),
+                    fontWeight: FontWeight.w500,
+                  ),
                 ),
+              );
+            },
+          ),
+          sep(),
+          _BouncesPill(studio: studio, style: style),
+          sep(),
+          _HudPill(
+            key: const Key('hud-integrator-pill'),
+            tooltip: 'Click to cycle path-tracing integrator',
+            glow: true,
+            onTap: studio.cycleIntegrator,
+            child: Text(
+              studio.integrator.label,
+              style: style.copyWith(color: const Color(0xFFEFDBFF)),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// A HUD control: hover-highlighted capsule with a tooltip. [glow] adds the
+/// violet halo on hover.
+class _HudPill extends StatelessWidget {
+  const _HudPill({
+    super.key,
+    required this.child,
+    required this.onTap,
+    required this.tooltip,
+    this.glow = false,
+    this.onHorizontalDrag,
+    this.onDragEnd,
+  });
+
+  final Widget child;
+  final VoidCallback onTap;
+  final String tooltip;
+  final bool glow;
+  final ValueChanged<double>? onHorizontalDrag;
+  final VoidCallback? onDragEnd;
+
+  @override
+  Widget build(BuildContext context) {
+    final violet = context.photon.colors.violet;
+    return Tooltip(
+      message: tooltip,
+      child: Semantics(
+        button: true,
+        label: tooltip,
+        child: HoverBuilder(
+          cursor: SystemMouseCursors.click,
+          builder: (context, hovered) => GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTap: onTap,
+            onHorizontalDragUpdate: onHorizontalDrag == null ? null : (d) => onHorizontalDrag!(d.delta.dx),
+            onHorizontalDragEnd: onDragEnd == null ? null : (_) => onDragEnd!(),
+            child: AnimatedContainer(
+              duration: const Duration(milliseconds: 120),
+              padding: const EdgeInsets.symmetric(horizontal: PhotonSpace.sm + 1, vertical: 4),
+              decoration: BoxDecoration(
+                color: hovered ? Colors.white.withValues(alpha: 0.14) : Colors.transparent,
+                borderRadius: BorderRadius.circular(PhotonRadius.pill),
+                boxShadow: (glow && hovered)
+                    ? [BoxShadow(color: violet.withValues(alpha: 0.55), blurRadius: 12, spreadRadius: -1)]
+                    : null,
               ),
-              sep(),
-              Text('${studio.maxBounces} BOUNCES', style: style),
-              sep(),
-              Text('UNIDIRECTIONAL PT', style: style.copyWith(color: const Color(0xFFEFDBFF))),
-            ],
-          );
-        },
+              child: child,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// `12 BOUNCES`: tap steps through 4/8/12/16/24/32, the wheel adjusts by one,
+/// and a horizontal drag scrubs it.
+class _BouncesPill extends StatefulWidget {
+  const _BouncesPill({required this.studio, required this.style});
+
+  final StudioController studio;
+  final TextStyle style;
+
+  @override
+  State<_BouncesPill> createState() => _BouncesPillState();
+}
+
+class _BouncesPillState extends State<_BouncesPill> {
+  /// Pixels of drag per bounce.
+  static const double _pxPerBounce = 10;
+  double _dragAccumulator = 0;
+
+  void _onDrag(double dx) {
+    _dragAccumulator += dx;
+    while (_dragAccumulator.abs() >= _pxPerBounce) {
+      final step = _dragAccumulator.sign.toInt();
+      widget.studio.nudgeMaxBounces(step);
+      _dragAccumulator -= step * _pxPerBounce;
+    }
+  }
+
+  void _onSignal(PointerSignalEvent event) {
+    if (event is! PointerScrollEvent) return;
+    // Claim the wheel so an enclosing scroll view does not also scroll.
+    GestureBinding.instance.pointerSignalResolver.register(event, (e) {
+      final scroll = e as PointerScrollEvent;
+      if (scroll.scrollDelta.dy == 0) return;
+      widget.studio.nudgeMaxBounces(scroll.scrollDelta.dy < 0 ? 1 : -1);
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Listener(
+      onPointerSignal: _onSignal,
+      child: _HudPill(
+        key: const Key('hud-bounces-pill'),
+        tooltip: 'Click to step bounce depth · scroll or drag to adjust',
+        onTap: widget.studio.cycleMaxBounces,
+        onHorizontalDrag: _onDrag,
+        onDragEnd: () => _dragAccumulator = 0,
+        child: Text('${widget.studio.maxBounces} BOUNCES', style: widget.style),
       ),
     );
   }

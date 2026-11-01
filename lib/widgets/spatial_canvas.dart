@@ -4,80 +4,134 @@ import 'dart:ui' show PointMode;
 
 import 'package:flutter/material.dart';
 
+import '../state/studio_controller.dart';
 import '../theme/photon_theme.dart';
 import 'command_dock.dart';
 import 'mac_window_viewport.dart';
 import 'optics_inspector_deck.dart';
-import 'perimeter_asset_strip.dart';
+import 'projects_sidebar.dart';
 import 'top_telemetry_bar.dart';
 
 /// The full studio workspace.
 ///
-/// At [wideBreakpoint] and above it renders the desktop spatial studio:
-/// asset perimeter on the left, viewport over the optics deck, command dock
-/// along the bottom. Below it, it reflows to the vertical companion
-/// controller: ribbon, asset carousel, viewport, optics, floating dock.
-class SpatialCanvas extends StatelessWidget {
+/// At [wideBreakpoint] and above it renders the desktop spatial studio: header
+/// across the top, projects sidebar on the left, viewport over the optics deck,
+/// command dock along the bottom. Below it, it reflows to the vertical
+/// companion controller: header, project carousel, viewport, optics, floating
+/// dock. The dot-matrix substrate behind it lights up around the pointer.
+class SpatialCanvas extends StatefulWidget {
   const SpatialCanvas({super.key});
 
   static const double wideBreakpoint = 900;
 
+  @override
+  State<SpatialCanvas> createState() => _SpatialCanvasState();
+}
+
+class _SpatialCanvasState extends State<SpatialCanvas> {
   /// Shortest height the desktop layout is laid out for; shorter windows scroll.
   static const double _minDesktopHeight = 720;
 
+  /// Pointer in this widget's coordinates. Only the dot painter listens, so
+  /// moving the mouse repaints one layer and rebuilds nothing.
+  final ValueNotifier<Offset?> _pointerPos = ValueNotifier(null);
+
+  @override
+  void dispose() {
+    _pointerPos.dispose();
+    super.dispose();
+  }
+
   @override
   Widget build(BuildContext context) {
+    final studio = StudioScope.of(context);
     final c = context.photon.colors;
-    return ColoredBox(
-      color: c.canvas,
-      child: Stack(
-        fit: StackFit.expand,
-        children: [
-          RepaintBoundary(
-            child: _DotMatrixSubstrate(color: c.ghost.withValues(alpha: 0.4)),
+    return MouseRegion(
+      opaque: false,
+      onExit: (_) => _pointerPos.value = null,
+      child: Listener(
+        behavior: HitTestBehavior.translucent,
+        onPointerHover: (e) => _pointerPos.value = e.localPosition,
+        // Hover events stop while a button is down; keep following drags.
+        onPointerMove: (e) => _pointerPos.value = e.localPosition,
+        child: ColoredBox(
+          color: c.canvas,
+          child: Stack(
+            fit: StackFit.expand,
+            children: [
+              RepaintBoundary(
+                child: DotMatrixSubstrate(
+                  color: c.isDark ? const Color(0xFF2E3036) : const Color(0xFFD0D0D8),
+                  highlight: c.isDark ? Colors.white : const Color(0xFF0E0E10),
+                  tint: c.isDark ? const Color(0xFFB57BFF) : c.violet,
+                  pointerPos: _pointerPos,
+                ),
+              ),
+              SafeArea(
+                child: LayoutBuilder(
+                  builder: (context, box) => box.maxWidth >= SpatialCanvas.wideBreakpoint
+                      ? _desktop(studio, box)
+                      : _companion(studio, box),
+                ),
+              ),
+            ],
           ),
-          SafeArea(
-            child: LayoutBuilder(
-              builder: (context, box) =>
-                  box.maxWidth >= wideBreakpoint ? _desktop(box) : _companion(context, box),
-            ),
-          ),
-        ],
+        ),
       ),
     );
   }
 
-  Widget _desktop(BoxConstraints box) {
-    final layout = Padding(
-      padding: const EdgeInsets.all(PhotonSpace.lg),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          const TopTelemetryBar(),
-          const SizedBox(height: PhotonSpace.md),
-          const Expanded(
-            child: Row(
+  /// Viewport and optics windows, honoring collapse and maximize state.
+  List<Widget> _panels(StudioController studio) {
+    final maximized = studio.maximizedPanel;
+    final showViewport = maximized != 'optics';
+    final showOptics = maximized != 'viewport';
+    const viewport = MacWindowViewport();
+    const optics = OpticsInspectorDeck();
+    return [
+      if (showViewport) studio.viewportCollapsed ? viewport : const Expanded(child: viewport),
+      if (showViewport && showOptics) const SizedBox(height: PhotonSpace.md),
+      if (showOptics)
+        // A collapsed or maximized neighbour hands its space to this panel.
+        (!studio.opticsCollapsed && (maximized == 'optics' || studio.viewportCollapsed))
+            ? const Expanded(child: optics)
+            : optics,
+    ];
+  }
+
+  Widget _desktop(StudioController studio, BoxConstraints box) {
+    final layout = Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        const TopTelemetryBar(),
+        Expanded(
+          child: Padding(
+            padding: const EdgeInsets.all(PhotonSpace.lg),
+            child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                PerimeterAssetStrip(axis: Axis.vertical),
-                SizedBox(width: PhotonSpace.lg),
                 Expanded(
-                  child: Column(
+                  child: Row(
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
-                      Expanded(child: MacWindowViewport()),
-                      SizedBox(height: PhotonSpace.md),
-                      OpticsInspectorDeck(),
+                      const ProjectsSidebar(),
+                      const SizedBox(width: PhotonSpace.lg),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: _panels(studio),
+                        ),
+                      ),
                     ],
                   ),
                 ),
+                const SizedBox(height: PhotonSpace.md),
+                const CommandDock(),
               ],
             ),
           ),
-          const SizedBox(height: PhotonSpace.md),
-          const CommandDock(),
-        ],
-      ),
+        ),
+      ],
     );
 
     if (box.maxHeight >= _minDesktopHeight) return layout;
@@ -86,30 +140,37 @@ class SpatialCanvas extends StatelessWidget {
     );
   }
 
-  Widget _companion(BuildContext context, BoxConstraints box) {
+  Widget _companion(StudioController studio, BoxConstraints box) {
     // Clearance for the floating dock: pill strip + prompt bar + margins.
-    final dockClearance = math.min(box.maxHeight * 0.4, 156.0);
+    final dockClearance = math.min(box.maxHeight * 0.4, 196.0);
+    final maximized = studio.maximizedPanel;
     return Stack(
       children: [
-        SingleChildScrollView(
-          padding: EdgeInsets.fromLTRB(
-            PhotonSpace.md,
-            PhotonSpace.sm,
-            PhotonSpace.md,
-            dockClearance,
-          ),
-          child: const Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              TopTelemetryBar(),
-              SizedBox(height: PhotonSpace.lg),
-              PerimeterAssetStrip(axis: Axis.horizontal),
-              SizedBox(height: PhotonSpace.lg),
-              MacWindowViewport(stageAspectRatio: 16 / 10),
-              SizedBox(height: PhotonSpace.lg),
-              OpticsInspectorDeck(),
-            ],
-          ),
+        Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            const TopTelemetryBar(),
+            Expanded(
+              child: SingleChildScrollView(
+                padding: EdgeInsets.fromLTRB(
+                  PhotonSpace.md,
+                  PhotonSpace.md,
+                  PhotonSpace.md,
+                  dockClearance,
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    const ProjectsSidebar(axis: Axis.horizontal),
+                    const SizedBox(height: PhotonSpace.lg),
+                    if (maximized != 'optics') const MacWindowViewport(stageAspectRatio: 16 / 10),
+                    if (maximized == null) const SizedBox(height: PhotonSpace.lg),
+                    if (maximized != 'viewport') const OpticsInspectorDeck(),
+                  ],
+                ),
+              ),
+            ),
+          ],
         ),
         const Positioned(
           left: PhotonSpace.md,
@@ -122,19 +183,25 @@ class SpatialCanvas extends StatelessWidget {
   }
 }
 
-/// Interleaved `x, y` coordinates of the dot grid, rebuilt only when the size
-/// changes. Repaints (theme change, route transitions) reuse the same list
-/// instead of allocating thousands of [Offset]s each time.
+/// Dot-grid coordinates (interleaved `x, y`, row-major), rebuilt only when the
+/// size changes. Repaints reuse the same list instead of allocating thousands
+/// of [Offset]s each time.
 class DotGridCache {
   static const double pitch = 16;
 
   Size? _size;
   Float32List? _coords;
 
+  /// Grid dimensions of the cached [coordsFor] result.
+  int columns = 0;
+  int rows = 0;
+
   Float32List coordsFor(Size size) {
     final cached = _coords;
     if (cached != null && _size == size) return cached;
-    final coords = Float32List(_cells(size.width) * _cells(size.height) * 2);
+    columns = _cells(size.width);
+    rows = _cells(size.height);
+    final coords = Float32List(columns * rows * 2);
     var i = 0;
     for (var y = pitch / 2; y < size.height; y += pitch) {
       for (var x = pitch / 2; x < size.width; x += pitch) {
@@ -156,39 +223,116 @@ class DotGridCache {
   }
 }
 
-/// Dot-matrix substrate behind the floating windows (16px pitch).
-class _DotMatrixSubstrate extends StatefulWidget {
-  const _DotMatrixSubstrate({required this.color});
+/// Dot-matrix substrate (16px pitch) behind the floating windows. Dots within
+/// [DotMatrixPainter.spotlightRadius] of [pointerPos] swell and light up.
+class DotMatrixSubstrate extends StatefulWidget {
+  const DotMatrixSubstrate({
+    super.key,
+    required this.color,
+    required this.highlight,
+    required this.tint,
+    required this.pointerPos,
+  });
 
+  /// Resting dot color.
   final Color color;
 
+  /// Color of the dot under the pointer.
+  final Color highlight;
+
+  /// Mid-ring tint between [color] and [highlight].
+  final Color tint;
+  final ValueNotifier<Offset?> pointerPos;
+
   @override
-  State<_DotMatrixSubstrate> createState() => _DotMatrixSubstrateState();
+  State<DotMatrixSubstrate> createState() => _DotMatrixSubstrateState();
 }
 
-class _DotMatrixSubstrateState extends State<_DotMatrixSubstrate> {
+class _DotMatrixSubstrateState extends State<DotMatrixSubstrate> {
   final DotGridCache _cache = DotGridCache();
 
   @override
-  Widget build(BuildContext context) =>
-      CustomPaint(painter: _DotMatrixPainter(color: widget.color, cache: _cache));
+  Widget build(BuildContext context) => CustomPaint(
+    painter: DotMatrixPainter(
+      color: widget.color,
+      highlight: widget.highlight,
+      tint: widget.tint,
+      cache: _cache,
+      pointerPos: widget.pointerPos,
+    ),
+  );
 }
 
-class _DotMatrixPainter extends CustomPainter {
-  const _DotMatrixPainter({required this.color, required this.cache});
+class DotMatrixPainter extends CustomPainter {
+  DotMatrixPainter({
+    required this.color,
+    required this.highlight,
+    required this.tint,
+    required this.cache,
+    required this.pointerPos,
+  }) : super(repaint: pointerPos);
 
   final Color color;
+  final Color highlight;
+  final Color tint;
   final DotGridCache cache;
+  final ValueNotifier<Offset?> pointerPos;
+
+  static const double spotlightRadius = 170;
+  static const double baseStroke = 1.3;
+  static const double peakStroke = 2.4;
+
+  /// Falloff weight for a dot [distance] px from the pointer: 1 under the
+  /// cursor, easing to 0 at [spotlightRadius].
+  static double proximity(double distance) =>
+      distance >= spotlightRadius ? 0 : math.pow(1 - distance / spotlightRadius, 2).toDouble();
+
+  /// Resting color through the violet tint to the highlight as [t] goes 0 to 1.
+  Color colorAt(double t) =>
+      t < 0.5 ? Color.lerp(color, tint, t * 2)! : Color.lerp(tint, highlight, (t - 0.5) * 2)!;
 
   @override
   void paint(Canvas canvas, Size size) {
-    final paint = Paint()
-      ..color = color
-      ..strokeWidth = 1.2
-      ..strokeCap = StrokeCap.round;
-    canvas.drawRawPoints(PointMode.points, cache.coordsFor(size), paint);
+    final coords = cache.coordsFor(size);
+    canvas.drawRawPoints(
+      PointMode.points,
+      coords,
+      Paint()
+        ..color = color
+        ..strokeWidth = baseStroke
+        ..strokeCap = StrokeCap.round,
+    );
+
+    final p = pointerPos.value;
+    if (p == null) return;
+
+    // Only the grid cells inside the spotlight's bounding box are visited.
+    const pitch = DotGridCache.pitch;
+    const half = pitch / 2;
+    final colMin = math.max(0, ((p.dx - spotlightRadius - half) / pitch).ceil());
+    final colMax = math.min(cache.columns - 1, ((p.dx + spotlightRadius - half) / pitch).floor());
+    final rowMin = math.max(0, ((p.dy - spotlightRadius - half) / pitch).ceil());
+    final rowMax = math.min(cache.rows - 1, ((p.dy + spotlightRadius - half) / pitch).floor());
+    const r2 = spotlightRadius * spotlightRadius;
+
+    final paint = Paint();
+    for (var row = rowMin; row <= rowMax; row++) {
+      for (var col = colMin; col <= colMax; col++) {
+        final i = (row * cache.columns + col) * 2;
+        final x = coords[i];
+        final y = coords[i + 1];
+        final dx = x - p.dx;
+        final dy = y - p.dy;
+        final d2 = dx * dx + dy * dy;
+        if (d2 >= r2) continue;
+        final t = proximity(math.sqrt(d2));
+        paint.color = colorAt(t);
+        canvas.drawCircle(Offset(x, y), (baseStroke + (peakStroke - baseStroke) * t) / 2, paint);
+      }
+    }
   }
 
   @override
-  bool shouldRepaint(_DotMatrixPainter old) => old.color != color;
+  bool shouldRepaint(DotMatrixPainter old) =>
+      old.color != color || old.highlight != highlight || old.tint != tint;
 }

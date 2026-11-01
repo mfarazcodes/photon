@@ -6,8 +6,11 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import '../models/scene_asset.dart';
+import '../models/studio_project.dart';
 import '../services/render_socket.dart';
 import '../theme/photon_theme.dart';
+
+export '../models/studio_project.dart' show IntegratorMode, ProjectStatus, StudioProject, kDefaultProjects;
 
 /// Definition of one scrubbable optics parameter.
 @immutable
@@ -156,6 +159,8 @@ class StudioController extends ChangeNotifier {
     for (final p in kOpticsParams) {
       _params[p.id] = p.initial;
     }
+    // Launch inside the first project, silently (no toast, no socket traffic).
+    _applyProject(kDefaultProjects.first);
     this.socket.link.addListener(_onLinkChanged);
     _messageSub = this.socket.messages.listen(handleMessage);
     _ensureTicking();
@@ -184,7 +189,8 @@ class StudioController extends ChangeNotifier {
 
   // --- Theme -----------------------------------------------------------
 
-  bool _darkGrading = false;
+  /// Dark Studio is the default; Daylight Lab is the alternate.
+  bool _darkGrading = true;
   bool get darkGrading => _darkGrading;
   PhotonPalette get palette => _darkGrading ? PhotonPalette.grading : PhotonPalette.daylight;
 
@@ -267,6 +273,7 @@ class StudioController extends ChangeNotifier {
     final v = _def(id).clamp(value);
     if (_params[id] == v) return;
     _params[id] = v;
+    _syncActiveProject();
     _restartConvergence();
     socket.send({'param': id, 'value': v});
     notifyListeners();
@@ -394,6 +401,11 @@ class StudioController extends ChangeNotifier {
 
   /// Handles an asset dropped on the viewport.
   void loadAsset(String fileName) {
+    // A dragged project card carries its id; route it to the project loader.
+    if (_projects.any((p) => p.id == fileName)) {
+      selectProject(fileName);
+      return;
+    }
     final asset = kSceneAssets.where((a) => a.fileName == fileName).firstOrNull;
     if (asset == null) {
       showToast('Unknown asset: $fileName');
@@ -425,6 +437,189 @@ class StudioController extends ChangeNotifier {
   void exportExr() {
     final sent = socket.send({'action': 'export_exr'});
     showToast(sent ? 'EXR EXPORT REQUESTED' : 'ENGINE OFFLINE · EXPORT UNAVAILABLE');
+  }
+
+  // --- Projects --------------------------------------------------------
+
+  final List<StudioProject> _projects = List.of(kDefaultProjects);
+  String _activeProjectId = kDefaultProjects.first.id;
+  int _projectSeq = kDefaultProjects.length;
+
+  List<StudioProject> get projects => List.unmodifiable(_projects);
+  String get activeProjectId => _activeProjectId;
+
+  StudioProject? get activeProject => _projects.where((p) => p.id == _activeProjectId).firstOrNull;
+
+  /// Loads [p]'s parameters and integrator and restarts convergence.
+  void _applyProject(StudioProject p) {
+    for (final def in kOpticsParams) {
+      final v = p.params[def.id];
+      if (v != null) _params[def.id] = def.clamp(v);
+    }
+    _integrator = p.integrator;
+    _activeProjectId = p.id;
+    _restartConvergence();
+  }
+
+  /// Writes the live parameters back into the active project, so switching
+  /// away and returning does not lose edits.
+  void _syncActiveProject() {
+    final i = _projects.indexWhere((p) => p.id == _activeProjectId);
+    if (i < 0) return;
+    _projects[i] = _projects[i].copyWith(
+      params: Map<String, double>.of(_params),
+      integrator: _integrator,
+      updatedAt: 'just now',
+    );
+  }
+
+  void selectProject(String id) {
+    final project = _projects.where((p) => p.id == id).firstOrNull;
+    if (project == null) {
+      showToast('UNKNOWN PROJECT');
+      return;
+    }
+    _applyProject(project);
+    socket.send({'load_project': id, 'params': Map<String, double>.of(_params)});
+    showToast('PROJECT LOADED · ${project.name}');
+    notifyListeners();
+  }
+
+  /// Snapshots the current studio parameters into a new draft and selects it.
+  void createNewProject([String? name]) {
+    _projectSeq++;
+    final trimmed = name?.trim() ?? '';
+    final title = trimmed.isEmpty ? 'UNTITLED_${_projectSeq.toString().padLeft(2, '0')}' : trimmed;
+    final slug = title.toLowerCase().replaceAll(RegExp(r'[^a-z0-9]+'), '_');
+    final project = StudioProject(
+      id: '${slug}_$_projectSeq',
+      name: title,
+      code: 'PRJ-${_projectSeq.toString().padLeft(2, '0')}',
+      sceneType: 'Custom Scene',
+      subtitle: '.pht · ${_integrator.solverCaption}',
+      updatedAt: 'just now',
+      status: ProjectStatus.draft,
+      previewAsset: 'assets/images/caustic_wave.jpg',
+      params: Map<String, double>.of(_params),
+      integrator: _integrator,
+    );
+    _projects.insert(0, project);
+    _activeProjectId = project.id;
+    showToast('PROJECT CREATED · $title');
+    notifyListeners();
+  }
+
+  void duplicateProject(String id) {
+    final source = _projects.where((p) => p.id == id).firstOrNull;
+    if (source == null) return;
+    _projectSeq++;
+    final copy = source.copyWith(
+      id: '${source.id}_copy_$_projectSeq',
+      name: '${source.name}_COPY',
+      code: 'PRJ-${_projectSeq.toString().padLeft(2, '0')}',
+      status: ProjectStatus.draft,
+      updatedAt: 'just now',
+    );
+    _projects.insert(_projects.indexOf(source) + 1, copy);
+    showToast('PROJECT DUPLICATED · ${copy.name}');
+    notifyListeners();
+  }
+
+  void deleteProject(String id) {
+    final project = _projects.where((p) => p.id == id).firstOrNull;
+    if (project == null) return;
+    if (_projects.length == 1) {
+      showToast('KEEP AT LEAST ONE PROJECT');
+      return;
+    }
+    _projects.remove(project);
+    if (id == _activeProjectId) {
+      final next = _projects.first;
+      _applyProject(next);
+      socket.send({'load_project': next.id, 'params': Map<String, double>.of(_params)});
+    }
+    showToast('PROJECT DELETED · ${project.name}');
+    notifyListeners();
+  }
+
+  // --- Integrator & bounces -------------------------------------------
+
+  IntegratorMode _integrator = IntegratorMode.unidirectional;
+  IntegratorMode get integrator => _integrator;
+
+  void setIntegrator(IntegratorMode mode) {
+    _integrator = mode;
+    _syncActiveProject();
+    _restartConvergence();
+    socket.send({'integrator': mode.name});
+    showToast('INTEGRATOR · ${mode.label}');
+    notifyListeners();
+  }
+
+  void cycleIntegrator() => setIntegrator(_integrator.next);
+
+  static const List<int> _bounceSteps = [4, 8, 12, 16, 24, 32];
+
+  /// Steps `max_bounces` through 4, 8, 12, 16, 24, 32 and wraps.
+  void cycleMaxBounces() {
+    final next = _bounceSteps.firstWhere((s) => s > maxBounces, orElse: () => _bounceSteps.first);
+    setParam('max_bounces', next.toDouble());
+  }
+
+  void nudgeMaxBounces(int delta) => setParam('max_bounces', (maxBounces + delta).toDouble());
+
+  // --- Panel windows ---------------------------------------------------
+
+  bool _viewportCollapsed = false;
+  bool _opticsCollapsed = false;
+  String? _maximizedPanel;
+
+  bool get viewportCollapsed => _viewportCollapsed;
+  bool get opticsCollapsed => _opticsCollapsed;
+
+  /// `'viewport'`, `'optics'`, or null for the normal split.
+  String? get maximizedPanel => _maximizedPanel;
+
+  void toggleViewportCollapsed() {
+    _viewportCollapsed = !_viewportCollapsed;
+    notifyListeners();
+  }
+
+  void toggleOpticsCollapsed() {
+    _opticsCollapsed = !_opticsCollapsed;
+    notifyListeners();
+  }
+
+  void toggleMaximizedPanel(String panelId) => setMaximizedPanel(_maximizedPanel == panelId ? null : panelId);
+
+  /// Maximizing a panel also expands it, so the two states never fight.
+  void setMaximizedPanel(String? panelId) {
+    _maximizedPanel = panelId;
+    if (panelId == 'viewport') _viewportCollapsed = false;
+    if (panelId == 'optics') _opticsCollapsed = false;
+    notifyListeners();
+  }
+
+  /// Optics window, red pip.
+  void resetAllParams() {
+    for (final p in kOpticsParams) {
+      _params[p.id] = p.initial;
+      socket.send({'param': p.id, 'value': p.initial});
+    }
+    _syncActiveProject();
+    _restartConvergence();
+    showToast('OPTICS RESET TO DEFAULT');
+    notifyListeners();
+  }
+
+  /// Viewport window, red pip.
+  void resetViewportStage() {
+    resetOrbit();
+    resetAbSplit();
+    _falseColorEnabled = false;
+    _loupeEnabled = false;
+    showToast('VIEWPORT RESET');
+    notifyListeners();
   }
 
   // --- Toast -----------------------------------------------------------

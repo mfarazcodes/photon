@@ -26,7 +26,8 @@ class CommandDock extends StatefulWidget {
 }
 
 class _CommandDockState extends State<CommandDock> {
-  static const double _inlineWidth = 1120;
+  // Wide enough for the 1.2x pills to sit beside a usable prompt field.
+  static const double _inlineWidth = 1240;
 
   final TextEditingController _text = TextEditingController();
   final FocusNode _focus = FocusNode(debugLabel: 'scene-prompt');
@@ -128,7 +129,9 @@ class _CommandDockState extends State<CommandDock> {
                 ...pills,
                 const SizedBox(width: PhotonSpace.sm),
                 swell(_LinkButton(link: studio.link), 'link'),
-                const SizedBox(width: PhotonSpace.sm),
+                // The two 40px buttons swell toward each other; 16px keeps them
+                // apart at the worst case.
+                const SizedBox(width: PhotonSpace.lg),
               ] else
                 const SizedBox(width: PhotonSpace.sm),
               swell(_SendButton(onPressed: _send, accent: c.violet), 'send'),
@@ -164,7 +167,7 @@ class _ProximityScale extends StatelessWidget {
   final ValueListenable<double?> hoverX;
   final Widget child;
 
-  static const double sigma = 72;
+  static const double sigma = 86;
   static const double extraScale = 0.16;
   static const double lift = 3.5;
 
@@ -242,7 +245,7 @@ class _DockSurfaceState extends State<_DockSurface> with SingleTickerProviderSta
   @override
   Widget build(BuildContext context) {
     final c = context.photon.colors;
-    const radius = PhotonRadius.window + 4;
+    const radius = 15.0;
     return MouseRegion(
       onHover: (e) => widget.hoverX.value = e.position.dx,
       onExit: (_) => widget.hoverX.value = null,
@@ -251,7 +254,7 @@ class _DockSurfaceState extends State<_DockSurface> with SingleTickerProviderSta
         fit: StackFit.passthrough,
         children: [
           Container(
-            padding: const EdgeInsets.symmetric(horizontal: PhotonSpace.md, vertical: PhotonSpace.sm),
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
             decoration: BoxDecoration(
               color: c.dock,
               borderRadius: BorderRadius.circular(radius),
@@ -329,30 +332,17 @@ class _Monogram extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final t = context.photon;
-    final c = t.colors;
+    final c = context.photon.colors;
     return Container(
-      width: 32,
-      height: 32,
+      width: 40,
+      height: 40,
       alignment: Alignment.center,
       decoration: BoxDecoration(
         color: Colors.white.withValues(alpha: 0.1),
-        borderRadius: BorderRadius.circular(PhotonRadius.window),
-        boxShadow: [BoxShadow(color: c.violet.withValues(alpha: 0.3), blurRadius: 10)],
+        borderRadius: BorderRadius.circular(10),
+        boxShadow: [BoxShadow(color: c.violet.withValues(alpha: 0.3), blurRadius: 12)],
       ),
-      child: Text.rich(
-        TextSpan(
-          text: 'P',
-          style: t.text.headlineMd.copyWith(color: c.onDock, fontWeight: FontWeight.w700, letterSpacing: -1),
-          children: [
-            TextSpan(
-              text: '.',
-              style: TextStyle(color: c.violetInk, fontWeight: FontWeight.w900),
-            ),
-          ],
-        ),
-        semanticsLabel: 'Photon',
-      ),
+      child: const PhotonLogoMark(size: 22, semanticLabel: 'Photon'),
     );
   }
 }
@@ -381,7 +371,7 @@ class _PromptField extends StatelessWidget {
       borderSide: BorderSide.none,
     );
     return SizedBox(
-      height: 36,
+      height: 44,
       child: TextField(
         controller: controller,
         focusNode: focusNode,
@@ -389,32 +379,32 @@ class _PromptField extends StatelessWidget {
         textInputAction: TextInputAction.send,
         maxLines: 1,
         cursorColor: c.violetInk,
-        cursorHeight: 14,
-        style: t.text.telemetryMd.copyWith(color: c.onDock),
+        cursorHeight: 18,
+        style: t.text.telemetryMd.copyWith(fontSize: 13.5, color: c.onDock),
         decoration: InputDecoration(
           isDense: true,
           filled: true,
           fillColor: Colors.white.withValues(alpha: 0.1),
           hoverColor: Colors.white.withValues(alpha: 0.15),
-          contentPadding: const EdgeInsets.symmetric(vertical: PhotonSpace.sm + 1),
+          contentPadding: const EdgeInsets.symmetric(vertical: 13),
           hintText: 'Describe optical scene, lighting, or drop .USD...',
-          hintStyle: t.text.telemetrySm.copyWith(color: c.onDock.withValues(alpha: 0.55)),
-          prefixIcon: Icon(Icons.auto_fix_high, size: 14, color: c.violetInk),
-          prefixIconConstraints: const BoxConstraints(minWidth: 34),
+          hintStyle: t.text.telemetrySm.copyWith(fontSize: 12, color: c.onDock.withValues(alpha: 0.55)),
+          prefixIcon: Icon(Icons.auto_fix_high, size: 18, color: c.violetInk),
+          prefixIconConstraints: const BoxConstraints(minWidth: 42),
           suffixIcon: showShortcut
               ? Padding(
-                  padding: const EdgeInsets.only(right: PhotonSpace.sm),
+                  padding: const EdgeInsets.only(right: PhotonSpace.sm + 2),
                   child: Center(
                     widthFactor: 1,
                     child: Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                       decoration: BoxDecoration(
                         color: Colors.white.withValues(alpha: 0.18),
                         borderRadius: BorderRadius.circular(PhotonRadius.control),
                       ),
                       child: Text(
                         _shortcutLabel,
-                        style: t.text.mono(size: 9, weight: FontWeight.w700, height: 1.1, color: c.onDock),
+                        style: t.text.mono(size: 10.5, weight: FontWeight.w700, height: 1.1, color: c.onDock),
                       ),
                     ),
                   ),
@@ -441,7 +431,11 @@ class _QuickPill extends StatelessWidget {
   final VoidCallback onTap;
 
   /// Half the visual gap between pills; each pill owns this much on both sides.
-  static const double hitPadding = PhotonSpace.xs;
+  ///
+  /// Sized for the proximity swell: when the pointer sits between two pills
+  /// both grow toward each other (about 8px of closing at worst), so the 16px
+  /// gap this makes leaves them clear instead of fusing at the corners.
+  static const double hitPadding = PhotonSpace.sm;
 
   @override
   Widget build(BuildContext context) {
@@ -456,13 +450,13 @@ class _QuickPill extends StatelessWidget {
           behavior: HitTestBehavior.opaque,
           onTap: onTap,
           child: Container(
-            height: 36,
+            height: 44,
             padding: const EdgeInsets.symmetric(horizontal: hitPadding),
             alignment: Alignment.center,
             child: AnimatedContainer(
               duration: const Duration(milliseconds: 120),
-              height: 28,
-              padding: const EdgeInsets.symmetric(horizontal: PhotonSpace.md),
+              height: 34,
+              padding: const EdgeInsets.symmetric(horizontal: 15),
               alignment: Alignment.center,
               decoration: BoxDecoration(
                 color: Colors.white.withValues(alpha: hovered ? 0.2 : 0.12),
@@ -471,11 +465,11 @@ class _QuickPill extends StatelessWidget {
               child: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  Text(emoji, style: const TextStyle(fontSize: 11, height: 1.2)),
-                  const SizedBox(width: PhotonSpace.sm - 2),
+                  Text(emoji, style: const TextStyle(fontSize: 13.5, height: 1.2)),
+                  const SizedBox(width: PhotonSpace.sm - 1),
                   Text(
                     label,
-                    style: t.text.labelCaps.copyWith(color: t.colors.onDock, fontWeight: FontWeight.w600),
+                    style: t.text.labelCaps.copyWith(fontSize: 10.5, color: t.colors.onDock, fontWeight: FontWeight.w600),
                   ),
                 ],
               ),
@@ -504,22 +498,22 @@ class _LinkButton extends StatelessWidget {
         RenderLink.offline => 'Render engine offline · retrying',
       },
       child: Container(
-        width: 32,
-        height: 32,
+        width: 40,
+        height: 40,
         decoration: BoxDecoration(
           color: Colors.white.withValues(alpha: 0.12),
-          borderRadius: BorderRadius.circular(PhotonRadius.window),
+          borderRadius: BorderRadius.circular(10),
         ),
         child: Stack(
           alignment: Alignment.center,
           children: [
-            Icon(Icons.memory, size: 15, color: t.colors.onDock),
+            Icon(Icons.memory, size: 19, color: t.colors.onDock),
             Positioned(
-              top: 7,
-              right: 7,
+              top: 8,
+              right: 8,
               child: FlashingPip(
                 color: live ? const Color(0xFF22D3EE) : t.colors.ghost,
-                size: 5,
+                size: 6,
                 flash: live,
               ),
             ),
@@ -551,14 +545,14 @@ class _SendButton extends StatelessWidget {
             onTap: onPressed,
             child: AnimatedContainer(
               duration: const Duration(milliseconds: 120),
-              width: 32,
-              height: 32,
+              width: 40,
+              height: 40,
               decoration: BoxDecoration(
                 color: hovered ? Color.alphaBlend(Colors.white.withValues(alpha: 0.12), accent) : accent,
-                borderRadius: BorderRadius.circular(PhotonRadius.window),
-                boxShadow: [BoxShadow(color: accent.withValues(alpha: 0.45), blurRadius: 12, spreadRadius: -2)],
+                borderRadius: BorderRadius.circular(10),
+                boxShadow: [BoxShadow(color: accent.withValues(alpha: 0.45), blurRadius: 14, spreadRadius: -2)],
               ),
-              child: const Icon(Icons.arrow_upward, size: 16, color: Colors.white),
+              child: const Icon(Icons.arrow_upward, size: 20, color: Colors.white),
             ),
           ),
         ),

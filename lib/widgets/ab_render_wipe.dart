@@ -1,10 +1,12 @@
 import 'dart:typed_data';
 import 'dart:ui' show PointMode;
 
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 
 import '../state/studio_controller.dart';
 import '../theme/photon_theme.dart';
+import 'photon_primitives.dart';
 
 /// Interactive before/after wipe: raw Monte Carlo samples on the left of the
 /// curtain, the denoised render on the right.
@@ -15,7 +17,11 @@ import '../theme/photon_theme.dart';
 ///
 /// [imageWrapper] wraps only the image layers (e.g. false color) so the
 /// curtain and its badges are never tinted.
-class AbRenderWipe extends StatelessWidget {
+///
+/// The curtain follows the pointer's exact X from the moment of the press, so
+/// fast movement cannot outrun it. A double tap (judged from raw pointer
+/// events, so it never delays the drag) resets it to the middle.
+class AbRenderWipe extends StatefulWidget {
   const AbRenderWipe({
     super.key,
     required this.studio,
@@ -34,8 +40,49 @@ class AbRenderWipe extends StatelessWidget {
   final double badgeTop;
 
   /// Width of the draggable zone around the divider.
-  static const double hitZoneWidth = 28;
+  static const double hitZoneWidth = 56;
   static const Key curtainKey = ValueKey('ab-curtain');
+
+  @override
+  State<AbRenderWipe> createState() => _AbRenderWipeState();
+}
+
+class _AbRenderWipeState extends State<AbRenderWipe> {
+  final FastDoubleTap _doubleTap = FastDoubleTap();
+  bool _pressed = false;
+
+  StudioController get _studio => widget.studio;
+
+  /// Moves the curtain to the pointer's X within the stage.
+  void _splitTo(Offset globalPosition) {
+    final box = context.findRenderObject();
+    if (box is! RenderBox || !box.hasSize || box.size.width <= 0) return;
+    _studio.setAbSplit(box.globalToLocal(globalPosition).dx / box.size.width);
+  }
+
+  void _onDown(PointerDownEvent e) {
+    setState(() => _pressed = true);
+    if (_doubleTap.down(e)) {
+      _studio.resetAbSplit();
+    } else {
+      _splitTo(e.position);
+    }
+  }
+
+  void _onMove(PointerMoveEvent e) {
+    _doubleTap.move(e);
+    _splitTo(e.position);
+  }
+
+  void _onUp(PointerUpEvent e) {
+    _doubleTap.up(e);
+    setState(() => _pressed = false);
+  }
+
+  void _onCancel(PointerCancelEvent e) {
+    _doubleTap.cancel();
+    setState(() => _pressed = false);
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -43,24 +90,24 @@ class AbRenderWipe extends StatelessWidget {
       builder: (context, box) {
         final w = box.maxWidth;
         return ValueListenableBuilder<double>(
-          valueListenable: studio.abSplit,
+          valueListenable: _studio.abSplit,
           builder: (context, split, _) {
             final splitX = w * split;
             final passes = Stack(
               fit: StackFit.expand,
               children: [
-                render,
+                widget.render,
                 ClipRect(
                   clipper: _LeftOfClipper(splitX),
-                  child: _RawPass(studio: studio, render: render),
+                  child: _RawPass(studio: _studio, render: widget.render),
                 ),
               ],
             );
             return Stack(
               fit: StackFit.expand,
               children: [
-                imageWrapper?.call(passes) ?? passes,
-                if (showCurtain) ..._curtain(context, w: w, split: split, splitX: splitX),
+                widget.imageWrapper?.call(passes) ?? passes,
+                if (widget.showCurtain) ..._curtain(context, w: w, split: split, splitX: splitX),
               ],
             );
           },
@@ -78,7 +125,7 @@ class AbRenderWipe extends StatelessWidget {
     final t = context.photon;
     final violet = t.colors.violet;
     final label = t.text.mono(size: 8, weight: FontWeight.w600, height: 1.2, color: Colors.white);
-    const halo = hitZoneWidth / 2;
+    const halo = AbRenderWipe.hitZoneWidth / 2;
 
     Widget badge(String text) => Container(
       padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
@@ -101,7 +148,7 @@ class AbRenderWipe extends StatelessWidget {
           child: DecoratedBox(
             decoration: BoxDecoration(
               color: violet,
-              boxShadow: [BoxShadow(color: violet.withValues(alpha: 0.55), blurRadius: 8)],
+              boxShadow: [BoxShadow(color: violet.withValues(alpha: _pressed ? 0.9 : 0.55), blurRadius: _pressed ? 14 : 8)],
             ),
           ),
         ),
@@ -110,13 +157,13 @@ class AbRenderWipe extends StatelessWidget {
       if (splitX > 84)
         Positioned(
           right: w - splitX + 10,
-          top: badgeTop,
+          top: widget.badgeTop,
           child: IgnorePointer(child: badge('RAW PT')),
         ),
       if (w - splitX > 120)
         Positioned(
           left: splitX + 10,
-          top: badgeTop,
+          top: widget.badgeTop,
           child: IgnorePointer(child: badge('OIDN DENOISED')),
         ),
       // Full-height hit zone: dragging it moves the curtain, never the camera.
@@ -124,23 +171,34 @@ class AbRenderWipe extends StatelessWidget {
         left: splitX - halo,
         top: 0,
         bottom: 0,
-        width: hitZoneWidth,
+        width: AbRenderWipe.hitZoneWidth,
         child: Semantics(
           slider: true,
           label: 'A/B render wipe',
           value: '${(split * 100).round()} percent',
           increasedValue: '${((split + 0.05).clamp(0.05, 0.95) * 100).round()} percent',
           decreasedValue: '${((split - 0.05).clamp(0.05, 0.95) * 100).round()} percent',
-          onIncrease: () => studio.setAbSplit(split + 0.05),
-          onDecrease: () => studio.setAbSplit(split - 0.05),
+          onIncrease: () => _studio.setAbSplit(split + 0.05),
+          onDecrease: () => _studio.setAbSplit(split - 0.05),
           child: MouseRegion(
             cursor: SystemMouseCursors.resizeColumn,
-            child: GestureDetector(
-              key: curtainKey,
+            child: Listener(
               behavior: HitTestBehavior.opaque,
-              onHorizontalDragUpdate: (d) => studio.setAbSplit(studio.abSplit.value + d.delta.dx / w),
-              onDoubleTap: studio.resetAbSplit,
-              child: Center(child: _Handle(violet: violet)),
+              onPointerDown: _onDown,
+              onPointerMove: _onMove,
+              onPointerUp: _onUp,
+              onPointerCancel: _onCancel,
+              // The Listener sets the position; this recognizer exists to win
+              // the gesture arena so the stage's orbit pan never also fires.
+              child: GestureDetector(
+                key: AbRenderWipe.curtainKey,
+                behavior: HitTestBehavior.opaque,
+                dragStartBehavior: DragStartBehavior.down,
+                onPanStart: (_) {},
+                onPanUpdate: (_) {},
+                onPanEnd: (_) {},
+                child: Center(child: _Handle(violet: violet, pressed: _pressed)),
+              ),
             ),
           ),
         ),
@@ -161,24 +219,32 @@ class _LeftOfClipper extends CustomClipper<Rect> {
   bool shouldReclip(_LeftOfClipper old) => old.x != x;
 }
 
-/// 24x36 Matte Carbon pill with micro-arrows.
+/// 24x36 Matte Carbon pill with micro-arrows; lights up while pressed.
 class _Handle extends StatelessWidget {
-  const _Handle({required this.violet});
+  const _Handle({required this.violet, required this.pressed});
 
   final Color violet;
+  final bool pressed;
 
   @override
   Widget build(BuildContext context) {
     final t = context.photon;
-    return Container(
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 90),
       width: 24,
       height: 36,
       alignment: Alignment.center,
       decoration: BoxDecoration(
-        color: const Color(0xFF0E0E10),
+        color: pressed ? Color.alphaBlend(violet.withValues(alpha: 0.35), const Color(0xFF0E0E10)) : const Color(0xFF0E0E10),
         borderRadius: BorderRadius.circular(PhotonRadius.pill),
         border: Border.all(color: violet),
-        boxShadow: [BoxShadow(color: violet.withValues(alpha: 0.35), blurRadius: 10, spreadRadius: -2)],
+        boxShadow: [
+          BoxShadow(
+            color: violet.withValues(alpha: pressed ? 0.7 : 0.35),
+            blurRadius: pressed ? 18 : 10,
+            spreadRadius: pressed ? 2 : -2,
+          ),
+        ],
       ),
       child: Text(
         '◄|►',

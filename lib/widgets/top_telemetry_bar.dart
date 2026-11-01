@@ -5,32 +5,48 @@ import '../state/studio_controller.dart';
 import '../theme/photon_theme.dart';
 import 'photon_primitives.dart';
 
-/// Top HUD: studio identity badge on the left, telemetry capsules, theme
-/// toggle and the EXR export action on the right. Scrolls horizontally when
-/// the window is too narrow to fit everything (companion layout).
+/// The studio header: one 40px architectural bar with the Photon mark and name
+/// on the left, workspace quick-switches in the middle, and GPU telemetry,
+/// convergence status, theme switch and the EXR export on the right. Scrolls
+/// horizontally when the window is too narrow to fit it all (companion layout).
 class TopTelemetryBar extends StatelessWidget {
   const TopTelemetryBar({super.key});
 
+  static const double height = 40;
+
   @override
   Widget build(BuildContext context) {
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        return SingleChildScrollView(
-          scrollDirection: Axis.horizontal,
-          child: ConstrainedBox(
-            constraints: BoxConstraints(minWidth: constraints.maxWidth),
-            child: const Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              crossAxisAlignment: CrossAxisAlignment.center,
-              children: [
-                _StudioBadge(),
-                SizedBox(width: PhotonSpace.md),
-                _TelemetryCluster(),
-              ],
+    final c = context.photon.colors;
+    return Container(
+      height: height,
+      decoration: BoxDecoration(
+        color: c.substrate,
+        border: Border(bottom: BorderSide(color: c.border)),
+      ),
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          return SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: ConstrainedBox(
+              constraints: BoxConstraints(minWidth: constraints.maxWidth),
+              child: const Padding(
+                padding: EdgeInsets.symmetric(horizontal: PhotonSpace.md),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  crossAxisAlignment: CrossAxisAlignment.center,
+                  children: [
+                    _StudioBadge(),
+                    SizedBox(width: PhotonSpace.lg),
+                    _WorkspaceSwitch(),
+                    SizedBox(width: PhotonSpace.lg),
+                    _TelemetryCluster(),
+                  ],
+                ),
+              ),
             ),
-          ),
-        );
-      },
+          );
+        },
+      ),
     );
   }
 }
@@ -41,15 +57,55 @@ class _StudioBadge extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final t = context.photon;
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        const PhotonLogoMark(size: 24, semanticLabel: 'Photon'),
+        const SizedBox(width: PhotonSpace.sm),
+        Text(
+          'PHOTON VFX STUDIO®',
+          style: t.text.labelCaps.copyWith(color: t.colors.carbon, fontWeight: FontWeight.w700),
+        ),
+      ],
+    );
+  }
+}
+
+/// SPLIT / VIEWPORT / OPTICS: which panels the workspace shows.
+class _WorkspaceSwitch extends StatelessWidget {
+  const _WorkspaceSwitch();
+
+  @override
+  Widget build(BuildContext context) {
+    final studio = StudioScope.of(context);
+    final t = context.photon;
+    final focus = studio.maximizedPanel;
     return PillCapsule(
+      padding: const EdgeInsets.all(3),
+      shadow: false,
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Pip(color: t.colors.carbon, size: 8),
-          const SizedBox(width: PhotonSpace.sm),
-          Text(
-            'PHOTON VFX STUDIO®',
-            style: t.text.labelCaps.copyWith(color: t.colors.carbon, fontWeight: FontWeight.w700),
+          _Segment(
+            icon: Icons.view_agenda_outlined,
+            label: 'SPLIT',
+            selected: focus == null,
+            onTap: () => studio.setMaximizedPanel(null),
+            tokens: t,
+          ),
+          _Segment(
+            icon: Icons.crop_landscape,
+            label: 'VIEWPORT',
+            selected: focus == 'viewport',
+            onTap: () => studio.setMaximizedPanel('viewport'),
+            tokens: t,
+          ),
+          _Segment(
+            icon: Icons.tune,
+            label: 'OPTICS',
+            selected: focus == 'optics',
+            onTap: () => studio.setMaximizedPanel('optics'),
+            tokens: t,
           ),
         ],
       ),
@@ -103,6 +159,7 @@ class _GpuPill extends StatelessWidget {
     return Tooltip(
       message: hint,
       child: PillCapsule(
+        shadow: false,
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
@@ -166,6 +223,7 @@ class _ThemeToggle extends StatelessWidget {
     final t = context.photon;
     return PillCapsule(
       padding: const EdgeInsets.all(3),
+      shadow: false,
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [

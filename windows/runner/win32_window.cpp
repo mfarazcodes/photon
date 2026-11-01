@@ -16,15 +16,19 @@ namespace {
 #define DWMWA_USE_IMMERSIVE_DARK_MODE 20
 #endif
 
-constexpr const wchar_t kWindowClassName[] = L"FLUTTER_RUNNER_WIN32_WINDOW";
+/// Caption styling attributes (Windows 11 build 22000+). Older systems ignore
+/// them, so the call is harmless there and the dark immersive frame remains.
+#ifndef DWMWA_BORDER_COLOR
+#define DWMWA_BORDER_COLOR 34
+#endif
+#ifndef DWMWA_CAPTION_COLOR
+#define DWMWA_CAPTION_COLOR 35
+#endif
+#ifndef DWMWA_TEXT_COLOR
+#define DWMWA_TEXT_COLOR 36
+#endif
 
-/// Registry key for app theme preference.
-///
-/// A value of 0 indicates apps should use dark mode. A non-zero or missing
-/// value indicates apps should use light mode.
-constexpr const wchar_t kGetPreferredBrightnessRegKey[] =
-  L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize";
-constexpr const wchar_t kGetPreferredBrightnessRegValue[] = L"AppsUseLightTheme";
+constexpr const wchar_t kWindowClassName[] = L"FLUTTER_RUNNER_WIN32_WINDOW";
 
 // The number of Win32Window objects that currently exist.
 static int g_active_window_count = 0;
@@ -142,6 +146,26 @@ bool Win32Window::Create(const std::wstring& title,
 
   if (!window) {
     return false;
+  }
+
+  // The class icon alone is cached unpredictably; set both sizes explicitly so
+  // the titlebar and taskbar pick up the Photon mark.
+  HINSTANCE instance = GetModuleHandle(nullptr);
+  HANDLE big_icon =
+      LoadImage(instance, MAKEINTRESOURCE(IDI_APP_ICON), IMAGE_ICON,
+                GetSystemMetrics(SM_CXICON), GetSystemMetrics(SM_CYICON),
+                LR_DEFAULTCOLOR);
+  HANDLE small_icon =
+      LoadImage(instance, MAKEINTRESOURCE(IDI_APP_ICON), IMAGE_ICON,
+                GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON),
+                LR_DEFAULTCOLOR);
+  if (big_icon) {
+    SendMessage(window, WM_SETICON, ICON_BIG,
+                reinterpret_cast<LPARAM>(big_icon));
+  }
+  if (small_icon) {
+    SendMessage(window, WM_SETICON, ICON_SMALL,
+                reinterpret_cast<LPARAM>(small_icon));
   }
 
   UpdateTheme(window);
@@ -274,16 +298,21 @@ void Win32Window::OnDestroy() {
 }
 
 void Win32Window::UpdateTheme(HWND const window) {
-  DWORD light_mode;
-  DWORD light_mode_size = sizeof(light_mode);
-  LSTATUS result = RegGetValue(HKEY_CURRENT_USER, kGetPreferredBrightnessRegKey,
-                               kGetPreferredBrightnessRegValue,
-                               RRF_RT_REG_DWORD, nullptr, &light_mode,
-                               &light_mode_size);
+  // Photon's chrome is always dark Matte Carbon. The caption is painted
+  // explicitly so the OS accent color (and the system light/dark setting) never
+  // tints the titlebar.
+  BOOL enable_dark_mode = TRUE;
+  DwmSetWindowAttribute(window, DWMWA_USE_IMMERSIVE_DARK_MODE,
+                        &enable_dark_mode, sizeof(enable_dark_mode));
 
-  if (result == ERROR_SUCCESS) {
-    BOOL enable_dark_mode = light_mode == 0;
-    DwmSetWindowAttribute(window, DWMWA_USE_IMMERSIVE_DARK_MODE,
-                          &enable_dark_mode, sizeof(enable_dark_mode));
-  }
+  // COLORREF is 0x00BBGGRR.
+  COLORREF caption_color = 0x00121010;  // #101012
+  COLORREF text_color = 0x00F5F3F3;     // #F3F3F5
+  COLORREF border_color = 0x00302B2A;   // #2A2B30
+  DwmSetWindowAttribute(window, DWMWA_CAPTION_COLOR, &caption_color,
+                        sizeof(caption_color));
+  DwmSetWindowAttribute(window, DWMWA_TEXT_COLOR, &text_color,
+                        sizeof(text_color));
+  DwmSetWindowAttribute(window, DWMWA_BORDER_COLOR, &border_color,
+                        sizeof(border_color));
 }
