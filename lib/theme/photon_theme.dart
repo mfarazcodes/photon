@@ -104,9 +104,9 @@ class PhotonPalette {
     textMuted: Color(0xFF6E6E76),
     ghost: Color(0xFFA5A5AE),
     hoverFill: Color(0xFFEAEAEF),
-    dock: Color(0xFF0E0E10),
-    onDock: Color(0xFFFFFFFF),
-    viewportMatte: Color(0xFF0E0E10),
+    dock: Color(0xFFFFFFFF),
+    onDock: Color(0xFF0E0E10),
+    viewportMatte: Color(0xFFE6E6EC),
     shadow: Color(0xFF0E0E10),
   );
 

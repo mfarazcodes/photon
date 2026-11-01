@@ -8,8 +8,10 @@ import '../services/render_socket.dart';
 import '../state/studio_controller.dart';
 import '../theme/photon_theme.dart';
 import 'ab_render_wipe.dart';
+import 'bvh_ray_overlay.dart';
 import 'photon_primitives.dart';
 import 'pixel_loupe_probe.dart';
+import 'procedural_scene_canvas.dart';
 import 'rauno_tick_scrubber.dart';
 
 /// The centerpiece floating window: `SCENE_VIEWPORT.rt`.
@@ -28,8 +30,9 @@ class MacWindowViewport extends StatefulWidget {
   static const String fallbackAsset = 'assets/images/caustic_wave.jpg';
 
   /// Below this window width the tools move from the titlebar to a strip
-  /// under it, so they never collide with the centered title.
-  static const double compactWidth = 800;
+  /// under it, so they never collide with the centered title. Six toggles and
+  /// the minimap need about 560px beside a title centered in the window.
+  static const double compactWidth = 1180;
 
   @override
   State<MacWindowViewport> createState() => _MacWindowViewportState();
@@ -104,7 +107,8 @@ class _MacWindowViewportState extends State<MacWindowViewport> with SingleTicker
   }
 }
 
-/// A/B WIPE, LOUPE and FALSE COLOR toggles plus the camera minimap.
+/// Viewport tools: A/B wipe, loupe, false color, the live shader, the BVH and
+/// ray overlay, and the snapshot button, plus the camera minimap.
 class _ViewportTools extends StatelessWidget {
   const _ViewportTools({required this.studio});
 
@@ -122,6 +126,25 @@ class _ViewportTools extends StatelessWidget {
         ),
         _ToolToggle(label: 'LOUPE', selected: studio.loupeEnabled, onTap: studio.toggleLoupe),
         _ToolToggle(label: 'FALSE COLOR', selected: studio.falseColorEnabled, onTap: studio.toggleFalseColor),
+        _ToolToggle(
+          key: const Key('toggle-live-shader'),
+          label: 'LIVE SHADER',
+          selected: studio.liveShaderEnabled,
+          onTap: studio.toggleLiveShader,
+        ),
+        _ToolToggle(
+          key: const Key('toggle-bvh-rays'),
+          label: 'BVH / RAYS',
+          selected: studio.bvhOverlayEnabled,
+          onTap: studio.toggleBvhOverlay,
+        ),
+        _ToolToggle(
+          key: const Key('viewport-snapshot-btn'),
+          label: 'SNAPSHOT',
+          icon: Icons.photo_camera_outlined,
+          selected: false,
+          onTap: studio.captureSnapshot,
+        ),
         const SizedBox(width: PhotonSpace.sm),
         RaunoViewportMinimap(studio: studio),
       ],
@@ -142,7 +165,16 @@ class _ToolStrip extends StatelessWidget {
       height: 30,
       padding: const EdgeInsets.symmetric(horizontal: PhotonSpace.sm),
       decoration: BoxDecoration(border: Border(bottom: BorderSide(color: c.border))),
-      child: Align(alignment: Alignment.centerRight, child: _ViewportTools(studio: studio)),
+      // Right-aligned when it fits, scrollable when it does not.
+      child: LayoutBuilder(
+        builder: (context, box) => SingleChildScrollView(
+          scrollDirection: Axis.horizontal,
+          child: ConstrainedBox(
+            constraints: BoxConstraints(minWidth: box.maxWidth),
+            child: Align(alignment: Alignment.centerRight, child: _ViewportTools(studio: studio)),
+          ),
+        ),
+      ),
     );
   }
 }
@@ -150,11 +182,20 @@ class _ToolStrip extends StatelessWidget {
 /// Titlebar toggle. Its hit area is the full bar height and the toggles abut,
 /// so there is no dead space between them.
 class _ToolToggle extends StatelessWidget {
-  const _ToolToggle({required this.label, required this.selected, required this.onTap});
+  const _ToolToggle({
+    super.key,
+    required this.label,
+    required this.selected,
+    required this.onTap,
+    this.icon,
+  });
 
   final String label;
   final bool selected;
   final VoidCallback onTap;
+
+  /// Optional leading glyph (for action buttons that are not on/off).
+  final IconData? icon;
 
   @override
   Widget build(BuildContext context) {
@@ -187,9 +228,18 @@ class _ToolToggle extends StatelessWidget {
                       : c.border,
                 ),
               ),
-              child: Text(
-                label,
-                style: t.text.labelCaps.copyWith(fontSize: 8, color: selected ? c.violetInk : c.textMuted),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  if (icon != null) ...[
+                    Icon(icon, size: 10, color: selected ? c.violetInk : c.textMuted),
+                    const SizedBox(width: 4),
+                  ],
+                  Text(
+                    label,
+                    style: t.text.labelCaps.copyWith(fontSize: 8, color: selected ? c.violetInk : c.textMuted),
+                  ),
+                ],
               ),
             ),
           ),
@@ -246,6 +296,13 @@ class _StageState extends State<_Stage> {
   /// Holding Alt opens the loupe without the toggle.
   bool _altHeld = HardwareKeyboard.instance.isAltPressed;
 
+  /// Double-tap sets the focus point; read from raw pointer events so it never
+  /// holds back the orbit drag.
+  final FastDoubleTap _doubleTap = FastDoubleTap();
+
+  /// The pointer the A/B curtain last claimed; the focus double-tap skips it.
+  int? _curtainPointer;
+
   @override
   void initState() {
     super.initState();
@@ -272,6 +329,28 @@ class _StageState extends State<_Stage> {
     );
   }
 
+  /// Double-tap or Shift+click moves the focus point and pulls focus to it.
+  void _onStagePointerDown(PointerDownEvent e, Size size) {
+    final isDouble = _doubleTap.down(e);
+    final shift = HardwareKeyboard.instance.isShiftPressed;
+    if (!isDouble && !shift) return;
+    if (size.isEmpty) return;
+    final studio = widget.studio;
+    // The A/B curtain has its own double-tap (reset); leave that press alone.
+    if (e.pointer == _curtainPointer) return;
+    studio.setFocusPoint(Offset(e.localPosition.dx / size.width, e.localPosition.dy / size.height));
+  }
+
+  /// Wheel zooms the camera, 0.5x to 4x.
+  void _onStageSignal(PointerSignalEvent event) {
+    if (event is! PointerScrollEvent) return;
+    GestureBinding.instance.pointerSignalResolver.register(event, (e) {
+      final scroll = e as PointerScrollEvent;
+      final studio = widget.studio;
+      studio.setCameraZoom(studio.cameraZoom.value * math.exp(-scroll.scrollDelta.dy * 0.0015));
+    });
+  }
+
   /// Everything that is image: the render, the wipe passes, false color.
   /// The loupe builds a second copy of it, magnified and without the curtain.
   Widget _imageLayers({required bool magnified, required double badgeTop}) {
@@ -286,6 +365,7 @@ class _StageState extends State<_Stage> {
       imageWrapper: falseColor,
       showCurtain: !magnified,
       badgeTop: badgeTop,
+      onCurtainPointerDown: (pointer) => _curtainPointer = pointer,
     );
   }
 
@@ -319,8 +399,20 @@ class _StageState extends State<_Stage> {
                 child: Stack(
                   fit: StackFit.expand,
                   children: [
-                    _imageLayers(magnified: false, badgeTop: badgeTop),
-                    IgnorePointer(child: _ProbeCrosshair(studio: studio, spin: widget.spin)),
+                    // The image layers listen for focus double-taps and the
+                    // zoom wheel. HUD controls sit above, so they never reach
+                    // this listener.
+                    Listener(
+                      behavior: HitTestBehavior.opaque,
+                      onPointerDown: (e) => _onStagePointerDown(e, size),
+                      onPointerMove: _doubleTap.move,
+                      onPointerUp: _doubleTap.up,
+                      onPointerCancel: (_) => _doubleTap.cancel(),
+                      onPointerSignal: _onStageSignal,
+                      child: _imageLayers(magnified: false, badgeTop: badgeTop),
+                    ),
+                    if (studio.bvhOverlayEnabled) BvhRayOverlay(studio: studio),
+                    _ProbeCrosshair(studio: studio, spin: widget.spin, stageSize: size),
                     Positioned(left: 10, top: 10, child: IgnorePointer(child: _TopLeftHud(studio: studio))),
                     // Interactive (bounces, integrator, reconnect), so no IgnorePointer.
                     Positioned(
@@ -335,7 +427,7 @@ class _StageState extends State<_Stage> {
                         ),
                       ),
                     ),
-                    const Positioned(left: 10, bottom: 10, child: IgnorePointer(child: _ResolutionTag())),
+                    Positioned(left: 10, bottom: 10, child: _ResolutionTag(studio: studio)),
                     Positioned(
                       right: 10,
                       bottom: 10,
@@ -346,8 +438,16 @@ class _StageState extends State<_Stage> {
                         left: 0,
                         right: 0,
                         // Clear of the corner HUDs when the stage is narrow.
-                        bottom: narrow ? 62 : 10,
+                        bottom: narrow ? 74 : 10,
                         child: const IgnorePointer(child: Center(child: IreExposureLegend())),
+                      ),
+                    if (studio.snapshots.isNotEmpty)
+                      Positioned(
+                        left: 0,
+                        right: 0,
+                        // Above the legend and the corner HUDs.
+                        bottom: narrow ? (studio.falseColorEnabled ? 118 : 74) : (studio.falseColorEnabled ? 54 : 10),
+                        child: Center(child: _TakesFilmstrip(studio: studio, maxWidth: size.width - (narrow ? 20 : 340))),
                       ),
                     if (widget.dropAsset != null) IgnorePointer(child: _DropOverlay(asset: widget.dropAsset!)),
                     if (loupeOn)
@@ -370,10 +470,12 @@ class _StageState extends State<_Stage> {
   }
 }
 
-/// Engine frame when one is held, bundled caustic render otherwise.
+/// What the stage shows, in priority order: a frame from the render engine, the
+/// live procedural simulation when it is switched on, otherwise the active
+/// project's still render.
 ///
-/// Always `BoxFit.cover`, in both studio modes, so toggling Dark Grading never
-/// crops differently or shifts the pixel under the loupe.
+/// Stills are always `BoxFit.cover`, in both studio modes, so toggling the
+/// theme never crops differently or shifts the pixel under the loupe.
 class _RenderSurface extends StatelessWidget {
   const _RenderSurface({required this.studio, required this.magnified});
 
@@ -385,33 +487,52 @@ class _RenderSurface extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final quality = magnified ? FilterQuality.none : FilterQuality.medium;
+    final project = studio.activeProject;
+    final asset = project?.previewAsset ?? MacWindowViewport.fallbackAsset;
 
-    Widget fallback() => ValueListenableBuilder<Offset>(
-      valueListenable: studio.orbit,
-      builder: (context, orbit, child) => Transform.translate(
-        // Orbiting nudges the still render so the preview responds to input.
-        offset: Offset(-orbit.dx * 0.15, -orbit.dy * 0.15),
-        child: Transform.scale(scale: 1.08, child: child),
+    // Orbit nudges stills for parallax; the wheel zooms them. (The procedural
+    // scenes apply both themselves, so they are not wrapped.)
+    Widget moving(Widget child) => AnimatedBuilder(
+      animation: Listenable.merge([studio.orbit, studio.cameraZoom]),
+      builder: (context, child) => Transform.translate(
+        offset: Offset(-studio.orbit.value.dx * 0.15, -studio.orbit.value.dy * 0.15),
+        child: Transform.scale(scale: 1.08 * studio.cameraZoom.value, child: child),
       ),
-      child: Image.asset(
-        MacWindowViewport.fallbackAsset,
+      child: child,
+    );
+
+    Widget still() => moving(
+      Image.asset(
+        asset,
+        key: ValueKey(asset),
         fit: BoxFit.cover,
         filterQuality: quality,
-        semanticLabel: 'Path-traced refractive liquid glass and chrome caustics',
+        semanticLabel: project == null ? 'Render' : '${project.name} reference render',
+        errorBuilder: (_, _, _) => const ColoredBox(color: Color(0xFF0E0E10)),
       ),
     );
 
     return ValueListenableBuilder<Uint8List?>(
       valueListenable: studio.frame,
       builder: (context, bytes, _) {
-        if (bytes == null) return fallback();
-        return Image.memory(
-          bytes,
-          gaplessPlayback: true,
-          fit: BoxFit.cover,
-          filterQuality: quality,
-          errorBuilder: (_, _, _) => fallback(),
-        );
+        if (bytes != null) {
+          return moving(
+            Image.memory(
+              bytes,
+              gaplessPlayback: true,
+              fit: BoxFit.cover,
+              filterQuality: quality,
+              errorBuilder: (_, _, _) => still(),
+            ),
+          );
+        }
+        if (studio.liveShaderEnabled) {
+          return ProceduralSceneCanvas(
+            studio: studio,
+            kind: project?.sceneKind ?? ProceduralSceneKind.causticWave,
+          );
+        }
+        return still();
       },
     );
   }
@@ -461,6 +582,29 @@ class _TelemetryStrip extends StatelessWidget {
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
+          if (studio.liveShaderEnabled) ...[
+            _HudPill(
+              key: const Key('hud-shader-play'),
+              tooltip: studio.animateShader ? 'Pause the live shader' : 'Resume the live shader',
+              onTap: () => studio.setAnimateShader(!studio.animateShader),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(
+                    studio.animateShader ? Icons.pause : Icons.play_arrow,
+                    size: 11,
+                    color: const Color(0xFFDCB8FF),
+                  ),
+                  const SizedBox(width: 4),
+                  Text(
+                    studio.animateShader ? 'SHADER' : 'PAUSED',
+                    style: style.copyWith(color: const Color(0xFFDCB8FF)),
+                  ),
+                ],
+              ),
+            ),
+            sep(),
+          ],
           ValueListenableBuilder<double>(
             valueListenable: studio.fps,
             builder: (context, fps, _) {
@@ -668,56 +812,88 @@ class _TopLeftHud extends StatelessWidget {
   }
 }
 
-/// Rotating optical probe at the center with a live IOR read-out.
+/// The optical probe: a rotating ring on the focus point, tinted with the
+/// probe wavelength, and a read-out you can click (step through the spectrum)
+/// or drag (scrub it).
 class _ProbeCrosshair extends StatelessWidget {
-  const _ProbeCrosshair({required this.studio, required this.spin});
+  const _ProbeCrosshair({required this.studio, required this.spin, required this.stageSize});
 
   final StudioController studio;
   final Animation<double> spin;
+  final Size stageSize;
 
   @override
   Widget build(BuildContext context) {
     final t = context.photon;
-    final violet = t.colors.violet;
-    return Center(
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          SizedBox(
-            width: 32,
-            height: 32,
-            child: Stack(
-              alignment: Alignment.center,
-              children: [
-                RotationTransition(
-                  turns: spin,
-                  child: CustomPaint(
-                    size: const Size.square(32),
-                    painter: _DashedRingPainter(color: violet.withValues(alpha: 0.7)),
+    return ValueListenableBuilder<Offset>(
+      valueListenable: studio.focusPoint,
+      builder: (context, uv, _) {
+        final nm = studio.wavelengthNm;
+        final tint = wavelengthToColor(nm);
+        final p = Offset(uv.dx * stageSize.width, uv.dy * stageSize.height);
+        final labelTop = math.min(p.dy + 20, math.max(0.0, stageSize.height - 28));
+        return Stack(
+          children: [
+            Positioned(
+              left: p.dx - 16,
+              top: p.dy - 16,
+              width: 32,
+              height: 32,
+              child: IgnorePointer(
+                child: Stack(
+                  alignment: Alignment.center,
+                  children: [
+                    RotationTransition(
+                      turns: spin,
+                      child: CustomPaint(
+                        size: const Size.square(32),
+                        painter: _DashedRingPainter(color: tint.withValues(alpha: 0.85)),
+                      ),
+                    ),
+                    Container(
+                      width: 6,
+                      height: 6,
+                      decoration: BoxDecoration(
+                        color: tint,
+                        shape: BoxShape.circle,
+                        boxShadow: [BoxShadow(color: tint, blurRadius: 8)],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            Positioned(
+              left: p.dx,
+              top: labelTop,
+              child: FractionalTranslation(
+                translation: const Offset(-0.5, 0),
+                child: _Hud(
+                  pill: true,
+                  padding: const EdgeInsets.all(2),
+                  child: _HudPill(
+                    key: const Key('hud-wavelength-pill'),
+                    tooltip: 'Click to step the wavelength · drag to scrub 380–700nm',
+                    onTap: studio.stepWavelength,
+                    onHorizontalDrag: (dx) => studio.setWavelengthNm(studio.wavelengthNm + dx * 1.2),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Pip(color: tint, size: 5),
+                        const SizedBox(width: 5),
+                        Text(
+                          'λ: ${nm.round()}nm | IOR: ${studio.param('ior').toStringAsFixed(3)}',
+                          style: t.text.mono(size: 8, height: 1.2, color: const Color(0xFFEFDBFF)),
+                        ),
+                      ],
+                    ),
                   ),
                 ),
-                Container(
-                  width: 6,
-                  height: 6,
-                  decoration: BoxDecoration(
-                    color: violet,
-                    shape: BoxShape.circle,
-                    boxShadow: [BoxShadow(color: violet, blurRadius: 8)],
-                  ),
-                ),
-              ],
+              ),
             ),
-          ),
-          const SizedBox(height: PhotonSpace.xs),
-          _Hud(
-            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-            child: Text(
-              'λ: 540nm | IOR: ${studio.param('ior').toStringAsFixed(3)}',
-              style: t.text.mono(size: 8, height: 1.2, color: const Color(0xFFEFDBFF)),
-            ),
-          ),
-        ],
-      ),
+          ],
+        );
+      },
     );
   }
 }
@@ -745,8 +921,12 @@ class _DashedRingPainter extends CustomPainter {
   bool shouldRepaint(_DashedRingPainter old) => old.color != color;
 }
 
+/// Resolution, color space and camera zoom. The zoom read-out is a button:
+/// click it to return to 1.00x.
 class _ResolutionTag extends StatelessWidget {
-  const _ResolutionTag();
+  const _ResolutionTag({required this.studio});
+
+  final StudioController studio;
 
   @override
   Widget build(BuildContext context) {
@@ -756,23 +936,88 @@ class _ResolutionTag extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         mainAxisSize: MainAxisSize.min,
         children: [
-          Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const Pip(color: Color(0xFF22D3EE), size: 6),
-              const SizedBox(width: PhotonSpace.sm - 2),
-              Text(
-                '3840×2160 (4K DCI)',
-                style: t.text.telemetrySm.copyWith(color: Colors.white, fontWeight: FontWeight.w600),
-              ),
-            ],
+          IgnorePointer(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Pip(color: Color(0xFF22D3EE), size: 6),
+                    const SizedBox(width: PhotonSpace.sm - 2),
+                    Text(
+                      '3840×2160 (4K DCI)',
+                      style: t.text.telemetrySm.copyWith(color: Colors.white, fontWeight: FontWeight.w600),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  'ACESCG / LINEAR SPACE',
+                  style: t.text.labelCaps.copyWith(fontSize: 8, color: const Color(0xFFC8C6C8)),
+                ),
+              ],
+            ),
           ),
           const SizedBox(height: 2),
-          Text(
-            'ACESCG / LINEAR SPACE',
-            style: t.text.labelCaps.copyWith(fontSize: 8, color: const Color(0xFFC8C6C8)),
+          _HudPill(
+            key: const Key('hud-zoom-pill'),
+            tooltip: 'Scroll the viewport to zoom · click to reset to 1.00×',
+            onTap: studio.resetCameraZoom,
+            child: ValueListenableBuilder<double>(
+              valueListenable: studio.cameraZoom,
+              builder: (context, zoom, _) => Text(
+                'ZOOM ${zoom.toStringAsFixed(2)}×',
+                style: t.text.labelCaps.copyWith(fontSize: 8, color: const Color(0xFFEFDBFF)),
+              ),
+            ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// The takes captured with SNAPSHOT: tap one to restore its exact optics.
+class _TakesFilmstrip extends StatelessWidget {
+  const _TakesFilmstrip({required this.studio, required this.maxWidth});
+
+  final StudioController studio;
+  final double maxWidth;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = context.photon;
+    final takes = studio.snapshots;
+    return ConstrainedBox(
+      constraints: BoxConstraints(maxWidth: math.max(96.0, maxWidth)),
+      child: _Hud(
+        pill: true,
+        padding: const EdgeInsets.all(2),
+        child: SingleChildScrollView(
+          scrollDirection: Axis.horizontal,
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Padding(
+                padding: EdgeInsets.only(left: 8, right: 4),
+                child: Icon(Icons.photo_camera_outlined, size: 11, color: Color(0xFFDCB8FF)),
+              ),
+              for (final take in takes)
+                _HudPill(
+                  key: Key('take-${take.id}'),
+                  tooltip:
+                      '${take.projectName} · IOR ${take.ior.toStringAsFixed(3)} · ${take.spp} SPP · f/${take.aperture.toStringAsFixed(1)}',
+                  onTap: () => studio.restoreSnapshot(take.id),
+                  child: Text(
+                    take.label,
+                    style: t.text.labelCaps.copyWith(fontSize: 8, color: Colors.white.withValues(alpha: 0.9)),
+                  ),
+                ),
+            ],
+          ),
+        ),
       ),
     );
   }

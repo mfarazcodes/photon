@@ -29,11 +29,17 @@ class AbRenderWipe extends StatefulWidget {
     this.imageWrapper,
     this.showCurtain = true,
     this.badgeTop = 10,
+    this.onCurtainPointerDown,
   });
 
   final StudioController studio;
   final Widget render;
   final Widget Function(Widget passes)? imageWrapper;
+
+  /// Told which pointer the curtain claimed, so an enclosing listener (the
+  /// stage's focus double-tap) can ignore it. The curtain sees a press first and
+  /// may already have moved by the time the enclosing listener runs.
+  final ValueChanged<int>? onCurtainPointerDown;
 
   /// False for the loupe's magnified copy, which must not carry the handle.
   final bool showCurtain;
@@ -61,6 +67,7 @@ class _AbRenderWipeState extends State<AbRenderWipe> {
   }
 
   void _onDown(PointerDownEvent e) {
+    widget.onCurtainPointerDown?.call(e.pointer);
     setState(() => _pressed = true);
     if (_doubleTap.down(e)) {
       _studio.resetAbSplit();

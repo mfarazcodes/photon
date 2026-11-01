@@ -28,6 +28,16 @@ enum ProjectStatus {
   final String label;
 }
 
+/// The real-time procedural optical simulations behind a project's live mode.
+enum ProceduralSceneKind {
+  causticWave,
+  spectralPrism,
+  liquidChrome,
+  blackHoleLensing,
+  emeraldSubsurface,
+  soapFilmIridescence,
+}
+
 /// A saved scene: optical parameters plus the integrator that renders them.
 @immutable
 class StudioProject {
@@ -42,6 +52,8 @@ class StudioProject {
     required this.previewAsset,
     required this.params,
     this.integrator = IntegratorMode.unidirectional,
+    this.sceneKind = ProceduralSceneKind.causticWave,
+    this.isDynamic = false,
   });
 
   /// Stable identifier; also the payload of a dragged project card.
@@ -58,11 +70,20 @@ class StudioProject {
   /// Human-readable age, e.g. `2m ago`.
   final String updatedAt;
   final ProjectStatus status;
+
+  /// The static reference render.
   final String previewAsset;
 
   /// Optical parameters by `OpticsParam.id`.
   final Map<String, double> params;
   final IntegratorMode integrator;
+
+  /// The procedural simulation this project runs when live.
+  final ProceduralSceneKind sceneKind;
+
+  /// Opens with the live procedural simulation instead of the still render.
+  /// Every project can still be switched either way from the viewport.
+  final bool isDynamic;
 
   double get ior => params['ior'] ?? 1.0;
   int get spp => (params['samples_per_pixel'] ?? 0).round();
@@ -78,6 +99,8 @@ class StudioProject {
     String? previewAsset,
     Map<String, double>? params,
     IntegratorMode? integrator,
+    ProceduralSceneKind? sceneKind,
+    bool? isDynamic,
   }) => StudioProject(
     id: id ?? this.id,
     name: name ?? this.name,
@@ -89,11 +112,17 @@ class StudioProject {
     previewAsset: previewAsset ?? this.previewAsset,
     params: params ?? this.params,
     integrator: integrator ?? this.integrator,
+    sceneKind: sceneKind ?? this.sceneKind,
+    isDynamic: isDynamic ?? this.isDynamic,
   );
 }
 
 const String _wave = 'assets/images/caustic_wave.jpg';
 const String _gold = 'assets/images/gold_bsdf_sphere.jpg';
+const String _prism = 'assets/images/volumetric_prism.png';
+const String _chrome = 'assets/images/chrome_anisotropic.png';
+const String _emerald = 'assets/images/emerald_subsurface.png';
+const String _kerr = 'assets/images/blackhole_lensing.png';
 
 /// Shipped starter projects. The first is active on launch.
 const List<StudioProject> kDefaultProjects = [
@@ -107,6 +136,8 @@ const List<StudioProject> kDefaultProjects = [
     status: ProjectStatus.active,
     previewAsset: _wave,
     integrator: IntegratorMode.unidirectional,
+    sceneKind: ProceduralSceneKind.causticWave,
+    isDynamic: true,
     params: {
       'aperture': 1.4,
       'focal_distance': 1.82,
@@ -126,6 +157,8 @@ const List<StudioProject> kDefaultProjects = [
     status: ProjectStatus.rendered,
     previewAsset: _gold,
     integrator: IntegratorMode.unidirectional,
+    sceneKind: ProceduralSceneKind.liquidChrome,
+    isDynamic: false,
     params: {
       'aperture': 2.8,
       'focal_distance': 1.2,
@@ -143,8 +176,10 @@ const List<StudioProject> kDefaultProjects = [
     subtitle: '.pht · Spectral Cauchy',
     updatedAt: '3h ago',
     status: ProjectStatus.active,
-    previewAsset: _wave,
+    previewAsset: _prism,
     integrator: IntegratorMode.sppm,
+    sceneKind: ProceduralSceneKind.spectralPrism,
+    isDynamic: true,
     params: {
       'aperture': 4.0,
       'focal_distance': 2.4,
@@ -162,8 +197,10 @@ const List<StudioProject> kDefaultProjects = [
     subtitle: '.pht · BiDir Solver',
     updatedAt: 'Yesterday',
     status: ProjectStatus.draft,
-    previewAsset: _wave,
+    previewAsset: _chrome,
     integrator: IntegratorMode.bidirectional,
+    sceneKind: ProceduralSceneKind.liquidChrome,
+    isDynamic: true,
     params: {
       'aperture': 5.6,
       'focal_distance': 3.1,
@@ -181,8 +218,10 @@ const List<StudioProject> kDefaultProjects = [
     subtitle: '.pht · DoF f/1.2',
     updatedAt: '2d ago',
     status: ProjectStatus.rendered,
-    previewAsset: _gold,
+    previewAsset: _emerald,
     integrator: IntegratorMode.restir,
+    sceneKind: ProceduralSceneKind.emeraldSubsurface,
+    isDynamic: false,
     params: {
       'aperture': 1.2,
       'focal_distance': 0.9,
@@ -190,6 +229,48 @@ const List<StudioProject> kDefaultProjects = [
       'max_bounces': 8,
       'samples_per_pixel': 128,
       'caustics_energy': 0.85,
+    },
+  ),
+  StudioProject(
+    id: 'kerr_photon_ring',
+    name: 'KERR_PHOTON_RING',
+    code: 'PRJ-06',
+    sceneType: 'Relativistic Lensing',
+    subtitle: '.pht · GR Ray Marcher',
+    updatedAt: '5h ago',
+    status: ProjectStatus.active,
+    previewAsset: _kerr,
+    integrator: IntegratorMode.unidirectional,
+    sceneKind: ProceduralSceneKind.blackHoleLensing,
+    isDynamic: true,
+    params: {
+      'aperture': 2.0,
+      'focal_distance': 4.5,
+      'ior': 2.0,
+      'max_bounces': 24,
+      'samples_per_pixel': 512,
+      'caustics_energy': 1.6,
+    },
+  ),
+  StudioProject(
+    id: 'thin_film_iris',
+    name: 'THIN_FILM_IRIS',
+    code: 'PRJ-07',
+    sceneType: 'Thin-Film Interference',
+    subtitle: '.pht · Airy Interference',
+    updatedAt: '3d ago',
+    status: ProjectStatus.draft,
+    previewAsset: _wave,
+    integrator: IntegratorMode.bidirectional,
+    sceneKind: ProceduralSceneKind.soapFilmIridescence,
+    isDynamic: true,
+    params: {
+      'aperture': 3.2,
+      'focal_distance': 1.6,
+      'ior': 1.33,
+      'max_bounces': 6,
+      'samples_per_pixel': 128,
+      'caustics_energy': 0.9,
     },
   ),
 ];

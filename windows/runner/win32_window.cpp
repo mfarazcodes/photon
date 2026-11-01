@@ -30,6 +30,9 @@ namespace {
 
 constexpr const wchar_t kWindowClassName[] = L"FLUTTER_RUNNER_WIN32_WINDOW";
 
+// The theme last applied to the window frame; Photon launches in Dark Studio.
+bool g_dark_theme = true;
+
 // The number of Win32Window objects that currently exist.
 static int g_active_window_count = 0;
 
@@ -239,7 +242,7 @@ Win32Window::MessageHandler(HWND hwnd,
       return 0;
 
     case WM_DWMCOLORIZATIONCOLORCHANGED:
-      UpdateTheme(hwnd);
+      UpdateTheme(hwnd, g_dark_theme);
       return 0;
   }
 
@@ -297,18 +300,27 @@ void Win32Window::OnDestroy() {
   // No-op; provided for subclasses.
 }
 
-void Win32Window::UpdateTheme(HWND const window) {
-  // Photon's chrome is always dark Matte Carbon. The caption is painted
-  // explicitly so the OS accent color (and the system light/dark setting) never
-  // tints the titlebar.
-  BOOL enable_dark_mode = TRUE;
+void Win32Window::UpdateTheme(HWND const window, bool dark_mode) {
+  g_dark_theme = dark_mode;
+
+  // The caption is painted explicitly, so neither the OS accent color nor the
+  // system light/dark setting ever tints the titlebar: it always follows the
+  // studio theme. COLORREF is 0x00BBGGRR.
+  BOOL enable_dark_mode = dark_mode ? TRUE : FALSE;
+  COLORREF caption_color;
+  COLORREF text_color;
+  COLORREF border_color;
+  if (dark_mode) {
+    caption_color = 0x00121010;  // #101012 Matte Carbon
+    text_color = 0x00F5F3F3;     // #F3F3F5
+    border_color = 0x00302B2A;   // #2A2B30
+  } else {
+    caption_color = 0x00FBF9F9;  // #F9F9FB Daylight surface
+    text_color = 0x00100E0E;     // #0E0E10 Matte Carbon
+    border_color = 0x00E6E2E2;   // #E2E2E6 Structural border
+  }
   DwmSetWindowAttribute(window, DWMWA_USE_IMMERSIVE_DARK_MODE,
                         &enable_dark_mode, sizeof(enable_dark_mode));
-
-  // COLORREF is 0x00BBGGRR.
-  COLORREF caption_color = 0x00121010;  // #101012
-  COLORREF text_color = 0x00F5F3F3;     // #F3F3F5
-  COLORREF border_color = 0x00302B2A;   // #2A2B30
   DwmSetWindowAttribute(window, DWMWA_CAPTION_COLOR, &caption_color,
                         sizeof(caption_color));
   DwmSetWindowAttribute(window, DWMWA_TEXT_COLOR, &text_color,

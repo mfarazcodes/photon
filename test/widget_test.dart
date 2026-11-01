@@ -11,9 +11,11 @@ import 'package:photon/services/render_socket.dart';
 import 'package:photon/state/studio_controller.dart';
 import 'package:photon/theme/photon_theme.dart';
 import 'package:photon/widgets/ab_render_wipe.dart';
+import 'package:photon/widgets/bvh_ray_overlay.dart';
 import 'package:photon/widgets/mac_window_viewport.dart';
 import 'package:photon/widgets/photon_primitives.dart';
 import 'package:photon/widgets/pixel_loupe_probe.dart';
+import 'package:photon/widgets/procedural_scene_canvas.dart';
 import 'package:photon/widgets/projects_sidebar.dart';
 import 'package:photon/widgets/rauno_tick_scrubber.dart';
 import 'package:photon/widgets/spatial_canvas.dart';
@@ -35,11 +37,25 @@ Future<StudioController> _pumpStudio(
   tester.view.physicalSize = size;
   tester.view.devicePixelRatio = 1;
   addTearDown(tester.view.reset);
-  final studio = controller ?? StudioController(autoConnect: false);
+  // animateShader off: live scenes hold a fixed phase instead of scheduling a
+  // frame forever, so tests settle.
+  final studio = controller ?? StudioController(autoConnect: false, animateShader: false);
   await tester.pumpWidget(PhotonApp(controller: studio));
   await tester.pump(const Duration(milliseconds: 300));
   return studio;
 }
+
+/// Scrolls [finder] into view (the header and the account modal scroll), then
+/// taps it.
+Future<void> _tap(WidgetTester tester, Finder finder) async {
+  await tester.ensureVisible(finder);
+  await tester.pump();
+  await tester.tap(finder);
+}
+
+Future<void> _tapText(WidgetTester tester, String text) => _tap(tester, find.text(text));
+
+Future<void> _tapKey(WidgetTester tester, Key key) => _tap(tester, find.byKey(key));
 
 /// Tears the tree down so the controller's ticker and the repeating pip
 /// animations do not outlive the test.
@@ -154,7 +170,7 @@ void main() {
     expect(theme.extension<PhotonTokens>()!.colors.substrate, const Color(0xFF141417));
     expect(theme.extension<PhotonTokens>()!.colors.border, const Color(0xFF2A2B30));
 
-    await tester.tap(find.text('DAYLIGHT'));
+    await _tapText(tester, 'DAYLIGHT');
     // MaterialApp animates theme changes: one frame to start, one to finish.
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 400));
@@ -164,7 +180,7 @@ void main() {
     expect(theme.scaffoldBackgroundColor, PhotonPalette.daylight.canvas);
     expect(theme.extension<PhotonTokens>()!.colors.isDark, isFalse);
 
-    await tester.tap(find.text('DARK GRADING'));
+    await _tapText(tester, 'DARK GRADING');
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 400));
     expect(studio.darkGrading, isTrue);
@@ -380,7 +396,10 @@ void main() {
         'VOLUMETRIC_PRISM',
         'CHROME_CAUSTICS',
         'ACRYLIC_LENS_ARRAY',
+        'KERR_PHOTON_RING',
+        'THIN_FILM_IRIS',
       ]);
+      expect(studio.liveShaderEnabled, isTrue, reason: 'the first project is dynamic');
       expect(studio.activeProjectId, 'caustic_study_04');
       expect(studio.param('ior'), 2.253);
       expect(studio.targetSamples, 256);
@@ -425,10 +444,10 @@ void main() {
 
       studio.setParam('ior', 1.9);
       studio.createNewProject();
-      expect(studio.projects, hasLength(6));
+      expect(studio.projects, hasLength(8));
       final created = studio.activeProject!;
-      expect(created.name, 'UNTITLED_06');
-      expect(created.code, 'PRJ-06');
+      expect(created.name, 'UNTITLED_08');
+      expect(created.code, 'PRJ-08');
       expect(created.status, ProjectStatus.draft);
       expect(created.ior, 1.9);
       expect(studio.projects.first.id, created.id);
@@ -442,7 +461,7 @@ void main() {
       addTearDown(studio.dispose);
 
       studio.duplicateProject('gold_atelier_bsdf');
-      expect(studio.projects, hasLength(6));
+      expect(studio.projects, hasLength(8));
       expect(studio.projects[2].name, 'GOLD_ATELIER_BSDF_COPY');
 
       studio.deleteProject('caustic_study_04');
@@ -567,7 +586,7 @@ void main() {
 
     testWidgets('daylight mode uses the light grid', (tester) async {
       final studio = await _pumpStudio(tester, const Size(1280, 800));
-      await tester.tap(find.text('DAYLIGHT'));
+      await _tapText(tester, 'DAYLIGHT');
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 400));
       expect(_dotPainter(tester).color, const Color(0xFFD0D0D8));
@@ -667,7 +686,7 @@ void main() {
       expect(find.text('Vulkan RT • 512 SPP'), findsOneWidget);
       expect(studio.toast.value, 'PROJECT LOADED · GOLD_ATELIER_BSDF');
 
-      await tester.tap(find.byKey(const ValueKey('project-chrome_caustics')));
+      await _tapKey(tester, const ValueKey('project-chrome_caustics'));
       await tester.pump();
       expect(studio.integrator, IntegratorMode.bidirectional);
       expect(tester.takeException(), isNull);
@@ -677,15 +696,15 @@ void main() {
 
     testWidgets('+ NEW adds a project from the current settings', (tester) async {
       final studio = await _pumpStudio(tester, const Size(1280, 800));
-      expect(studio.projects, hasLength(5));
+      expect(studio.projects, hasLength(7));
 
       await tester.tap(find.byKey(const Key('new-project-btn')));
       await tester.pump();
 
-      expect(studio.projects, hasLength(6));
-      expect(studio.activeProject!.name, 'UNTITLED_06');
-      expect(find.text('UNTITLED_06'), findsOneWidget);
-      expect(find.text('6'), findsOneWidget, reason: 'the count badge');
+      expect(studio.projects, hasLength(8));
+      expect(studio.activeProject!.name, 'UNTITLED_08');
+      expect(find.text('UNTITLED_08'), findsOneWidget);
+      expect(find.text('8'), findsOneWidget, reason: 'the count badge');
       expect(tester.takeException(), isNull);
 
       await _teardown(tester, studio);
@@ -704,7 +723,7 @@ void main() {
 
       await tester.tap(find.byKey(const ValueKey('project-dup-$id')));
       await tester.pump();
-      expect(studio.projects, hasLength(6));
+      expect(studio.projects, hasLength(8));
       expect(find.text('GOLD_ATELIER_BSDF_COPY'), findsOneWidget);
 
       await mouse.moveTo(tester.getCenter(find.byKey(const ValueKey('project-$id'))));
@@ -725,7 +744,77 @@ void main() {
       expect(studio.activeProjectId, 'caustic_study_04');
       await tester.tap(find.byKey(const Key('new-project-btn')));
       await tester.pump();
-      expect(studio.projects, hasLength(6));
+      expect(studio.projects, hasLength(8));
+      expect(tester.takeException(), isNull);
+      await _teardown(tester, studio);
+    });
+
+    testWidgets('lists all seven projects with dynamic and static badges', (tester) async {
+      final studio = await _pumpStudio(tester, const Size(1280, 800));
+      for (final p in kDefaultProjects) {
+        expect(find.text(p.name), findsOneWidget, reason: p.name);
+      }
+      expect(studio.projects.where((p) => p.isDynamic), hasLength(5));
+      expect(find.text('⚡ DYNAMIC'), findsNWidgets(5));
+      expect(find.text('\u{1F5BC} STATIC'), findsNWidgets(2));
+      expect(tester.takeException(), isNull);
+      await _teardown(tester, studio);
+    });
+
+    testWidgets('DYNAMIC and STATIC filters narrow the list; ALL restores it', (tester) async {
+      final studio = await _pumpStudio(tester, const Size(1280, 800));
+      const dynamicNames = {
+        'CAUSTIC_STUDY_04',
+        'VOLUMETRIC_PRISM',
+        'CHROME_CAUSTICS',
+        'KERR_PHOTON_RING',
+        'THIN_FILM_IRIS',
+      };
+      const staticNames = {'GOLD_ATELIER_BSDF', 'ACRYLIC_LENS_ARRAY'};
+
+      await tester.tap(find.byKey(const Key('project-filter-dynamic')));
+      await tester.pump();
+      for (final n in dynamicNames) {
+        expect(find.text(n), findsOneWidget, reason: n);
+      }
+      for (final n in staticNames) {
+        expect(find.text(n), findsNothing, reason: n);
+      }
+
+      await tester.tap(find.byKey(const Key('project-filter-static')));
+      await tester.pump();
+      for (final n in staticNames) {
+        expect(find.text(n), findsOneWidget, reason: n);
+      }
+      for (final n in dynamicNames) {
+        expect(find.text(n), findsNothing, reason: n);
+      }
+
+      await tester.tap(find.byKey(const Key('project-filter-all')));
+      await tester.pump();
+      for (final n in {...dynamicNames, ...staticNames}) {
+        expect(find.text(n), findsOneWidget, reason: n);
+      }
+      expect(tester.takeException(), isNull);
+      await _teardown(tester, studio);
+    });
+
+    testWidgets('the search field filters by name, and an empty result says so', (tester) async {
+      final studio = await _pumpStudio(tester, const Size(1280, 800));
+      await tester.enterText(find.byKey(const Key('project-search')), 'kerr');
+      await tester.pump();
+      expect(find.text('KERR_PHOTON_RING'), findsOneWidget);
+      expect(find.text('CAUSTIC_STUDY_04'), findsNothing);
+
+      await tester.enterText(find.byKey(const Key('project-search')), 'zzzz');
+      await tester.pump();
+      expect(find.text('NO PROJECTS MATCH'), findsOneWidget);
+
+      // Filter and search combine.
+      await tester.enterText(find.byKey(const Key('project-search')), 'prism');
+      await tester.tap(find.byKey(const Key('project-filter-static')));
+      await tester.pump();
+      expect(find.text('NO PROJECTS MATCH'), findsOneWidget, reason: 'VOLUMETRIC_PRISM is dynamic');
       expect(tester.takeException(), isNull);
       await _teardown(tester, studio);
     });
@@ -870,17 +959,17 @@ void main() {
     testWidgets('the header workspace switch drives the same maximize state', (tester) async {
       final studio = await _pumpStudio(tester, const Size(1280, 800));
 
-      await tester.tap(find.text('OPTICS'));
+      await _tapText(tester, 'OPTICS');
       await tester.pump();
       expect(studio.maximizedPanel, 'optics');
       expect(find.text('SCENE_VIEWPORT.rt'), findsNothing);
 
-      await tester.tap(find.text('VIEWPORT'));
+      await _tapText(tester, 'VIEWPORT');
       await tester.pump();
       expect(studio.maximizedPanel, 'viewport');
       expect(find.text('OPTICS_PARAMETERS'), findsNothing);
 
-      await tester.tap(find.text('SPLIT'));
+      await _tapText(tester, 'SPLIT');
       await tester.pump();
       expect(studio.maximizedPanel, isNull);
       expect(find.text('OPTICS_PARAMETERS'), findsOneWidget);
@@ -1166,6 +1255,9 @@ void main() {
 
     testWidgets('the render always uses BoxFit.cover, in both studio modes', (tester) async {
       final studio = await _pumpStudio(tester, const Size(1280, 800));
+      // Stills only: the first project opens on its live shader.
+      studio.setLiveShader(false);
+      await tester.pump();
 
       List<Image> renders() => tester
           .widgetList<Image>(find.byType(Image))
@@ -1175,7 +1267,7 @@ void main() {
       expect(renders(), isNotEmpty);
       expect(renders().every((i) => i.fit == BoxFit.cover), isTrue);
 
-      await tester.tap(find.text('DAYLIGHT'));
+      await _tapText(tester, 'DAYLIGHT');
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 400));
 
@@ -1428,10 +1520,10 @@ void main() {
       expect(tester.getSize(find.byKey(const ValueKey('proximity-monogram'))), const Size(40, 40));
       expect(tester.getSize(find.byKey(const ValueKey('proximity-link'))), const Size(40, 40));
       expect(tester.getSize(find.byKey(const ValueKey('proximity-send'))), const Size(40, 40));
-      expect(tester.getSize(find.byType(TextField)).height, 44);
+      expect(tester.getSize(find.byKey(const Key('scene-prompt'))).height, 44);
       expect(tester.getSize(find.byKey(const ValueKey('pill-hit-RENDER PROMPT'))).height, 44);
 
-      final prompt = tester.widget<TextField>(find.byType(TextField));
+      final prompt = tester.widget<TextField>(find.byKey(const Key('scene-prompt')));
       expect(prompt.style!.fontSize, 13.5);
       expect(prompt.cursorHeight, 18);
       expect(tester.takeException(), isNull);
@@ -1441,10 +1533,10 @@ void main() {
 
     testWidgets('Escape releases the prompt field; Ctrl+K takes it back', (tester) async {
       final studio = await _pumpStudio(tester, const Size(1280, 800));
-      final field = tester.widget<TextField>(find.byType(TextField));
+      final field = tester.widget<TextField>(find.byKey(const Key('scene-prompt')));
       const beam = ValueKey('dock-beam');
 
-      await tester.tap(find.byType(TextField));
+      await tester.tap(find.byKey(const Key('scene-prompt')));
       await tester.pump();
       expect(field.focusNode!.hasFocus, isTrue);
       expect(find.byKey(beam), findsOneWidget, reason: 'the beam runs while focused');
@@ -1505,6 +1597,1295 @@ void main() {
       await tester.pump();
       expect(studio.toast.value, contains('DESCRIBE'));
 
+      await _teardown(tester, studio);
+    });
+  });
+
+  group('theme synchronization', () {
+    test('palette values match the studio spec', () {
+      expect(PhotonPalette.daylight.dock, const Color(0xFFFFFFFF));
+      expect(PhotonPalette.daylight.onDock, const Color(0xFF0E0E10));
+      expect(PhotonPalette.daylight.viewportMatte, const Color(0xFFE6E6EC));
+      expect(PhotonPalette.grading.dock, const Color(0xFF101012));
+      expect(PhotonPalette.grading.onDock, const Color(0xFFF3F3F5));
+      expect(PhotonPalette.grading.canvas, const Color(0xFF18191C));
+      expect(PhotonPalette.grading.substrate, const Color(0xFF141417));
+      expect(PhotonPalette.grading.surface, const Color(0xFF1E1F22));
+      expect(PhotonPalette.grading.border, const Color(0xFF2A2B30));
+    });
+
+    testWidgets('switching to Daylight re-skins the dock and the header, and back', (tester) async {
+      final studio = await _pumpStudio(tester, const Size(1280, 800));
+      Color? dockColor() =>
+          (tester.widget<Container>(find.byKey(const ValueKey('dock-surface'))).decoration as BoxDecoration).color;
+      BoxDecoration dockDecoration() =>
+          tester.widget<Container>(find.byKey(const ValueKey('dock-surface'))).decoration! as BoxDecoration;
+      Color? headerColor() => (tester.widget<AnimatedContainer>(find.byKey(const ValueKey('top-bar'))).decoration
+              as BoxDecoration)
+          .color;
+      InputDecoration prompt() => tester.widget<TextField>(find.byKey(const Key('scene-prompt'))).decoration!;
+
+      expect(dockColor(), const Color(0xFF101012));
+      expect(headerColor(), PhotonPalette.grading.substrate);
+
+      await _tapText(tester, 'DAYLIGHT');
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400));
+
+      expect(dockColor(), const Color(0xFFFFFFFF));
+      expect((dockDecoration().border! as Border).top.color, PhotonPalette.daylight.border);
+      expect(headerColor(), const Color(0xFFF9F9FB));
+      expect(prompt().fillColor, PhotonPalette.daylight.canvas);
+      expect(tester.widget<TextField>(find.byKey(const Key('scene-prompt'))).style!.color, const Color(0xFF0E0E10));
+      expect(tester.takeException(), isNull);
+
+      await _tapText(tester, 'DARK GRADING');
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400));
+      expect(dockColor(), const Color(0xFF101012));
+      expect(headerColor(), PhotonPalette.grading.substrate);
+      expect(prompt().fillColor, Colors.white.withValues(alpha: 0.08));
+
+      await _teardown(tester, studio);
+    });
+
+    testWidgets('the Photon mark swaps its tile between the two themes', (tester) async {
+      Future<Color> tile({required bool dark}) async {
+        final key = GlobalKey();
+        await tester.pumpWidget(
+          Directionality(
+            textDirection: TextDirection.ltr,
+            child: Center(
+              child: RepaintBoundary(
+                key: key,
+                child: SizedBox.square(dimension: 40, child: PhotonLogoMark(size: 40, isDark: dark)),
+              ),
+            ),
+          ),
+        );
+        return _pixel(await _capture(tester, key), 40, 4, 20);
+      }
+
+      final dark = await tile(dark: true);
+      final light = await tile(dark: false);
+      expect(_channel(dark.r), lessThan(40), reason: 'Matte Carbon tile');
+      expect(_channel(light.r), greaterThan(230), reason: 'alabaster tile');
+    });
+
+    testWidgets('the mark follows the ambient theme when not forced', (tester) async {
+      final key = GlobalKey();
+      Future<Color> sample(Brightness b) async {
+        await tester.pumpWidget(
+          Theme(
+            data: ThemeData(brightness: b),
+            child: Directionality(
+              textDirection: TextDirection.ltr,
+              child: Center(
+                child: RepaintBoundary(
+                  key: key,
+                  child: const SizedBox.square(dimension: 40, child: PhotonLogoMark(size: 40)),
+                ),
+              ),
+            ),
+          ),
+        );
+        return _pixel(await _capture(tester, key), 40, 4, 20);
+      }
+
+      expect(_channel((await sample(Brightness.dark)).r), lessThan(40));
+      expect(_channel((await sample(Brightness.light)).r), greaterThan(230));
+    });
+
+    testWidgets('toggling the theme tells the native window to restyle its caption', (tester) async {
+      final calls = <MethodCall>[];
+      const channel = MethodChannel('photon/window');
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(channel, (call) async {
+        calls.add(call);
+        return null;
+      });
+      addTearDown(() => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(channel, null));
+
+      final studio = await _pumpStudio(tester, const Size(1280, 800));
+      expect(calls, isEmpty, reason: 'launch is already dark; nothing to send');
+
+      await _tapText(tester, 'DAYLIGHT');
+      await tester.pump();
+      expect(calls.single.method, 'setDarkTheme');
+      expect(calls.single.arguments, false);
+
+      await _tapText(tester, 'DARK GRADING');
+      await tester.pump();
+      expect(calls, hasLength(2));
+      expect(calls.last.arguments, true);
+
+      studio.setDarkGrading(true);
+      expect(calls, hasLength(2), reason: 'no change, no call');
+      await _teardown(tester, studio);
+    });
+
+    testWidgets('a missing native channel is harmless', (tester) async {
+      final studio = await _pumpStudio(tester, const Size(1280, 800));
+      studio.setDarkGrading(false);
+      studio.setDarkGrading(true);
+      await tester.pump();
+      expect(tester.takeException(), isNull);
+      await _teardown(tester, studio);
+    });
+  });
+
+  group('live procedural scenes', () {
+    /// Paints [kind] at 480x300 and returns the raw pixels.
+    Future<ByteData> render(WidgetTester tester, StudioController studio, ProceduralSceneKind kind) async {
+      final key = GlobalKey();
+      await tester.pumpWidget(
+        Directionality(
+          textDirection: TextDirection.ltr,
+          child: Center(
+            child: RepaintBoundary(
+              key: key,
+              child: SizedBox(width: 480, height: 300, child: ProceduralSceneCanvas(studio: studio, kind: kind)),
+            ),
+          ),
+        ),
+      );
+      return _capture(tester, key);
+    }
+
+    int fingerprint(ByteData d) => Object.hashAll(d.buffer.asUint8List());
+
+    for (final kind in ProceduralSceneKind.values) {
+      testWidgets('${kind.name} paints real content and reacts to the camera', (tester) async {
+        final studio = StudioController(autoConnect: false, animateShader: false);
+        final base = await render(tester, studio, kind);
+
+        // Content: plenty of lit pixels and a varied palette.
+        final bytes = base.buffer.asUint8List();
+        var lit = 0;
+        final palette = <int>{};
+        for (var i = 0; i < bytes.length; i += 4 * 7) {
+          if (bytes[i] > 60 || bytes[i + 1] > 60 || bytes[i + 2] > 60) lit++;
+          palette.add((bytes[i] >> 4) << 8 | (bytes[i + 1] >> 4) << 4 | bytes[i + 2] >> 4);
+        }
+        expect(lit, greaterThan(100), reason: '${kind.name} should not be a blank canvas');
+        expect(palette.length, greaterThan(8), reason: '${kind.name} should use more than a flat color');
+
+        // The same inputs give the same frame (deterministic, nothing animating).
+        expect(fingerprint(await render(tester, studio, kind)), fingerprint(base));
+
+        // Orbiting the camera changes the picture.
+        studio.orbitBy(90, 40);
+        expect(fingerprint(await render(tester, studio, kind)), isNot(fingerprint(base)), reason: 'orbit');
+        studio.resetOrbit();
+
+        // Zoom changes it too.
+        studio.setCameraZoom(1.8);
+        expect(fingerprint(await render(tester, studio, kind)), isNot(fingerprint(base)), reason: 'zoom');
+        studio.resetCameraZoom();
+
+        expect(tester.takeException(), isNull);
+        await tester.pumpWidget(const SizedBox.shrink());
+        studio.dispose();
+      });
+    }
+
+    // One optics parameter each scene is documented to respond to.
+    const driver = {
+      ProceduralSceneKind.causticWave: 'ior',
+      ProceduralSceneKind.spectralPrism: 'ior',
+      ProceduralSceneKind.liquidChrome: 'ior',
+      ProceduralSceneKind.blackHoleLensing: 'ior',
+      ProceduralSceneKind.emeraldSubsurface: 'aperture',
+      ProceduralSceneKind.soapFilmIridescence: 'ior',
+    };
+    for (final entry in driver.entries) {
+      testWidgets('${entry.key.name} responds to ${entry.value}', (tester) async {
+        final studio = StudioController(autoConnect: false, animateShader: false);
+        final base = fingerprint(await render(tester, studio, entry.key));
+        final def = kOpticsParams.firstWhere((p) => p.id == entry.value);
+        studio.setParam(entry.value, def.min + (def.max - def.min) * 0.8);
+        expect(fingerprint(await render(tester, studio, entry.key)), isNot(base));
+        await tester.pumpWidget(const SizedBox.shrink());
+        studio.dispose();
+      });
+    }
+
+    testWidgets('the prism highlights the probe wavelength', (tester) async {
+      final studio = StudioController(autoConnect: false, animateShader: false);
+      final blue = fingerprint(await render(tester, studio, ProceduralSceneKind.spectralPrism));
+      studio.setWavelengthNm(650);
+      expect(fingerprint(await render(tester, studio, ProceduralSceneKind.spectralPrism)), isNot(blue));
+      await tester.pumpWidget(const SizedBox.shrink());
+      studio.dispose();
+    });
+
+    testWidgets('a paused studio runs no ticker; resuming starts one', (tester) async {
+      final studio = StudioController(autoConnect: false, animateShader: false);
+      await render(tester, studio, ProceduralSceneKind.causticWave);
+      expect(tester.hasRunningAnimations, isFalse, reason: 'nothing may schedule frames while paused');
+
+      studio.setAnimateShader(true);
+      await render(tester, studio, ProceduralSceneKind.causticWave);
+      expect(tester.hasRunningAnimations, isTrue);
+      await tester.pump(const Duration(milliseconds: 200));
+
+      studio.setAnimateShader(false);
+      await render(tester, studio, ProceduralSceneKind.causticWave);
+      expect(tester.hasRunningAnimations, isFalse);
+      await tester.pumpWidget(const SizedBox.shrink());
+      studio.dispose();
+    });
+
+    testWidgets('the LIVE SHADER toggle swaps the still render for the procedural canvas', (tester) async {
+      final studio = await _pumpStudio(tester, const Size(1280, 800));
+      expect(find.byType(ProceduralSceneCanvas), findsWidgets);
+      expect(tester.hasRunningAnimations, isTrue, reason: 'the crosshair and pips animate regardless');
+
+      await _tapKey(tester, const Key('toggle-live-shader'));
+      await tester.pump();
+      expect(studio.liveShaderEnabled, isFalse);
+      expect(find.byType(ProceduralSceneCanvas), findsNothing);
+
+      await _tapKey(tester, const Key('toggle-live-shader'));
+      await tester.pump();
+      expect(studio.liveShaderEnabled, isTrue);
+      expect(find.byType(ProceduralSceneCanvas), findsWidgets);
+      expect(tester.takeException(), isNull);
+      await _teardown(tester, studio);
+    });
+
+    testWidgets('the still is the active project\'s own render, not a fixed image', (tester) async {
+      final studio = await _pumpStudio(tester, const Size(1280, 800));
+      studio.setLiveShader(false);
+
+      Set<String> stageAssets() => tester
+          .widgetList<Image>(find.descendant(of: find.byType(MacWindowViewport), matching: find.byType(Image)))
+          .map((i) => i.image)
+          .whereType<AssetImage>()
+          .map((i) => i.assetName)
+          .toSet();
+
+      await tester.pump();
+      expect(stageAssets(), {'assets/images/caustic_wave.jpg'});
+      for (final project in studio.projects) {
+        studio.selectProject(project.id);
+        studio.setLiveShader(false);
+        await tester.pump();
+        expect(stageAssets(), {project.previewAsset}, reason: project.name);
+      }
+      expect(tester.takeException(), isNull);
+      await _teardown(tester, studio);
+    });
+
+    testWidgets('dynamic projects open live and static ones open on their still', (tester) async {
+      final studio = await _pumpStudio(tester, const Size(1280, 800));
+      for (final project in studio.projects) {
+        await _tapKey(tester, ValueKey('project-${project.id}'));
+        await tester.pump();
+        expect(studio.liveShaderEnabled, project.isDynamic, reason: project.name);
+        expect(find.byType(ProceduralSceneCanvas), project.isDynamic ? findsWidgets : findsNothing);
+      }
+      await _teardown(tester, studio);
+    });
+
+    testWidgets('the HUD play/pause pill appears with the live shader and flips animation', (tester) async {
+      final studio = await _pumpStudio(tester, const Size(1280, 800));
+      expect(find.byKey(const Key('hud-shader-play')), findsOneWidget);
+      expect(find.text('PAUSED'), findsOneWidget, reason: 'tests run with animation off');
+
+      await tester.tap(find.byKey(const Key('hud-shader-play')));
+      await tester.pump();
+      expect(studio.animateShader, isTrue);
+      expect(find.text('SHADER'), findsOneWidget);
+
+      await tester.tap(find.byKey(const Key('hud-shader-play')));
+      await tester.pump();
+      expect(studio.animateShader, isFalse);
+
+      studio.setLiveShader(false);
+      await tester.pump();
+      expect(find.byKey(const Key('hud-shader-play')), findsNothing);
+      await _teardown(tester, studio);
+    });
+
+    test('wavelengths map to their physical colors', () {
+      final violet = wavelengthToColor(380);
+      final blue = wavelengthToColor(470);
+      final green = wavelengthToColor(540);
+      final yellow = wavelengthToColor(590);
+      final red = wavelengthToColor(650);
+      expect(violet.b, greaterThan(violet.g));
+      expect(blue.b, greaterThan(blue.r));
+      expect(green.g, greaterThan(green.r));
+      expect(green.g, greaterThan(green.b));
+      expect(yellow.r, greaterThan(0.9));
+      expect(yellow.g, greaterThan(0.6));
+      expect(red.r, greaterThan(red.g));
+      expect(red.b, 0);
+      // Clamped outside the visible band.
+      expect(wavelengthToColor(100), wavelengthToColor(380));
+      expect(wavelengthToColor(2000), wavelengthToColor(700));
+    });
+  });
+
+  group('ray-path and BVH overlay', () {
+    testWidgets('the BVH / RAYS toggle shows and hides the overlay', (tester) async {
+      final studio = await _pumpStudio(tester, const Size(1280, 800));
+      expect(find.byType(BvhRayOverlay), findsNothing);
+
+      await _tapKey(tester, const Key('toggle-bvh-rays'));
+      await tester.pump();
+      expect(studio.bvhOverlayEnabled, isTrue);
+      expect(find.byType(BvhRayOverlay), findsOneWidget);
+
+      await _tapKey(tester, const Key('toggle-bvh-rays'));
+      await tester.pump();
+      expect(find.byType(BvhRayOverlay), findsNothing);
+      expect(tester.takeException(), isNull);
+      await _teardown(tester, studio);
+    });
+
+    testWidgets('it draws boxes and rays, and follows orbit, IOR and bounces', (tester) async {
+      final studio = StudioController(autoConnect: false, animateShader: false);
+      Future<int> fingerprint() async {
+        final key = GlobalKey();
+        await tester.pumpWidget(
+          Directionality(
+            textDirection: TextDirection.ltr,
+            child: Center(
+              child: RepaintBoundary(
+                key: key,
+                child: ColoredBox(
+                  color: Colors.black,
+                  child: SizedBox(width: 480, height: 300, child: BvhRayOverlay(studio: studio)),
+                ),
+              ),
+            ),
+          ),
+        );
+        final d = await _capture(tester, key);
+        final bytes = d.buffer.asUint8List();
+        var lit = 0;
+        for (var i = 0; i < bytes.length; i += 4) {
+          if (bytes[i] + bytes[i + 1] + bytes[i + 2] > 90) lit++;
+        }
+        expect(lit, greaterThan(200), reason: 'wireframes and rays are visible');
+        return Object.hashAll(bytes);
+      }
+
+      final base = await fingerprint();
+      studio.orbitBy(70, 30);
+      expect(await fingerprint(), isNot(base), reason: 'the boxes turn with the camera');
+      studio.resetOrbit();
+      studio.setParam('ior', 2.9);
+      expect(await fingerprint(), isNot(base), reason: 'Snell bends the rays by the IOR');
+      studio.setParam('ior', 2.253);
+      studio.setParam('max_bounces', 3);
+      final few = await fingerprint();
+      studio.setParam('max_bounces', 30);
+      expect(await fingerprint(), isNot(few), reason: 'more bounces, more internal segments');
+      studio.setFocusPoint(const Offset(0.25, 0.7));
+      expect(await fingerprint(), isNot(few), reason: 'rays aim at the focus point');
+
+      await tester.pumpWidget(const SizedBox.shrink());
+      studio.dispose();
+    });
+  });
+
+  group('wavelength, zoom and focus', () {
+    final pillKey = find.byKey(const Key('hud-wavelength-pill'));
+
+    testWidgets('the wavelength pill steps through the spectrum and scrubs by drag', (tester) async {
+      final studio = await _pumpStudio(tester, const Size(1280, 800));
+      expect(find.text('λ: 540nm | IOR: 2.253'), findsOneWidget);
+
+      for (final nm in [590, 650, 380, 470, 540]) {
+        await tester.tap(pillKey);
+        await tester.pump();
+        expect(studio.wavelengthNm, nm.toDouble());
+        expect(find.text('λ: ${nm}nm | IOR: 2.253'), findsOneWidget);
+      }
+
+      final before = studio.wavelengthNm;
+      await tester.drag(pillKey, const Offset(60, 0));
+      await tester.pump();
+      expect(studio.wavelengthNm, greaterThan(before));
+      await tester.drag(pillKey, const Offset(4000, 0));
+      await tester.pump();
+      expect(studio.wavelengthNm, 700);
+      await tester.drag(pillKey, const Offset(-4000, 0));
+      await tester.pump();
+      expect(studio.wavelengthNm, 380);
+      expect(studio.orbit.value, Offset.zero, reason: 'the pill swallows the drag');
+      await _teardown(tester, studio);
+    });
+
+    testWidgets('the scroll wheel zooms the stage within 0.5x to 4x, and the zoom tag resets it', (tester) async {
+      final studio = await _pumpStudio(tester, const Size(1280, 800));
+      expect(find.text('ZOOM 1.00×'), findsOneWidget);
+
+      final wheel = TestPointer(1, PointerDeviceKind.mouse);
+      await tester.sendEventToBinding(wheel.hover(_stagePoint(tester)));
+      await tester.sendEventToBinding(wheel.scroll(const Offset(0, -150)));
+      await tester.pump();
+      expect(studio.cameraZoom.value, greaterThan(1.1), reason: 'wheel up zooms in');
+      expect(find.text('ZOOM ${studio.cameraZoom.value.toStringAsFixed(2)}×'), findsOneWidget);
+
+      await tester.sendEventToBinding(wheel.scroll(const Offset(0, -9000)));
+      await tester.pump();
+      expect(studio.cameraZoom.value, 4.0);
+      await tester.sendEventToBinding(wheel.scroll(const Offset(0, 90000)));
+      await tester.pump();
+      expect(studio.cameraZoom.value, 0.5);
+
+      await tester.tap(find.byKey(const Key('hud-zoom-pill')));
+      await tester.pump();
+      expect(studio.cameraZoom.value, 1.0);
+      expect(find.text('ZOOM 1.00×'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+      await _teardown(tester, studio);
+    });
+
+    testWidgets('double-tapping the stage moves the focus point and pulls focus to its depth', (tester) async {
+      final studio = await _pumpStudio(tester, const Size(1280, 800));
+      final stage = tester.getRect(
+        find.ancestor(of: find.byKey(AbRenderWipe.curtainKey), matching: find.byType(LayoutBuilder)).first,
+      );
+      expect(studio.focusPoint.value, const Offset(0.5, 0.5));
+      final focalBefore = studio.param('focal_distance');
+      final point = _stagePoint(tester);
+
+      await tester.tapAt(point);
+      await tester.pump(const Duration(milliseconds: 100));
+      expect(studio.focusPoint.value, const Offset(0.5, 0.5), reason: 'one tap is not enough');
+
+      await tester.tapAt(point);
+      await tester.pump();
+      final uv = Offset((point.dx - stage.left) / stage.width, (point.dy - stage.top) / stage.height);
+      expect(studio.focusPoint.value.dx, closeTo(uv.dx, 1e-6));
+      expect(studio.focusPoint.value.dy, closeTo(uv.dy, 1e-6));
+      expect(studio.param('focal_distance'), isNot(focalBefore));
+      expect(studio.param('focal_distance'), closeTo(0.4 + (1 - uv.dy) * 4.6, 1e-6));
+
+      // The probe follows the focus point.
+      expect(tester.getCenter(pillKey).dx, closeTo(point.dx, 1.0));
+      expect(tester.takeException(), isNull);
+      await _teardown(tester, studio);
+    });
+
+    testWidgets('Shift+click sets the focus point in one press', (tester) async {
+      final studio = await _pumpStudio(tester, const Size(1280, 800));
+      final point = _stagePoint(tester) + const Offset(60, -40);
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
+      await tester.tapAt(point);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
+      await tester.pump();
+      expect(studio.focusPoint.value, isNot(const Offset(0.5, 0.5)));
+      await _teardown(tester, studio);
+    });
+
+    testWidgets('the focus point and zoom do not move the A/B curtain or fight a curtain double-tap', (tester) async {
+      final studio = await _pumpStudio(tester, const Size(1280, 800));
+      studio.setAbSplit(0.7);
+      await tester.pump();
+      final curtain = find.byKey(AbRenderWipe.curtainKey);
+      await tester.tap(curtain);
+      await tester.pump(const Duration(milliseconds: 100));
+      await tester.tap(curtain);
+      await tester.pump();
+      expect(studio.abSplit.value, 0.5, reason: 'the curtain resets');
+      expect(studio.focusPoint.value, const Offset(0.5, 0.5), reason: 'and the stage ignores that double-tap');
+      await _teardown(tester, studio);
+    });
+
+    test('controller: wavelength, zoom and focus are clamped, and the viewport reset clears them', () {
+      final studio = StudioController(autoConnect: false);
+      addTearDown(studio.dispose);
+
+      studio.setWavelengthNm(100);
+      expect(studio.wavelengthNm, 380);
+      studio.setWavelengthNm(9000);
+      expect(studio.wavelengthNm, 700);
+      studio.setWavelengthNm(700);
+      studio.stepWavelength();
+      expect(studio.wavelengthNm, 380, reason: 'wraps after the red');
+
+      studio.setCameraZoom(99);
+      expect(studio.cameraZoom.value, 4.0);
+      studio.setCameraZoom(0.01);
+      expect(studio.cameraZoom.value, 0.5);
+
+      studio.setFocusPoint(const Offset(2, -1));
+      expect(studio.focusPoint.value, const Offset(1, 0));
+      expect(studio.param('focal_distance'), closeTo(5.0, 1e-9), reason: 'top of frame is far');
+      studio.setFocusPoint(const Offset(0, 1));
+      expect(studio.param('focal_distance'), closeTo(0.4, 1e-9), reason: 'bottom is near');
+
+      studio.setBvhOverlay(true);
+      studio.resetViewportStage();
+      expect(studio.cameraZoom.value, 1.0);
+      expect(studio.focusPoint.value, const Offset(0.5, 0.5));
+      expect(studio.bvhOverlayEnabled, isFalse);
+    });
+  });
+
+  group('undo, redo and snapshots', () {
+    test('undo restores the previous optics, redo reapplies, a new edit clears redo', () {
+      final studio = StudioController(autoConnect: false);
+      addTearDown(studio.dispose);
+      expect(studio.canUndo, isFalse);
+      expect(studio.canRedo, isFalse);
+
+      studio.setParam('aperture', 6);
+      expect(studio.canUndo, isTrue);
+      studio.undo();
+      expect(studio.param('aperture'), 1.4);
+      expect(studio.canUndo, isFalse);
+      expect(studio.canRedo, isTrue);
+
+      studio.redo();
+      expect(studio.param('aperture'), 6);
+      studio.undo();
+      studio.setParam('ior', 1.2);
+      expect(studio.canRedo, isFalse, reason: 'a fresh edit forks history');
+
+      // Undo and redo with nothing to do are harmless.
+      studio.undo();
+      studio.undo();
+      studio.redo();
+      studio.redo();
+      studio.redo();
+    });
+
+    test('scrubbing one parameter is a single undo step', () {
+      var clock = DateTime(2026, 1, 1);
+      final studio = StudioController(autoConnect: false, now: () => clock);
+      addTearDown(studio.dispose);
+
+      for (final v in [2.0, 3.0, 4.0, 5.0]) {
+        studio.setParam('aperture', v);
+        clock = clock.add(const Duration(milliseconds: 40));
+      }
+      studio.undo();
+      expect(studio.param('aperture'), 1.4, reason: 'the whole drag undoes at once');
+      expect(studio.canUndo, isFalse);
+
+      studio.redo();
+      clock = clock.add(const Duration(seconds: 2));
+      studio.setParam('aperture', 9);
+      studio.undo();
+      expect(studio.param('aperture'), 5.0, reason: 'after a pause it is a new step');
+    });
+
+    test('different parameters are separate steps', () {
+      final studio = StudioController(autoConnect: false);
+      addTearDown(studio.dispose);
+      studio.setParam('aperture', 6);
+      studio.setParam('ior', 1.2);
+      studio.undo();
+      expect(studio.param('ior'), 2.253);
+      expect(studio.param('aperture'), 6);
+      studio.undo();
+      expect(studio.param('aperture'), 1.4);
+    });
+
+    test('undo crosses project switches and integrator changes', () {
+      final studio = StudioController(autoConnect: false);
+      addTearDown(studio.dispose);
+
+      studio.selectProject('volumetric_prism');
+      expect(studio.activeProjectId, 'volumetric_prism');
+      studio.setIntegrator(IntegratorMode.restir);
+      studio.undo();
+      expect(studio.integrator, IntegratorMode.sppm);
+      studio.undo();
+      expect(studio.activeProjectId, 'caustic_study_04');
+      expect(studio.param('ior'), 2.253);
+      expect(studio.integrator, IntegratorMode.unidirectional);
+      expect(studio.liveShaderEnabled, isTrue);
+    });
+
+    test('the history is bounded', () {
+      final studio = StudioController(autoConnect: false);
+      addTearDown(studio.dispose);
+      // Alternate parameters so nothing coalesces.
+      for (var i = 0; i < 100; i++) {
+        studio.setParam(i.isEven ? 'aperture' : 'ior', 1.5 + i * 0.01);
+      }
+      var steps = 0;
+      while (studio.canUndo) {
+        studio.undo();
+        steps++;
+      }
+      expect(steps, 60);
+    });
+
+    test('snapshots capture the optics and restore them (undoably)', () {
+      final studio = StudioController(autoConnect: false);
+      addTearDown(studio.dispose);
+      expect(studio.snapshots, isEmpty);
+
+      studio.setParam('ior', 1.9);
+      studio.setParam('aperture', 7);
+      studio.setIntegrator(IntegratorMode.restir);
+      studio.captureSnapshot();
+      studio.captureSnapshot();
+      expect(studio.snapshots.map((s) => s.label), ['TAKE 01', 'TAKE 02']);
+      final take = studio.snapshots.first;
+      expect(take.projectName, 'CAUSTIC_STUDY_04');
+      expect(take.ior, 1.9);
+      expect(take.aperture, 7);
+      expect(take.spp, 256);
+      expect(take.integrator, IntegratorMode.restir);
+
+      studio.setParam('ior', 2.8);
+      studio.setIntegrator(IntegratorMode.sppm);
+      studio.restoreSnapshot(take.id);
+      expect(studio.param('ior'), 1.9);
+      expect(studio.integrator, IntegratorMode.restir);
+      expect(studio.toast.value, 'TAKE RESTORED · TAKE 01');
+
+      studio.undo();
+      expect(studio.param('ior'), 2.8, reason: 'restoring a take can be undone');
+      studio.restoreSnapshot('no-such-take');
+      expect(studio.param('ior'), 2.8);
+    });
+
+    testWidgets('SNAPSHOT adds a take to the filmstrip and tapping it restores the optics', (tester) async {
+      final studio = await _pumpStudio(tester, const Size(1280, 800));
+      expect(find.text('TAKE 01'), findsNothing);
+      studio.setParam('ior', 1.9);
+      await tester.pump();
+
+      await _tapKey(tester, const Key('viewport-snapshot-btn'));
+      await tester.pump();
+      expect(studio.snapshots, hasLength(1));
+      expect(find.text('TAKE 01'), findsOneWidget);
+
+      studio.setParam('ior', 2.6);
+      await tester.pump();
+      await _tapKey(tester, const Key('viewport-snapshot-btn'));
+      await tester.pump();
+      expect(find.text('TAKE 02'), findsOneWidget);
+
+      await tester.tap(find.byKey(const Key('take-take_1')));
+      await tester.pump();
+      expect(studio.param('ior'), 1.9);
+      expect(tester.takeException(), isNull);
+      await _teardown(tester, studio);
+    });
+
+    testWidgets('the filmstrip fits a narrow stage', (tester) async {
+      final studio = await _pumpStudio(tester, const Size(390, 844));
+      for (var i = 0; i < 6; i++) {
+        studio.captureSnapshot();
+      }
+      studio.setFalseColor(true);
+      await tester.pump();
+      expect(find.text('TAKE 01'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+      await _teardown(tester, studio);
+    });
+
+    testWidgets('UNDO and REDO buttons step the history and dim when unavailable', (tester) async {
+      final studio = await _pumpStudio(tester, const Size(1280, 800));
+      final undo = find.byKey(const Key('optics-undo-btn'));
+      final redo = find.byKey(const Key('optics-redo-btn'));
+      expect(find.text('UNDO'), findsOneWidget);
+      expect(find.text('REDO'), findsOneWidget);
+      expect(studio.canUndo, isFalse);
+
+      studio.setParam('aperture', 6);
+      await tester.pump();
+      expect(studio.canUndo, isTrue);
+
+      await tester.tap(undo);
+      await tester.pump();
+      expect(studio.param('aperture'), 1.4);
+      expect(studio.canRedo, isTrue);
+
+      await tester.tap(redo);
+      await tester.pump();
+      expect(studio.param('aperture'), 6);
+
+      // Tapping a dimmed button does nothing.
+      studio.undo();
+      await tester.pump();
+      await tester.tap(undo);
+      await tester.pump();
+      expect(studio.param('aperture'), 1.4);
+      await _teardown(tester, studio);
+    });
+
+    testWidgets('Ctrl+Z, Ctrl+Y and Ctrl+Shift+Z drive the history', (tester) async {
+      final studio = await _pumpStudio(tester, const Size(1280, 800));
+      studio.setParam('aperture', 6);
+      await tester.pump();
+
+      Future<void> chord(LogicalKeyboardKey key, {bool shift = false}) async {
+        await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+        if (shift) await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
+        await tester.sendKeyEvent(key);
+        if (shift) await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
+        await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+        await tester.pump();
+      }
+
+      await chord(LogicalKeyboardKey.keyZ);
+      expect(studio.param('aperture'), 1.4);
+      await chord(LogicalKeyboardKey.keyY);
+      expect(studio.param('aperture'), 6);
+      await chord(LogicalKeyboardKey.keyZ);
+      expect(studio.param('aperture'), 1.4);
+      await chord(LogicalKeyboardKey.keyZ, shift: true);
+      expect(studio.param('aperture'), 6, reason: 'Ctrl+Shift+Z redoes');
+      await _teardown(tester, studio);
+    });
+
+    testWidgets('undo leaves a focused text field alone', (tester) async {
+      final studio = await _pumpStudio(tester, const Size(1280, 800));
+      studio.setParam('aperture', 6);
+      await tester.tap(find.byKey(const Key('scene-prompt')));
+      await tester.pump();
+
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+      await tester.sendKeyEvent(LogicalKeyboardKey.keyZ);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+      await tester.pump();
+      expect(studio.param('aperture'), 6, reason: 'Ctrl+Z belongs to the text field here');
+      await _teardown(tester, studio);
+    });
+  });
+
+  group('command palette', () {
+    final modal = find.byKey(const Key('command-palette-modal'));
+
+    testWidgets('the header button and Ctrl+P open it; Escape and Ctrl+P close it', (tester) async {
+      final studio = await _pumpStudio(tester, const Size(1280, 800));
+      expect(modal, findsNothing);
+
+      await _tapKey(tester, const Key('command-palette-btn'));
+      await tester.pump();
+      expect(modal, findsOneWidget);
+      expect(studio.commandPaletteOpen, isTrue);
+
+      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      await tester.pump();
+      expect(modal, findsNothing);
+
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+      await tester.sendKeyEvent(LogicalKeyboardKey.keyP);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+      await tester.pump();
+      expect(modal, findsOneWidget);
+
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+      await tester.sendKeyEvent(LogicalKeyboardKey.keyP);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+      await tester.pump();
+      expect(modal, findsNothing, reason: 'Ctrl+P toggles');
+      expect(tester.takeException(), isNull);
+      await _teardown(tester, studio);
+    });
+
+    testWidgets('a backdrop click closes it', (tester) async {
+      final studio = await _pumpStudio(tester, const Size(1280, 800));
+      studio.setCommandPaletteOpen(true);
+      await tester.pump();
+      expect(modal, findsOneWidget);
+      await tester.tapAt(const Offset(20, 780));
+      await tester.pump();
+      expect(modal, findsNothing);
+      await _teardown(tester, studio);
+    });
+
+    testWidgets('it lists every action and filters as you type', (tester) async {
+      final studio = await _pumpStudio(tester, const Size(1280, 800));
+      studio.setCommandPaletteOpen(true);
+      await tester.pump();
+      for (final id in [
+        'theme',
+        'live-shader',
+        'bvh',
+        'ab-wipe',
+        'loupe',
+        'false-color',
+        'account',
+        'reset-optics',
+        'recenter',
+        'load-caustic_study_04',
+      ]) {
+        await tester.ensureVisible(find.byKey(Key('palette-action-$id')));
+        expect(find.byKey(Key('palette-action-$id')), findsOneWidget, reason: id);
+      }
+
+      await tester.enterText(find.byKey(const Key('command-palette-input')), 'kerr');
+      await tester.pump();
+      expect(find.byKey(const Key('palette-action-load-kerr_photon_ring')), findsOneWidget);
+      expect(find.byKey(const Key('palette-action-theme')), findsNothing);
+
+      await tester.enterText(find.byKey(const Key('command-palette-input')), 'zzzz');
+      await tester.pump();
+      expect(find.text('NO MATCHING COMMANDS'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+      await _teardown(tester, studio);
+    });
+
+    testWidgets('Enter runs the highlighted action; the arrow keys move the highlight', (tester) async {
+      final studio = await _pumpStudio(tester, const Size(1280, 800));
+      studio.setCommandPaletteOpen(true);
+      await tester.pump();
+
+      await tester.enterText(find.byKey(const Key('command-palette-input')), 'kerr');
+      await tester.pump();
+      await tester.testTextInput.receiveAction(TextInputAction.done);
+      await tester.pump();
+      expect(studio.activeProjectId, 'kerr_photon_ring');
+      expect(modal, findsNothing, reason: 'running an action closes the palette');
+
+      studio.setCommandPaletteOpen(true);
+      await tester.pump();
+      await tester.enterText(find.byKey(const Key('command-palette-input')), 'toggle');
+      await tester.pump();
+      expect(studio.liveShaderEnabled, isTrue);
+      // Order: theme, live shader, BVH, A/B wipe, loupe, false color.
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+      await tester.pump();
+      await tester.testTextInput.receiveAction(TextInputAction.done);
+      await tester.pump();
+      expect(studio.liveShaderEnabled, isFalse, reason: 'one arrow down lands on Live Shader');
+      expect(studio.darkGrading, isTrue);
+
+      studio.setCommandPaletteOpen(true);
+      await tester.pump();
+      await tester.enterText(find.byKey(const Key('command-palette-input')), 'toggle');
+      await tester.pump();
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowUp);
+      await tester.pump();
+      await tester.testTextInput.receiveAction(TextInputAction.done);
+      await tester.pump();
+      expect(studio.falseColorEnabled, isTrue, reason: 'arrow up from the first row wraps to the last');
+      await _teardown(tester, studio);
+    });
+
+    testWidgets('clicking actions toggles the tools, the theme and opens the account console', (tester) async {
+      final studio = await _pumpStudio(tester, const Size(1280, 800));
+
+      Future<void> run(String id) async {
+        studio.setCommandPaletteOpen(true);
+        await tester.pump();
+        await _tapKey(tester, Key('palette-action-$id'));
+        await tester.pump();
+        expect(modal, findsNothing, reason: id);
+      }
+
+      await run('bvh');
+      expect(studio.bvhOverlayEnabled, isTrue);
+      await run('loupe');
+      expect(studio.loupeEnabled, isTrue);
+      await run('ab-wipe');
+      expect(studio.abWipeEnabled, isFalse);
+      await run('theme');
+      expect(studio.darkGrading, isFalse);
+      await tester.pump(const Duration(milliseconds: 400));
+      await run('theme');
+      expect(studio.darkGrading, isTrue);
+      await tester.pump(const Duration(milliseconds: 400));
+
+      studio.setParam('aperture', 6);
+      await run('reset-optics');
+      expect(studio.param('aperture'), kOpticsParams.first.initial);
+      studio.orbitBy(50, 50);
+      await run('recenter');
+      expect(studio.orbit.value, Offset.zero);
+
+      await run('account');
+      expect(studio.accountModalOpen, isTrue);
+      expect(find.byKey(const Key('account-modal')), findsOneWidget);
+      expect(tester.takeException(), isNull);
+      await _teardown(tester, studio);
+    });
+  });
+
+  group('account console', () {
+    final modal = find.byKey(const Key('account-modal'));
+
+    Future<StudioController> openAccount(WidgetTester tester) async {
+      final studio = await _pumpStudio(tester, const Size(1280, 800));
+      await _tapKey(tester, const Key('account-pill-btn'));
+      await tester.pump();
+      return studio;
+    }
+
+    test('the seeded account matches the studio profile', () {
+      final a = StudioAccount.initial();
+      expect(a.displayName, 'Mohd Faraz');
+      expect(a.handle, '@mfarazcodes');
+      expect(a.email, 'faraz@photon.studio');
+      expect(a.role, 'Lead Rendering Architect');
+      expect(a.organization, 'Photon Spatial Labs');
+      expect(a.workspaceId, 'WS-IND-0492');
+      expect(a.tier, PlanTier.pro);
+      expect(a.authMethod, AuthMethod.passkey);
+      expect(a.twoFactorEnabled, isTrue);
+      expect(a.hardwareKeyBound, isTrue);
+      expect(a.gpuHoursUsed, 842.5);
+      expect(a.storageUsedGb, 128.4);
+      expect(a.storageLimitGb, 500.0);
+      expect(a.initials, 'MF');
+      expect(a.apiKeys.map((k) => k.label), ['Stitch MCP Bridge Key', 'Local C++ Engine Socket Key']);
+      expect(a.apiKeys[0].secret, startsWith('pht_mcp_98a7f2'));
+      expect(a.apiKeys[0].secret, endsWith('c41e'));
+      expect(a.apiKeys[1].secret, startsWith('pht_eng_44b1d0'));
+      expect(a.apiKeys[1].secret, endsWith('889a'));
+      expect(a.apiKeys[0].masked, 'pht_mcp_98a7f2••••••••c41e');
+      expect(a.sessions, hasLength(3));
+      expect(a.sessions.where((s) => s.isCurrent), hasLength(1));
+      expect(a.sessions.first.device, 'Windows 11 · Motobook 60 (Local Studio)');
+
+      expect(PlanTier.indie.label, 'INDIE LAB');
+      expect(PlanTier.pro.price, '\$49 / mo');
+      expect(PlanTier.enterprise.quota, 'Unlimited Dedicated Nodes');
+      expect(PlanTier.pro.gpuHours, 1000);
+      expect(AuthMethod.passkey.label, 'WebAuthn Passkey · Hardware Enclave');
+      expect(AuthMethod.apiKey.label, 'Local CLI / MCP Bearer Token');
+    });
+
+    test('controller actions update the account and announce themselves', () {
+      final studio = StudioController(autoConnect: false);
+      addTearDown(studio.dispose);
+
+      studio.setPlanTier(PlanTier.enterprise);
+      expect(studio.account.tier, PlanTier.enterprise);
+      expect(studio.toast.value, 'PLAN UPDATED · ENTERPRISE CLUSTER');
+
+      studio.setAuthMethod(AuthMethod.ssoSaml);
+      expect(studio.account.authMethod, AuthMethod.ssoSaml);
+      expect(studio.toast.value, 'AUTH PROTOCOL · Enterprise SAML 2.0 SSO');
+
+      studio.toggleTwoFactor();
+      expect(studio.account.twoFactorEnabled, isFalse);
+      studio.toggleTwoFactor();
+      expect(studio.account.twoFactorEnabled, isTrue);
+      studio.toggleHardwareKey();
+      expect(studio.account.hardwareKeyBound, isFalse);
+
+      studio.updateAccountProfile(displayName: '  Faraz M  ', organization: 'Atelier', role: 'Director');
+      expect(studio.account.displayName, 'Faraz M');
+      expect(studio.account.organization, 'Atelier');
+      expect(studio.account.role, 'Director');
+      expect(studio.account.initials, 'FM');
+      studio.updateAccountProfile(displayName: '   ', organization: '');
+      expect(studio.account.displayName, 'Faraz M', reason: 'blank edits are ignored');
+      expect(studio.account.organization, 'Atelier');
+    });
+
+    test('rotating a key issues a new deterministic secret and keeps its kind', () {
+      final a = StudioController(autoConnect: false);
+      final b = StudioController(autoConnect: false);
+      addTearDown(a.dispose);
+      addTearDown(b.dispose);
+
+      final old = a.account.apiKeys.first;
+      a.rotateApiKey(old.id);
+      b.rotateApiKey(old.id);
+      final fresh = a.account.apiKeys.first;
+      expect(fresh.secret, isNot(old.secret));
+      expect(fresh.secret, startsWith('pht_mcp_'));
+      expect(fresh.secret, b.account.apiKeys.first.secret, reason: 'deterministic');
+      expect(fresh.prefix, fresh.secret.substring(0, fresh.prefix.length));
+      expect(fresh.lastUsed, 'just now');
+      expect(a.toast.value, 'API KEY ROTATED');
+      expect(a.account.apiKeys[1].secret, startsWith('pht_eng_44b1d0'), reason: 'other keys are untouched');
+
+      a.rotateApiKey(old.id);
+      expect(a.account.apiKeys.first.secret, isNot(fresh.secret), reason: 'each rotation differs');
+      a.rotateApiKey('no-such-key');
+    });
+
+    test('creating keys and revoking sessions', () {
+      final studio = StudioController(autoConnect: false);
+      addTearDown(studio.dispose);
+
+      studio.createApiKey('  CI Runner  ');
+      studio.createApiKey('');
+      expect(studio.account.apiKeys.map((k) => k.label), [
+        'Stitch MCP Bridge Key',
+        'Local C++ Engine Socket Key',
+        'CI Runner',
+        'Untitled Key',
+      ]);
+      expect(studio.account.apiKeys[2].secret, startsWith('pht_usr_'));
+      expect(studio.account.apiKeys[2].secret, isNot(studio.account.apiKeys[3].secret));
+      expect(studio.toast.value, 'API KEY CREATED');
+
+      studio.revokeSession('ses_local');
+      expect(studio.account.sessions, hasLength(3), reason: 'this device stays signed in');
+      studio.revokeSession('ses_node');
+      expect(studio.account.sessions.map((s) => s.id), ['ses_local', 'ses_mcp']);
+      expect(studio.toast.value, 'SESSION REVOKED');
+      studio.revokeSession('ses_node');
+      expect(studio.account.sessions, hasLength(2));
+    });
+
+    test('the modal and the palette are mutually exclusive', () {
+      final studio = StudioController(autoConnect: false);
+      addTearDown(studio.dispose);
+      studio.setCommandPaletteOpen(true);
+      studio.setAccountModalOpen(true);
+      expect(studio.commandPaletteOpen, isFalse);
+      studio.setCommandPaletteOpen(true);
+      expect(studio.accountModalOpen, isFalse);
+      studio.setCommandPaletteOpen(false);
+      studio.toggleAccountModal();
+      expect(studio.accountModalOpen, isTrue);
+      studio.toggleAccountModal();
+      expect(studio.accountModalOpen, isFalse);
+    });
+
+    testWidgets('the header pill shows the avatar, name and tier, and opens the console', (tester) async {
+      final studio = await _pumpStudio(tester, const Size(1280, 800));
+      expect(find.byKey(const Key('account-pill-btn')), findsOneWidget);
+      expect(find.text('MOHD FARAZ'), findsOneWidget);
+      expect(find.text('MF'), findsOneWidget);
+      expect(find.text('PRO'), findsOneWidget);
+      expect(modal, findsNothing);
+
+      await _tapKey(tester, const Key('account-pill-btn'));
+      await tester.pump();
+      expect(modal, findsOneWidget);
+      expect(studio.accountModalOpen, isTrue);
+
+      expect(find.text('Mohd Faraz'), findsOneWidget);
+      expect(find.text('@mfarazcodes'), findsOneWidget);
+      expect(find.text('faraz@photon.studio'), findsOneWidget);
+      expect(find.text('Lead Rendering Architect · Photon Spatial Labs'), findsOneWidget);
+      expect(find.text('WS-IND-0492'), findsOneWidget);
+      expect(find.text('STUDIO PRO'), findsWidgets);
+      expect(find.text('\$49 / mo'), findsOneWidget);
+      expect(find.text('WebAuthn Passkey · Hardware Enclave'), findsOneWidget);
+      expect(find.text('842.5 / 1,000 hrs · 84%'), findsOneWidget);
+      expect(find.text('128.4 / 500 GB · 26%'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+      await _teardown(tester, studio);
+    });
+
+    testWidgets('Escape, a backdrop click and the red pip each dismiss it', (tester) async {
+      final studio = await openAccount(tester);
+      expect(modal, findsOneWidget);
+      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      await tester.pump();
+      expect(modal, findsNothing);
+
+      studio.setAccountModalOpen(true);
+      await tester.pump();
+      await tester.tapAt(const Offset(20, 400));
+      await tester.pump();
+      expect(modal, findsNothing);
+
+      studio.setAccountModalOpen(true);
+      await tester.pump();
+      await tester.tap(find.byKey(const ValueKey('pip-close-account')));
+      await tester.pump();
+      expect(modal, findsNothing);
+
+      // A click on the sheet itself does not dismiss it.
+      studio.setAccountModalOpen(true);
+      await tester.pump();
+      await tester.tap(find.text('ACCOUNT_CONSOLE'));
+      await tester.pump();
+      expect(modal, findsOneWidget);
+      await _teardown(tester, studio);
+    });
+
+    testWidgets('plan tiers switch live, and the quota bars follow', (tester) async {
+      final studio = await openAccount(tester);
+
+      await _tapKey(tester, const Key('tier-enterprise'));
+      await tester.pump();
+      expect(studio.account.tier, PlanTier.enterprise);
+      expect(find.text('842.5 / 10,000 hrs · 8%'), findsOneWidget);
+      expect(find.text('ENT'), findsWidgets);
+      // The status strip inside the console (the viewport HUD shows it too).
+      expect(
+        find.descendant(of: modal, matching: find.text('PLAN UPDATED · ENTERPRISE CLUSTER')),
+        findsOneWidget,
+      );
+
+      await _tapKey(tester, const Key('tier-indie'));
+      await tester.pump();
+      expect(studio.account.tier, PlanTier.indie);
+      expect(find.textContaining('OVER QUOTA'), findsOneWidget);
+      expect(find.textContaining('/ 64 hrs'), findsOneWidget);
+
+      await _tapKey(tester, const Key('tier-pro'));
+      await tester.pump();
+      expect(find.text('842.5 / 1,000 hrs · 84%'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+      await _teardown(tester, studio);
+    });
+
+    testWidgets('authentication protocol and security toggles', (tester) async {
+      final studio = await openAccount(tester);
+
+      await _tapKey(tester, const Key('auth-ssoSaml'));
+      await tester.pump();
+      expect(studio.account.authMethod, AuthMethod.ssoSaml);
+      expect(find.text('Enterprise SAML 2.0 SSO'), findsOneWidget);
+      expect(find.text('WebAuthn Passkey · Hardware Enclave'), findsNothing);
+
+      expect(studio.account.twoFactorEnabled, isTrue);
+      await _tapKey(tester, const Key('account-2fa-toggle'));
+      await tester.pump();
+      expect(studio.account.twoFactorEnabled, isFalse);
+      expect(find.text('Disabled'), findsOneWidget);
+      await _tapKey(tester, const Key('account-2fa-toggle'));
+      await tester.pump();
+      expect(studio.account.twoFactorEnabled, isTrue);
+
+      await _tapKey(tester, const Key('account-hwkey-toggle'));
+      await tester.pump();
+      expect(studio.account.hardwareKeyBound, isFalse);
+      expect(find.text('JWT SESSION · TLS 1.3 · Ed25519 Signed'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+      await _teardown(tester, studio);
+    });
+
+    testWidgets('API keys: reveal, copy, rotate and create', (tester) async {
+      String? copied;
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(SystemChannels.platform, (call) async {
+        if (call.method == 'Clipboard.setData') copied = (call.arguments as Map)['text'] as String?;
+        return null;
+      });
+      addTearDown(() => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(SystemChannels.platform, null));
+
+      final studio = await openAccount(tester);
+      final key = studio.account.apiKeys.first;
+
+      // Masked until revealed.
+      expect(find.text(key.masked), findsOneWidget);
+      expect(find.text(key.secret), findsNothing);
+      await _tapKey(tester, Key('reveal-key-${key.id}'));
+      await tester.pump();
+      expect(find.text(key.secret), findsOneWidget);
+      expect(find.text(key.masked), findsNothing);
+      await _tapKey(tester, Key('reveal-key-${key.id}'));
+      await tester.pump();
+      expect(find.text(key.masked), findsOneWidget);
+
+      await _tapKey(tester, Key('copy-key-${key.id}'));
+      await tester.pump();
+      expect(copied, key.secret);
+      expect(find.descendant(of: modal, matching: find.text('KEY COPIED TO CLIPBOARD')), findsOneWidget);
+
+      await _tapKey(tester, Key('rotate-key-${key.id}'));
+      await tester.pump();
+      final rotated = studio.account.apiKeys.first;
+      expect(rotated.secret, isNot(key.secret));
+      expect(find.text(rotated.masked), findsOneWidget);
+      expect(find.descendant(of: modal, matching: find.text('API KEY ROTATED')), findsOneWidget);
+
+      await _tapKey(tester, const Key('create-api-key-btn'));
+      await tester.pump();
+      expect(studio.account.apiKeys, hasLength(3));
+      expect(find.text('Studio Key 3'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+      await _teardown(tester, studio);
+    });
+
+    testWidgets('a clipboard failure is reported, not thrown', (tester) async {
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(SystemChannels.platform, (call) async {
+        // Only the clipboard fails; MaterialApp makes its own platform calls.
+        if (call.method == 'Clipboard.setData') throw PlatformException(code: 'denied');
+        return null;
+      });
+      addTearDown(() => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(SystemChannels.platform, null));
+      final studio = await openAccount(tester);
+      await _tapKey(tester, Key('copy-key-${studio.account.apiKeys.first.id}'));
+      await tester.pump();
+      expect(find.descendant(of: modal, matching: find.text('CLIPBOARD UNAVAILABLE')), findsOneWidget);
+      expect(tester.takeException(), isNull);
+      await _teardown(tester, studio);
+    });
+
+    testWidgets('sessions: remote ones can be revoked, this device cannot', (tester) async {
+      final studio = await openAccount(tester);
+      expect(find.text('THIS DEVICE'), findsOneWidget);
+      expect(find.byKey(const Key('revoke-session-ses_local')), findsNothing);
+      expect(find.text('NVIDIA L40S Render Node · ap-south-1'), findsOneWidget);
+      expect(find.text('Claude Code MCP Agent · stdio'), findsOneWidget);
+
+      await _tapKey(tester, const Key('revoke-session-ses_node'));
+      await tester.pump();
+      expect(studio.account.sessions.map((s) => s.id), ['ses_local', 'ses_mcp']);
+      expect(find.text('NVIDIA L40S Render Node · ap-south-1'), findsNothing);
+      expect(find.descendant(of: modal, matching: find.text('SESSION REVOKED')), findsOneWidget);
+
+      await _tapKey(tester, const Key('revoke-session-ses_mcp'));
+      await tester.pump();
+      expect(studio.account.sessions.map((s) => s.id), ['ses_local']);
+      expect(tester.takeException(), isNull);
+      await _teardown(tester, studio);
+    });
+
+    testWidgets('EDIT PROFILE edits the name and organization live', (tester) async {
+      final studio = await openAccount(tester);
+      expect(find.byKey(const Key('account-name-field')), findsNothing);
+
+      await _tapKey(tester, const Key('account-edit-profile-btn'));
+      await tester.pump();
+      expect(find.text('DONE'), findsOneWidget);
+      expect(tester.widget<TextField>(find.byKey(const Key('account-name-field'))).controller!.text, 'Mohd Faraz');
+
+      await tester.enterText(find.byKey(const Key('account-name-field')), 'Faraz Mohd');
+      await tester.pump();
+      expect(studio.account.displayName, 'Faraz Mohd');
+      expect(find.text('FARAZ MOHD'), findsOneWidget, reason: 'the header pill follows live');
+      expect(find.text('FM'), findsWidgets);
+
+      await tester.enterText(find.byKey(const Key('account-org-field')), 'Atelier Optics');
+      await tester.pump();
+      expect(studio.account.organization, 'Atelier Optics');
+      expect(find.text('Lead Rendering Architect · Atelier Optics'), findsOneWidget);
+
+      await _tapKey(tester, const Key('account-edit-profile-btn'));
+      await tester.pump();
+      expect(find.byKey(const Key('account-name-field')), findsNothing);
+      expect(find.text('Faraz Mohd'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+      await _teardown(tester, studio);
+    });
+
+    testWidgets('the ACCOUNT workspace shows the console in place of the viewport', (tester) async {
+      final studio = await _pumpStudio(tester, const Size(1280, 800));
+      await _tapText(tester, 'ACCOUNT');
+      await tester.pump();
+      expect(studio.maximizedPanel, 'account');
+      expect(find.text('ACCOUNT_CONSOLE'), findsOneWidget);
+      expect(find.text('SCENE_VIEWPORT.rt'), findsNothing);
+      expect(find.text('OPTICS_PARAMETERS'), findsNothing);
+      expect(find.text('Mohd Faraz'), findsOneWidget);
+      expect(modal, findsNothing, reason: 'embedded, not a modal');
+
+      // Its red pip returns to the split workspace.
+      await tester.tap(find.byKey(const ValueKey('pip-close-account')));
+      await tester.pump();
+      expect(studio.maximizedPanel, isNull);
+      expect(find.text('SCENE_VIEWPORT.rt'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+      await _teardown(tester, studio);
+    });
+
+    testWidgets('the console lays out in one column on a narrow window', (tester) async {
+      final studio = await _pumpStudio(tester, const Size(390, 844));
+      await _tapKey(tester, const Key('account-pill-btn'));
+      await tester.pump();
+      expect(modal, findsOneWidget);
+      expect(find.text('Mohd Faraz'), findsOneWidget);
+      studio.setAccountModalOpen(false);
+      studio.setMaximizedPanel('account');
+      await tester.pump();
+      expect(find.text('ACCOUNT_CONSOLE'), findsOneWidget);
+      expect(tester.takeException(), isNull);
       await _teardown(tester, studio);
     });
   });

@@ -71,6 +71,11 @@ class Win32Window {
   // Called when Destroy is called.
   virtual void OnDestroy();
 
+  // Paints the native window frame (caption, caption text, border) for the
+  // studio theme: Dark Studio when |dark_mode| is true, Daylight Lab otherwise.
+  // The choice is remembered, so later system colorization changes re-apply it.
+  static void UpdateTheme(HWND const window, bool dark_mode = true);
+
  private:
   friend class WindowClassRegistrar;
 
@@ -86,9 +91,6 @@ class Win32Window {
 
   // Retrieves a class instance pointer for |window|
   static Win32Window* GetThisFromHandle(HWND const window) noexcept;
-
-  // Update the window frame's theme to match the system theme.
-  static void UpdateTheme(HWND const window);
 
   bool quit_on_close_ = false;
 

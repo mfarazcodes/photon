@@ -254,19 +254,32 @@ class _DockSurfaceState extends State<_DockSurface> with SingleTickerProviderSta
         fit: StackFit.passthrough,
         children: [
           Container(
+            key: const ValueKey('dock-surface'),
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
             decoration: BoxDecoration(
               color: c.dock,
               borderRadius: BorderRadius.circular(radius),
-              border: Border.all(color: Colors.white.withValues(alpha: 0.1)),
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.black.withValues(alpha: 0.35),
-                  blurRadius: 42,
-                  spreadRadius: -12,
-                  offset: const Offset(0, 20),
-                ),
-              ],
+              border: Border.all(color: c.isDark ? Colors.white.withValues(alpha: 0.1) : c.border),
+              boxShadow: c.isDark
+                  // Dark Studio: a deep ambient drop.
+                  ? [
+                      BoxShadow(
+                        color: Colors.black.withValues(alpha: 0.35),
+                        blurRadius: 42,
+                        spreadRadius: -12,
+                        offset: const Offset(0, 20),
+                      ),
+                    ]
+                  // Daylight Lab: the Level-2 window shadow plus a soft lift.
+                  : [
+                      ...context.photon.level2,
+                      BoxShadow(
+                        color: c.shadow.withValues(alpha: 0.08),
+                        blurRadius: 28,
+                        spreadRadius: -8,
+                        offset: const Offset(0, 12),
+                      ),
+                    ],
             ),
             child: widget.child,
           ),
@@ -338,8 +351,9 @@ class _Monogram extends StatelessWidget {
       height: 40,
       alignment: Alignment.center,
       decoration: BoxDecoration(
-        color: Colors.white.withValues(alpha: 0.1),
+        color: c.isDark ? Colors.white.withValues(alpha: 0.1) : c.hoverFill,
         borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: c.isDark ? Colors.transparent : c.border),
         boxShadow: [BoxShadow(color: c.violet.withValues(alpha: 0.3), blurRadius: 12)],
       ),
       child: const PhotonLogoMark(size: 22, semanticLabel: 'Photon'),
@@ -370,9 +384,12 @@ class _PromptField extends StatelessWidget {
       borderRadius: BorderRadius.circular(PhotonRadius.window),
       borderSide: BorderSide.none,
     );
+    // Daylight fields sit on white, so they need a hairline to read as fields.
+    final restingBorder = c.isDark ? border : border.copyWith(borderSide: BorderSide(color: c.border));
     return SizedBox(
       height: 44,
       child: TextField(
+        key: const Key('scene-prompt'),
         controller: controller,
         focusNode: focusNode,
         onSubmitted: (_) => onSubmit(),
@@ -384,8 +401,8 @@ class _PromptField extends StatelessWidget {
         decoration: InputDecoration(
           isDense: true,
           filled: true,
-          fillColor: Colors.white.withValues(alpha: 0.1),
-          hoverColor: Colors.white.withValues(alpha: 0.15),
+          fillColor: c.isDark ? Colors.white.withValues(alpha: 0.08) : c.canvas,
+          hoverColor: c.isDark ? Colors.white.withValues(alpha: 0.13) : c.hoverFill,
           contentPadding: const EdgeInsets.symmetric(vertical: 13),
           hintText: 'Describe optical scene, lighting, or drop .USD...',
           hintStyle: t.text.telemetrySm.copyWith(fontSize: 12, color: c.onDock.withValues(alpha: 0.55)),
@@ -399,8 +416,9 @@ class _PromptField extends StatelessWidget {
                     child: Container(
                       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                       decoration: BoxDecoration(
-                        color: Colors.white.withValues(alpha: 0.18),
+                        color: c.isDark ? Colors.white.withValues(alpha: 0.16) : c.surface,
                         borderRadius: BorderRadius.circular(PhotonRadius.control),
+                        border: Border.all(color: c.border),
                       ),
                       child: Text(
                         _shortcutLabel,
@@ -410,8 +428,8 @@ class _PromptField extends StatelessWidget {
                   ),
                 )
               : null,
-          border: border,
-          enabledBorder: border,
+          border: restingBorder,
+          enabledBorder: restingBorder,
           focusedBorder: border.copyWith(
             borderSide: BorderSide(color: c.onDock.withValues(alpha: 0.5)),
           ),
@@ -440,6 +458,7 @@ class _QuickPill extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final t = context.photon;
+    final c = t.colors;
     return Semantics(
       button: true,
       label: label,
@@ -459,8 +478,13 @@ class _QuickPill extends StatelessWidget {
               padding: const EdgeInsets.symmetric(horizontal: 15),
               alignment: Alignment.center,
               decoration: BoxDecoration(
-                color: Colors.white.withValues(alpha: hovered ? 0.2 : 0.12),
+                color: c.isDark
+                    ? Colors.white.withValues(alpha: hovered ? 0.2 : 0.12)
+                    : (hovered ? c.violet.withValues(alpha: 0.12) : c.hoverFill),
                 borderRadius: BorderRadius.circular(PhotonRadius.pill),
+                border: c.isDark
+                    ? null
+                    : Border.all(color: hovered ? c.violet.withValues(alpha: 0.4) : c.border),
               ),
               child: Row(
                 mainAxisSize: MainAxisSize.min,
@@ -469,7 +493,11 @@ class _QuickPill extends StatelessWidget {
                   const SizedBox(width: PhotonSpace.sm - 1),
                   Text(
                     label,
-                    style: t.text.labelCaps.copyWith(fontSize: 10.5, color: t.colors.onDock, fontWeight: FontWeight.w600),
+                    style: t.text.labelCaps.copyWith(
+                      fontSize: 10.5,
+                      color: hovered && !c.isDark ? c.violetInk : c.onDock,
+                      fontWeight: FontWeight.w600,
+                    ),
                   ),
                 ],
               ),
@@ -490,6 +518,7 @@ class _LinkButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final t = context.photon;
+    final c = t.colors;
     final live = link == RenderLink.live;
     return Tooltip(
       message: switch (link) {
@@ -501,18 +530,19 @@ class _LinkButton extends StatelessWidget {
         width: 40,
         height: 40,
         decoration: BoxDecoration(
-          color: Colors.white.withValues(alpha: 0.12),
+          color: c.isDark ? Colors.white.withValues(alpha: 0.12) : c.hoverFill,
           borderRadius: BorderRadius.circular(10),
+          border: Border.all(color: c.isDark ? Colors.transparent : c.border),
         ),
         child: Stack(
           alignment: Alignment.center,
           children: [
-            Icon(Icons.memory, size: 19, color: t.colors.onDock),
+            Icon(Icons.memory, size: 19, color: c.onDock),
             Positioned(
               top: 8,
               right: 8,
               child: FlashingPip(
-                color: live ? const Color(0xFF22D3EE) : t.colors.ghost,
+                color: live ? const Color(0xFF22D3EE) : c.ghost,
                 size: 6,
                 flash: live,
               ),

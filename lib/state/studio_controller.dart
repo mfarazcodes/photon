@@ -4,13 +4,19 @@ import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
+import '../models/render_snapshot.dart';
 import '../models/scene_asset.dart';
+import '../models/studio_account.dart';
 import '../models/studio_project.dart';
 import '../services/render_socket.dart';
 import '../theme/photon_theme.dart';
 
-export '../models/studio_project.dart' show IntegratorMode, ProjectStatus, StudioProject, kDefaultProjects;
+export '../models/render_snapshot.dart' show RenderSnapshot;
+export '../models/studio_account.dart';
+export '../models/studio_project.dart'
+    show IntegratorMode, ProceduralSceneKind, ProjectStatus, StudioProject, kDefaultProjects;
 
 /// Definition of one scrubbable optics parameter.
 @immutable
@@ -149,13 +155,19 @@ const List<SceneAsset> kSceneAssets = [
 /// High-frequency state (incoming frames, sample counter, orbit, FPS) lives in
 /// its own [ValueNotifier] so a 60 fps stream does not rebuild the workspace.
 class StudioController extends ChangeNotifier {
-  /// [now] replaces the wall clock for the idle-frame check (tests).
+  /// [now] replaces the wall clock for the idle-frame check and undo
+  /// coalescing (tests). [animateShader] false freezes the live procedural
+  /// scenes at a fixed phase, so tests never wait on a free-running ticker.
   StudioController({
     RenderSocket? socket,
     bool autoConnect = true,
     DateTime Function()? now,
+    bool animateShader = true,
   }) : socket = socket ?? RenderSocket(),
-       _now = now ?? DateTime.now {
+       _now = now ?? DateTime.now,
+       // A private field cannot be a named parameter, so this stays an assignment.
+       // ignore: prefer_initializing_formals
+       _animateShader = animateShader {
     for (final p in kOpticsParams) {
       _params[p.id] = p.initial;
     }
@@ -194,10 +206,24 @@ class StudioController extends ChangeNotifier {
   bool get darkGrading => _darkGrading;
   PhotonPalette get palette => _darkGrading ? PhotonPalette.grading : PhotonPalette.daylight;
 
+  static const MethodChannel _windowChannel = MethodChannel('photon/window');
+
   void setDarkGrading(bool value) {
     if (_darkGrading == value) return;
     _darkGrading = value;
+    _syncNativeTheme(value);
     notifyListeners();
+  }
+
+  /// Repaints the native window caption to match the studio theme. Only the
+  /// Windows runner implements this; anywhere else (and in tests) the call
+  /// simply has no listener, which is fine.
+  void _syncNativeTheme(bool dark) {
+    try {
+      _windowChannel.invokeMethod<void>('setDarkTheme', dark).catchError((_) {});
+    } catch (_) {
+      // No platform channel available.
+    }
   }
 
   // --- Link & frames ---------------------------------------------------
@@ -272,6 +298,7 @@ class StudioController extends ChangeNotifier {
   void setParam(String id, double value) {
     final v = _def(id).clamp(value);
     if (_params[id] == v) return;
+    _recordUndo(id);
     _params[id] = v;
     _syncActiveProject();
     _restartConvergence();
@@ -385,6 +412,88 @@ class StudioController extends ChangeNotifier {
   /// pointer is elsewhere.
   final ValueNotifier<Offset?> probePosition = ValueNotifier(null);
 
+  // --- Live shader, ray overlay, optics probe -------------------------
+
+  bool _liveShaderEnabled = false;
+
+  /// Shows the real-time procedural simulation instead of the still render.
+  /// Projects open in their own default (see [StudioProject.isDynamic]); the
+  /// viewport toggle then overrides it for any project.
+  bool get liveShaderEnabled => _liveShaderEnabled;
+
+  void setLiveShader(bool value) {
+    if (_liveShaderEnabled == value) return;
+    _liveShaderEnabled = value;
+    notifyListeners();
+  }
+
+  void toggleLiveShader() => setLiveShader(!_liveShaderEnabled);
+
+  bool _animateShader;
+
+  /// False pins the live scenes to one fixed phase (play/pause, and tests).
+  bool get animateShader => _animateShader;
+
+  void setAnimateShader(bool value) {
+    if (_animateShader == value) return;
+    _animateShader = value;
+    notifyListeners();
+  }
+
+  bool _bvhOverlayEnabled = false;
+  bool get bvhOverlayEnabled => _bvhOverlayEnabled;
+
+  void setBvhOverlay(bool value) {
+    if (_bvhOverlayEnabled == value) return;
+    _bvhOverlayEnabled = value;
+    notifyListeners();
+  }
+
+  void toggleBvhOverlay() => setBvhOverlay(!_bvhOverlayEnabled);
+
+  /// Probe wavelength, nm. 380 (violet) to 700 (red).
+  double _wavelengthNm = 540.0;
+  double get wavelengthNm => _wavelengthNm;
+
+  /// Named stops the probe steps through: violet, blue, emerald, sodium
+  /// yellow, laser red.
+  static const List<double> wavelengthStops = [380, 470, 540, 590, 650];
+
+  void setWavelengthNm(double nm) {
+    final v = nm.clamp(380.0, 700.0).toDouble();
+    if (v == _wavelengthNm) return;
+    _wavelengthNm = v;
+    notifyListeners();
+  }
+
+  /// Jumps to the next named stop (wrapping after the red).
+  void stepWavelength() {
+    final next = wavelengthStops.firstWhere((s) => s > _wavelengthNm + 0.5, orElse: () => wavelengthStops.first);
+    setWavelengthNm(next);
+  }
+
+  /// Camera zoom, 0.5x to 4x.
+  final ValueNotifier<double> cameraZoom = ValueNotifier(1.0);
+
+  void setCameraZoom(double zoom) => cameraZoom.value = zoom.clamp(0.5, 4.0).toDouble();
+
+  void resetCameraZoom() => cameraZoom.value = 1.0;
+
+  /// Where the optics are focused, normalized to the stage. Center by default.
+  final ValueNotifier<Offset> focusPoint = ValueNotifier(const Offset(0.5, 0.5));
+
+  /// Moves the focus to [uv] and pulls `focal_distance` to match its depth.
+  ///
+  /// Depth here is a stand-in for the scene's depth buffer: points higher in
+  /// the frame are treated as farther from the camera (0.4m at the bottom edge
+  /// to 5.0m at the top).
+  void setFocusPoint(Offset uv) {
+    final p = Offset(uv.dx.clamp(0.0, 1.0).toDouble(), uv.dy.clamp(0.0, 1.0).toDouble());
+    focusPoint.value = p;
+    setParam('focal_distance', 0.4 + (1 - p.dy) * 4.6);
+    _restartConvergence();
+  }
+
   // --- Assets ----------------------------------------------------------
 
   String? _selectedAsset;
@@ -458,6 +567,7 @@ class StudioController extends ChangeNotifier {
     }
     _integrator = p.integrator;
     _activeProjectId = p.id;
+    _liveShaderEnabled = p.isDynamic;
     _restartConvergence();
   }
 
@@ -479,6 +589,7 @@ class StudioController extends ChangeNotifier {
       showToast('UNKNOWN PROJECT');
       return;
     }
+    _recordUndo(Object());
     _applyProject(project);
     socket.send({'load_project': id, 'params': Map<String, double>.of(_params)});
     showToast('PROJECT LOADED · ${project.name}');
@@ -499,9 +610,11 @@ class StudioController extends ChangeNotifier {
       subtitle: '.pht · ${_integrator.solverCaption}',
       updatedAt: 'just now',
       status: ProjectStatus.draft,
-      previewAsset: 'assets/images/caustic_wave.jpg',
+      previewAsset: activeProject?.previewAsset ?? 'assets/images/caustic_wave.jpg',
       params: Map<String, double>.of(_params),
       integrator: _integrator,
+      sceneKind: activeProject?.sceneKind ?? ProceduralSceneKind.causticWave,
+      isDynamic: _liveShaderEnabled,
     );
     _projects.insert(0, project);
     _activeProjectId = project.id;
@@ -548,6 +661,7 @@ class StudioController extends ChangeNotifier {
   IntegratorMode get integrator => _integrator;
 
   void setIntegrator(IntegratorMode mode) {
+    _recordUndo(Object());
     _integrator = mode;
     _syncActiveProject();
     _restartConvergence();
@@ -602,6 +716,7 @@ class StudioController extends ChangeNotifier {
 
   /// Optics window, red pip.
   void resetAllParams() {
+    _recordUndo(Object());
     for (final p in kOpticsParams) {
       _params[p.id] = p.initial;
       socket.send({'param': p.id, 'value': p.initial});
@@ -618,9 +733,247 @@ class StudioController extends ChangeNotifier {
     resetAbSplit();
     _falseColorEnabled = false;
     _loupeEnabled = false;
+    _bvhOverlayEnabled = false;
+    cameraZoom.value = 1.0;
+    focusPoint.value = const Offset(0.5, 0.5);
     showToast('VIEWPORT RESET');
     notifyListeners();
   }
+
+  // --- Undo / redo -----------------------------------------------------
+
+  final List<_StudioState> _undoStack = [];
+  final List<_StudioState> _redoStack = [];
+  static const int _undoLimit = 60;
+  static const Duration _undoCoalesce = Duration(milliseconds: 600);
+  Object? _lastUndoKey;
+  DateTime? _lastUndoAt;
+
+  bool get canUndo => _undoStack.isNotEmpty;
+  bool get canRedo => _redoStack.isNotEmpty;
+
+  _StudioState _captureState() => _StudioState(
+    params: Map<String, double>.of(_params),
+    projectId: _activeProjectId,
+    integrator: _integrator,
+  );
+
+  /// Saves the state as it is now, ahead of a change. Consecutive changes to
+  /// the same [key] inside [_undoCoalesce] (a scrub drag) share one entry.
+  void _recordUndo(Object key) {
+    final now = _now();
+    final last = _lastUndoAt;
+    final coalesce = _lastUndoKey == key && last != null && now.difference(last) < _undoCoalesce;
+    _lastUndoKey = key;
+    _lastUndoAt = now;
+    if (coalesce) return;
+    _undoStack.add(_captureState());
+    if (_undoStack.length > _undoLimit) _undoStack.removeAt(0);
+    _redoStack.clear();
+  }
+
+  void undo() {
+    if (!canUndo) return;
+    _redoStack.add(_captureState());
+    _restore(_undoStack.removeLast());
+    showToast('UNDO');
+  }
+
+  void redo() {
+    if (!canRedo) return;
+    _undoStack.add(_captureState());
+    _restore(_redoStack.removeLast());
+    showToast('REDO');
+  }
+
+  /// Puts the studio back into [s]. A project that has since been deleted is
+  /// skipped; its parameters still apply to the current project.
+  void _restore(_StudioState s) {
+    _lastUndoKey = null;
+    _params
+      ..clear()
+      ..addAll(s.params);
+    _integrator = s.integrator;
+    final project = _projects.where((p) => p.id == s.projectId).firstOrNull;
+    if (project != null && project.id != _activeProjectId) {
+      _activeProjectId = project.id;
+      _liveShaderEnabled = project.isDynamic;
+    }
+    _syncActiveProject();
+    _restartConvergence();
+    socket.send({'load_project': _activeProjectId, 'params': Map<String, double>.of(_params)});
+    notifyListeners();
+  }
+
+  // --- Snapshots (takes) ----------------------------------------------
+
+  final List<RenderSnapshot> _snapshots = [];
+  int _snapshotSeq = 0;
+
+  List<RenderSnapshot> get snapshots => List.unmodifiable(_snapshots);
+
+  /// Captures the current optics as the next `TAKE`.
+  void captureSnapshot() {
+    _snapshotSeq++;
+    final label = 'TAKE ${_snapshotSeq.toString().padLeft(2, '0')}';
+    _snapshots.add(
+      RenderSnapshot(
+        id: 'take_$_snapshotSeq',
+        label: label,
+        projectId: _activeProjectId,
+        projectName: activeProject?.name ?? 'UNSAVED',
+        params: Map<String, double>.of(_params),
+        integrator: _integrator,
+        timestamp: _now(),
+      ),
+    );
+    showToast('SNAPSHOT · $label');
+    notifyListeners();
+  }
+
+  /// Restores a take's exact optics (undoable).
+  void restoreSnapshot(String id) {
+    final take = _snapshots.where((s) => s.id == id).firstOrNull;
+    if (take == null) return;
+    _recordUndo(Object());
+    _restore(_StudioState(params: take.params, projectId: take.projectId, integrator: take.integrator));
+    showToast('TAKE RESTORED · ${take.label}');
+  }
+
+  // --- Account ---------------------------------------------------------
+
+  StudioAccount _account = StudioAccount.initial();
+  StudioAccount get account => _account;
+
+  bool _accountModalOpen = false;
+  bool get accountModalOpen => _accountModalOpen;
+
+  void setAccountModalOpen(bool open) {
+    if (_accountModalOpen == open) return;
+    _accountModalOpen = open;
+    if (open) _commandPaletteOpen = false;
+    notifyListeners();
+  }
+
+  void toggleAccountModal() => setAccountModalOpen(!_accountModalOpen);
+
+  void setPlanTier(PlanTier tier) {
+    _account = _account.copyWith(tier: tier);
+    showToast('PLAN UPDATED · ${tier.label}');
+    notifyListeners();
+  }
+
+  void setAuthMethod(AuthMethod method) {
+    _account = _account.copyWith(authMethod: method);
+    showToast('AUTH PROTOCOL · ${method.label}');
+    notifyListeners();
+  }
+
+  void toggleTwoFactor() {
+    final on = !_account.twoFactorEnabled;
+    _account = _account.copyWith(twoFactorEnabled: on);
+    showToast(on ? '2FA ENABLED' : '2FA DISABLED');
+    notifyListeners();
+  }
+
+  void toggleHardwareKey() {
+    final on = !_account.hardwareKeyBound;
+    _account = _account.copyWith(hardwareKeyBound: on);
+    showToast(on ? 'HARDWARE KEY BOUND' : 'HARDWARE KEY UNBOUND');
+    notifyListeners();
+  }
+
+  int _keySeq = 0;
+
+  /// A deterministic pseudo-random hex string (FNV-1a seeded LCG). The studio
+  /// has no backend to mint real tokens, so keys are derived locally.
+  static String _hex(String seed, int length) {
+    var h = 0x811C9DC5;
+    for (final unit in seed.codeUnits) {
+      h ^= unit;
+      h = (h * 0x01000193) & 0xFFFFFFFF;
+    }
+    final out = StringBuffer();
+    while (out.length < length) {
+      h = (h * 1664525 + 1013904223) & 0xFFFFFFFF;
+      out.write(h.toRadixString(16).padLeft(8, '0'));
+    }
+    return out.toString().substring(0, length);
+  }
+
+  void rotateApiKey(String keyId) {
+    final i = _account.apiKeys.indexWhere((k) => k.id == keyId);
+    if (i < 0) return;
+    final key = _account.apiKeys[i];
+    final kind = key.prefix.split('_').take(2).join('_');
+    final secret = '${kind}_${_hex('$keyId#${++_keySeq}', 32)}';
+    final keys = List<ApiKeyRecord>.of(_account.apiKeys);
+    keys[i] = key.copyWith(
+      secret: secret,
+      prefix: secret.substring(0, kind.length + 7),
+      lastUsed: 'just now',
+    );
+    _account = _account.copyWith(apiKeys: keys);
+    showToast('API KEY ROTATED');
+    notifyListeners();
+  }
+
+  void createApiKey(String label) {
+    final trimmed = label.trim();
+    final id = 'key_new_${++_keySeq}';
+    final secret = 'pht_usr_${_hex(id, 32)}';
+    _account = _account.copyWith(
+      apiKeys: [
+        ..._account.apiKeys,
+        ApiKeyRecord(
+          id: id,
+          label: trimmed.isEmpty ? 'Untitled Key' : trimmed,
+          prefix: secret.substring(0, 14),
+          secret: secret,
+          created: 'today',
+          lastUsed: 'never',
+          scopes: const ['render:submit'],
+        ),
+      ],
+    );
+    showToast('API KEY CREATED');
+    notifyListeners();
+  }
+
+  /// Signs out a remote session. The session this window runs in stays.
+  void revokeSession(String sessionId) {
+    final target = _account.sessions.where((s) => s.id == sessionId).firstOrNull;
+    if (target == null || target.isCurrent) return;
+    _account = _account.copyWith(
+      sessions: _account.sessions.where((s) => s.id != sessionId).toList(),
+    );
+    showToast('SESSION REVOKED');
+    notifyListeners();
+  }
+
+  void updateAccountProfile({String? displayName, String? organization, String? role}) {
+    String? clean(String? v) => (v == null || v.trim().isEmpty) ? null : v.trim();
+    _account = _account.copyWith(
+      displayName: clean(displayName),
+      organization: clean(organization),
+      role: clean(role),
+    );
+    notifyListeners();
+  }
+
+  // --- Command palette -------------------------------------------------
+
+  bool _commandPaletteOpen = false;
+  bool get commandPaletteOpen => _commandPaletteOpen;
+
+  void setCommandPaletteOpen(bool open) {
+    if (_commandPaletteOpen == open) return;
+    _commandPaletteOpen = open;
+    if (open) _accountModalOpen = false;
+    notifyListeners();
+  }
+
+  void toggleCommandPalette() => setCommandPaletteOpen(!_commandPaletteOpen);
 
   // --- Toast -----------------------------------------------------------
 
@@ -647,11 +1000,24 @@ class StudioController extends ChangeNotifier {
     fps.dispose();
     samples.dispose();
     orbit.dispose();
+    cameraZoom.dispose();
+    focusPoint.dispose();
     abSplit.dispose();
     probePosition.dispose();
     toast.dispose();
     super.dispose();
   }
+}
+
+/// Everything an undo step restores: the optics, the integrator and which
+/// project they belong to.
+@immutable
+class _StudioState {
+  const _StudioState({required this.params, required this.projectId, required this.integrator});
+
+  final Map<String, double> params;
+  final String projectId;
+  final IntegratorMode integrator;
 }
 
 /// Exposes the [StudioController] to the widget tree.

@@ -10,20 +10,56 @@ import 'photon_primitives.dart';
 /// companion carousel. A card loads its project when tapped, or when dragged
 /// onto `SCENE_VIEWPORT.rt` (the card carries the project id as a
 /// `Draggable<String>`).
-class ProjectsSidebar extends StatelessWidget {
+class ProjectsSidebar extends StatefulWidget {
   const ProjectsSidebar({super.key, this.axis = Axis.vertical});
 
   final Axis axis;
 
   static const double width = 188;
   static const double carouselCardWidth = 176;
-  static const double carouselHeight = 112;
+  static const double carouselHeight = 126;
+
+  @override
+  State<ProjectsSidebar> createState() => _ProjectsSidebarState();
+}
+
+/// Which projects the list shows.
+enum _ProjectFilter {
+  all('project-filter-all'),
+  liveShader('project-filter-dynamic'),
+  still('project-filter-static');
+
+  const _ProjectFilter(this.keyName);
+
+  /// Stable widget key (the names `dynamic` and `static` are reserved words).
+  final String keyName;
+}
+
+class _ProjectsSidebarState extends State<ProjectsSidebar> {
+  _ProjectFilter _filter = _ProjectFilter.all;
+  String _query = '';
+
+  bool _matches(StudioProject p) {
+    final kindOk = switch (_filter) {
+      _ProjectFilter.all => true,
+      _ProjectFilter.liveShader => p.isDynamic,
+      _ProjectFilter.still => !p.isDynamic,
+    };
+    if (!kindOk) return false;
+    final q = _query.trim().toLowerCase();
+    if (q.isEmpty) return true;
+    return p.name.toLowerCase().contains(q) ||
+        p.sceneType.toLowerCase().contains(q) ||
+        p.code.toLowerCase().contains(q);
+  }
 
   @override
   Widget build(BuildContext context) {
     final studio = StudioScope.of(context);
+    final axis = widget.axis;
     final vertical = axis == Axis.vertical;
-    final projects = studio.projects;
+    final all = studio.projects;
+    final projects = all.where(_matches).toList();
 
     Widget card(StudioProject p) => _ProjectCard(
       project: p,
@@ -35,23 +71,50 @@ class ProjectsSidebar extends StatelessWidget {
       dragAffinity: vertical ? Axis.horizontal : Axis.vertical,
     );
 
-    final header = _Header(count: projects.length, onNew: studio.createNewProject);
+    final controls = [
+      _Header(count: all.length, onNew: studio.createNewProject),
+      const SizedBox(height: PhotonSpace.xs + 2),
+      _FilterStrip(
+        selected: _filter,
+        onChanged: (f) => setState(() => _filter = f),
+      ),
+      const SizedBox(height: PhotonSpace.xs + 2),
+      _SearchField(onChanged: (q) => setState(() => _query = q)),
+      const SizedBox(height: PhotonSpace.sm),
+    ];
+
+    final empty = Padding(
+      padding: const EdgeInsets.all(PhotonSpace.md),
+      child: Text(
+        'NO PROJECTS MATCH',
+        textAlign: TextAlign.center,
+        style: context.photon.text.labelCaps.copyWith(color: context.photon.colors.ghost),
+      ),
+    );
 
     if (vertical) {
       return SizedBox(
-        width: width,
+        width: ProjectsSidebar.width,
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            header,
-            const SizedBox(height: PhotonSpace.sm),
+            ...controls,
             Expanded(
-              child: ListView.separated(
-                padding: EdgeInsets.zero,
-                itemCount: projects.length,
-                separatorBuilder: (_, _) => const SizedBox(height: PhotonSpace.sm),
-                itemBuilder: (_, i) => card(projects[i]),
-              ),
+              child: projects.isEmpty
+                  ? empty
+                  // Eager (not a lazy ListView): the list is short, and every
+                  // card should exist for accessibility and drag targets.
+                  : SingleChildScrollView(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          for (var i = 0; i < projects.length; i++) ...[
+                            if (i > 0) const SizedBox(height: PhotonSpace.sm),
+                            card(projects[i]),
+                          ],
+                        ],
+                      ),
+                    ),
             ),
           ],
         ),
@@ -62,19 +125,133 @@ class ProjectsSidebar extends StatelessWidget {
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        header,
-        const SizedBox(height: PhotonSpace.sm),
+        ...controls,
         SizedBox(
-          height: carouselHeight,
-          child: ListView.separated(
-            scrollDirection: Axis.horizontal,
-            padding: EdgeInsets.zero,
-            itemCount: projects.length,
-            separatorBuilder: (_, _) => const SizedBox(width: PhotonSpace.sm),
-            itemBuilder: (_, i) => SizedBox(width: carouselCardWidth, child: card(projects[i])),
-          ),
+          height: ProjectsSidebar.carouselHeight,
+          child: projects.isEmpty
+              ? empty
+              : SingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      for (var i = 0; i < projects.length; i++) ...[
+                        if (i > 0) const SizedBox(width: PhotonSpace.sm),
+                        SizedBox(width: ProjectsSidebar.carouselCardWidth, child: card(projects[i])),
+                      ],
+                    ],
+                  ),
+                ),
         ),
       ],
+    );
+  }
+}
+
+/// ALL / DYNAMIC / STATIC segmented filter.
+class _FilterStrip extends StatelessWidget {
+  const _FilterStrip({required this.selected, required this.onChanged});
+
+  final _ProjectFilter selected;
+  final ValueChanged<_ProjectFilter> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = context.photon;
+    final c = t.colors;
+    Widget seg(_ProjectFilter f, String label) {
+      final on = selected == f;
+      return Expanded(
+        child: Semantics(
+          button: true,
+          selected: on,
+          label: '$label projects',
+          child: HoverBuilder(
+            cursor: SystemMouseCursors.click,
+            builder: (context, hovered) => GestureDetector(
+              key: Key(f.keyName),
+              behavior: HitTestBehavior.opaque,
+              onTap: () => onChanged(f),
+              child: AnimatedContainer(
+                duration: const Duration(milliseconds: 120),
+                height: 22,
+                alignment: Alignment.center,
+                decoration: BoxDecoration(
+                  color: on ? c.violet.withValues(alpha: 0.14) : (hovered ? c.hoverFill : Colors.transparent),
+                  borderRadius: BorderRadius.circular(PhotonRadius.pill),
+                ),
+                child: FittedBox(
+                  fit: BoxFit.scaleDown,
+                  child: Text(
+                    label,
+                    style: t.text.labelCaps.copyWith(fontSize: 8, color: on ? c.violetInk : c.textMuted),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+    }
+
+    return Container(
+      padding: const EdgeInsets.all(2),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(PhotonRadius.pill),
+        border: Border.all(color: c.border),
+      ),
+      child: Row(
+        children: [
+          seg(_ProjectFilter.all, 'ALL'),
+          seg(_ProjectFilter.liveShader, 'DYNAMIC'),
+          seg(_ProjectFilter.still, 'STATIC'),
+        ],
+      ),
+    );
+  }
+}
+
+/// Compact name / scene / code filter.
+class _SearchField extends StatelessWidget {
+  const _SearchField({required this.onChanged});
+
+  final ValueChanged<String> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = context.photon;
+    final c = t.colors;
+    return SizedBox(
+      height: 28,
+      child: TextField(
+        key: const Key('project-search'),
+        onChanged: onChanged,
+        maxLines: 1,
+        cursorColor: c.violetInk,
+        style: t.text.telemetrySm.copyWith(color: c.carbon),
+        decoration: InputDecoration(
+          isDense: true,
+          filled: true,
+          fillColor: c.canvas,
+          hintText: 'Filter projects…',
+          hintStyle: t.text.telemetrySm.copyWith(color: c.ghost),
+          prefixIcon: Icon(Icons.search, size: 13, color: c.textMuted),
+          prefixIconConstraints: const BoxConstraints(minWidth: 28),
+          contentPadding: const EdgeInsets.symmetric(vertical: 7),
+          border: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(PhotonRadius.control),
+            borderSide: BorderSide(color: c.border),
+          ),
+          enabledBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(PhotonRadius.control),
+            borderSide: BorderSide(color: c.border),
+          ),
+          focusedBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(PhotonRadius.control),
+            borderSide: BorderSide(color: c.violet),
+          ),
+        ),
+      ),
     );
   }
 }
@@ -343,6 +520,8 @@ class _CardBody extends StatelessWidget {
                           ),
                         ],
                       ),
+                      const SizedBox(height: 4),
+                      _KindBadge(isDynamic: project.isDynamic),
                     ],
                   ),
                 ),
@@ -358,6 +537,36 @@ class _CardBody extends StatelessWidget {
             child: ColoredBox(color: selected ? c.violet : Colors.transparent),
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// `⚡ DYNAMIC` (a live procedural shader) or `🖼 STATIC` (a still render).
+class _KindBadge extends StatelessWidget {
+  const _KindBadge({required this.isDynamic});
+
+  final bool isDynamic;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = context.photon;
+    final c = t.colors;
+    final fg = isDynamic ? c.violetInk : c.textMuted;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1.5),
+      decoration: BoxDecoration(
+        color: isDynamic ? c.violet.withValues(alpha: 0.14) : c.hoverFill,
+        borderRadius: BorderRadius.circular(PhotonRadius.control - 1),
+        border: Border.all(color: isDynamic ? c.violet.withValues(alpha: 0.4) : c.border),
+      ),
+      child: FittedBox(
+        fit: BoxFit.scaleDown,
+        child: Text(
+          isDynamic ? '⚡ DYNAMIC' : '🖼 STATIC',
+          maxLines: 1,
+          style: t.text.labelCaps.copyWith(fontSize: 7.5, letterSpacing: 0.4, color: fg),
+        ),
       ),
     );
   }

@@ -39,16 +39,36 @@ class OpticsInspectorDeck extends StatelessWidget {
               onMinimize: studio.toggleOpticsCollapsed,
               onZoom: () => studio.toggleMaximizedPanel('optics'),
             ),
-            trailing: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-              decoration: BoxDecoration(
-                color: c.violet.withValues(alpha: 0.12),
-                borderRadius: BorderRadius.circular(PhotonRadius.control - 2),
-              ),
-              child: Text(
-                'SPECTRAL',
-                style: t.text.labelCaps.copyWith(fontSize: 8, color: c.violetInk),
-              ),
+            trailing: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                _HistoryButton(
+                  key: const Key('optics-undo-btn'),
+                  label: 'UNDO',
+                  icon: Icons.undo,
+                  enabled: studio.canUndo,
+                  onTap: studio.undo,
+                ),
+                _HistoryButton(
+                  key: const Key('optics-redo-btn'),
+                  label: 'REDO',
+                  icon: Icons.redo,
+                  enabled: studio.canRedo,
+                  onTap: studio.redo,
+                ),
+                const SizedBox(width: PhotonSpace.xs),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                  decoration: BoxDecoration(
+                    color: c.violet.withValues(alpha: 0.12),
+                    borderRadius: BorderRadius.circular(PhotonRadius.control - 2),
+                  ),
+                  child: Text(
+                    'SPECTRAL',
+                    style: t.text.labelCaps.copyWith(fontSize: 8, color: c.violetInk),
+                  ),
+                ),
+              ],
             ),
           ),
           // Collapsed: only the titlebar remains.
@@ -138,6 +158,71 @@ class OpticsInspectorDeck extends StatelessWidget {
       },
     ),
   ];
+}
+
+/// A subtle UNDO / REDO micro-button for the titlebar. It dims when there is
+/// nothing to step to.
+class _HistoryButton extends StatelessWidget {
+  const _HistoryButton({
+    super.key,
+    required this.label,
+    required this.icon,
+    required this.enabled,
+    required this.onTap,
+  });
+
+  final String label;
+  final IconData icon;
+  final bool enabled;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = context.photon;
+    final c = t.colors;
+    return Tooltip(
+      message: label == 'UNDO' ? 'Undo (Ctrl+Z)' : 'Redo (Ctrl+Y)',
+      child: Semantics(
+        button: true,
+        enabled: enabled,
+        label: label,
+        child: HoverBuilder(
+          cursor: enabled ? SystemMouseCursors.click : SystemMouseCursors.basic,
+          builder: (context, hovered) => GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTap: enabled ? onTap : null,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 3, vertical: 5),
+              child: AnimatedContainer(
+                duration: const Duration(milliseconds: 120),
+                height: 20,
+                padding: const EdgeInsets.symmetric(horizontal: 6),
+                decoration: BoxDecoration(
+                  color: enabled && hovered ? c.hoverFill : Colors.transparent,
+                  borderRadius: BorderRadius.circular(PhotonRadius.control),
+                  border: Border.all(color: enabled && hovered ? c.violet.withValues(alpha: 0.5) : c.border),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(icon, size: 11, color: enabled ? c.carbon : c.ghost.withValues(alpha: 0.6)),
+                    const SizedBox(width: 3),
+                    Text(
+                      label,
+                      style: t.text.labelCaps.copyWith(
+                        fontSize: 7.5,
+                        color: enabled ? c.carbon : c.ghost.withValues(alpha: 0.6),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
 }
 
 /// Fixed-column grid with equal-width cells (a `Wrap` with sized children, so

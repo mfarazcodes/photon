@@ -3,10 +3,13 @@ import 'dart:typed_data';
 import 'dart:ui' show PointMode;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../state/studio_controller.dart';
 import '../theme/photon_theme.dart';
+import 'account_sheet.dart';
 import 'command_dock.dart';
+import 'command_palette.dart';
 import 'mac_window_viewport.dart';
 import 'optics_inspector_deck.dart';
 import 'projects_sidebar.dart';
@@ -37,9 +40,42 @@ class _SpatialCanvasState extends State<SpatialCanvas> {
   final ValueNotifier<Offset?> _pointerPos = ValueNotifier(null);
 
   @override
+  void initState() {
+    super.initState();
+    HardwareKeyboard.instance.addHandler(_onKey);
+  }
+
+  @override
   void dispose() {
+    HardwareKeyboard.instance.removeHandler(_onKey);
     _pointerPos.dispose();
     super.dispose();
+  }
+
+  /// Ctrl+P opens the command palette; Ctrl+Z / Ctrl+Y / Ctrl+Shift+Z step the
+  /// optics history. Undo and redo are left alone while a text field has focus,
+  /// so typing keeps its own undo.
+  bool _onKey(KeyEvent event) {
+    if (event is! KeyDownEvent || !mounted) return false;
+    final kb = HardwareKeyboard.instance;
+    if (!(kb.isControlPressed || kb.isMetaPressed)) return false;
+    final studio = StudioScope.read(context);
+    final key = event.logicalKey;
+    if (key == LogicalKeyboardKey.keyP) {
+      studio.toggleCommandPalette();
+      return true;
+    }
+    final typing = FocusManager.instance.primaryFocus?.context?.findAncestorWidgetOfExactType<EditableText>() != null;
+    if (typing) return false;
+    if (key == LogicalKeyboardKey.keyZ) {
+      kb.isShiftPressed ? studio.redo() : studio.undo();
+      return true;
+    }
+    if (key == LogicalKeyboardKey.keyY) {
+      studio.redo();
+      return true;
+    }
+    return false;
   }
 
   @override
@@ -74,6 +110,9 @@ class _SpatialCanvasState extends State<SpatialCanvas> {
                       : _companion(studio, box),
                 ),
               ),
+              // Overlays sit above everything, header and dock included.
+              if (studio.accountModalOpen) const Positioned.fill(child: AccountInspectorModal(key: Key('account-modal'))),
+              if (studio.commandPaletteOpen) const Positioned.fill(child: CommandPalette()),
             ],
           ),
         ),
@@ -84,6 +123,8 @@ class _SpatialCanvasState extends State<SpatialCanvas> {
   /// Viewport and optics windows, honoring collapse and maximize state.
   List<Widget> _panels(StudioController studio) {
     final maximized = studio.maximizedPanel;
+    // The account console takes the whole column when it is the workspace.
+    if (maximized == 'account') return const [Expanded(child: AccountSheet(embedded: true))];
     final showViewport = maximized != 'optics';
     final showOptics = maximized != 'viewport';
     const viewport = MacWindowViewport();
@@ -163,9 +204,13 @@ class _SpatialCanvasState extends State<SpatialCanvas> {
                   children: [
                     const ProjectsSidebar(axis: Axis.horizontal),
                     const SizedBox(height: PhotonSpace.lg),
-                    if (maximized != 'optics') const MacWindowViewport(stageAspectRatio: 16 / 10),
-                    if (maximized == null) const SizedBox(height: PhotonSpace.lg),
-                    if (maximized != 'viewport') const OpticsInspectorDeck(),
+                    if (maximized == 'account')
+                      const AccountSheet(embedded: false)
+                    else ...[
+                      if (maximized != 'optics') const MacWindowViewport(stageAspectRatio: 16 / 10),
+                      if (maximized == null) const SizedBox(height: PhotonSpace.lg),
+                      if (maximized != 'viewport') const OpticsInspectorDeck(),
+                    ],
                   ],
                 ),
               ),
