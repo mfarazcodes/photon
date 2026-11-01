@@ -10,9 +10,13 @@ import '../theme/photon_theme.dart';
 import 'account_sheet.dart';
 import 'command_dock.dart';
 import 'command_palette.dart';
+import 'intent_file_trigger.dart';
+import 'launch_hero_portal.dart';
 import 'mac_window_viewport.dart';
 import 'optics_inspector_deck.dart';
+import 'progressive_flux_loader.dart';
 import 'projects_sidebar.dart';
+import 'roller_prompt_result.dart';
 import 'top_telemetry_bar.dart';
 
 /// The full studio workspace.
@@ -111,9 +115,62 @@ class _SpatialCanvasState extends State<SpatialCanvas> {
                 ),
               ),
               // Overlays sit above everything, header and dock included.
-              if (studio.accountModalOpen) const Positioned.fill(child: AccountInspectorModal(key: Key('account-modal'))),
-              if (studio.commandPaletteOpen) const Positioned.fill(child: CommandPalette()),
+              if (studio.uploadLoaderVisible) _fluxLoader(studio),
+              if (studio.promptResult != null) _rollerResult(studio),
+              // Keyed so one overlay appearing never resets another's state.
+              if (studio.ingestSheetOpen)
+                const Positioned.fill(key: ValueKey('overlay-ingest'), child: FileIngestSheet()),
+              if (studio.accountModalOpen)
+                const Positioned.fill(key: ValueKey('overlay-account'), child: AccountInspectorModal(key: Key('account-modal'))),
+              if (studio.commandPaletteOpen) const Positioned.fill(key: ValueKey('overlay-palette'), child: CommandPalette()),
+              if (studio.showLaunchPortal)
+                const Positioned.fill(key: ValueKey('overlay-portal'), child: LaunchHeroPortal(key: Key('launch-hero-portal'))),
             ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// The ingest progress card, top-center over the viewport stage. It never
+  /// takes pointer events.
+  Widget _fluxLoader(StudioController studio) {
+    return Positioned.fill(
+      key: const ValueKey('overlay-flux'),
+      child: IgnorePointer(
+        child: Padding(
+          padding: const EdgeInsets.only(top: TopTelemetryBar.height + 64),
+          child: Align(
+            alignment: Alignment.topCenter,
+            child: ProgressiveFluxLoader(
+              key: const Key('progressive-flux-loader'),
+              fileName: studio.uploadingFileName ?? '',
+              progress: studio.uploadProgress,
+              phaseLabel: studio.uploadPhaseLabel,
+              phaseIndex: studio.uploadPhaseIndex,
+              phaseCount: StudioController.uploadPhases.length,
+              sizeMb: studio.uploadSizeMb,
+              animate: studio.animateShader,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// The prompt / ingest result banner, centered just above the dock.
+  Widget _rollerResult(StudioController studio) {
+    final wide = MediaQuery.sizeOf(context).width >= SpatialCanvas.wideBreakpoint;
+    return Positioned.fill(
+      key: const ValueKey('overlay-roller'),
+      child: Padding(
+        padding: EdgeInsets.only(bottom: wide ? 104 : 200, left: PhotonSpace.md, right: PhotonSpace.md),
+        child: Align(
+          alignment: Alignment.bottomCenter,
+          child: RollerPromptResult(
+            key: const Key('roller-prompt-result'),
+            result: studio.promptResult!,
+            onDismiss: studio.dismissPromptResult,
           ),
         ),
       ),

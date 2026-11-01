@@ -7,6 +7,7 @@ import 'package:flutter/services.dart';
 import '../services/render_socket.dart';
 import '../state/studio_controller.dart';
 import '../theme/photon_theme.dart';
+import 'intent_file_trigger.dart';
 import 'photon_primitives.dart';
 
 /// Bottom command dock: "P." monogram, scene prompt field, quick-action pills
@@ -114,6 +115,15 @@ class _CommandDockState extends State<CommandDock> {
           child: Row(
             children: [
               swell(const _Monogram(), 'monogram'),
+              const SizedBox(width: PhotonSpace.sm),
+              swell(
+                IntentFileTrigger(
+                  key: const Key('intent-file-trigger-dock'),
+                  onTap: () => studio.setIngestSheetOpen(true),
+                  scale: 1.1,
+                ),
+                'filetrigger',
+              ),
               const SizedBox(width: PhotonSpace.md),
               Expanded(
                 child: _PromptField(

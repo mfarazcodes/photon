@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 
 import '../state/studio_controller.dart';
 import '../theme/photon_theme.dart';
+import 'animated_profile_card.dart';
 import 'photon_primitives.dart';
 
 /// The account console as a centered modal over the workspace: a dimmed,
@@ -79,7 +80,7 @@ class AccountSheet extends StatelessWidget {
         builder: (context, box) {
           const gap = PhotonSpace.md;
           final cards = [
-            _ProfileIdentityCard(studio: studio),
+            const AnimatedBlueProfileCard(key: Key('animated-profile-card')),
             _PlanTierCard(studio: studio),
             _AuthenticationCard(studio: studio),
             _ActiveSessionsCard(studio: studio),
@@ -247,7 +248,6 @@ class _MicroButton extends StatelessWidget {
     this.icon,
     this.tooltip,
     this.accent,
-    this.filled = false,
   });
 
   final String label;
@@ -255,7 +255,6 @@ class _MicroButton extends StatelessWidget {
   final IconData? icon;
   final String? tooltip;
   final Color? accent;
-  final bool filled;
 
   @override
   Widget build(BuildContext context) {
@@ -275,19 +274,19 @@ class _MicroButton extends StatelessWidget {
             height: 24,
             padding: EdgeInsets.symmetric(horizontal: label.isEmpty ? 6 : PhotonSpace.sm + 2),
             decoration: BoxDecoration(
-              color: filled || hovered ? color.withValues(alpha: filled ? 0.18 : 0.1) : Colors.transparent,
+              color: hovered ? color.withValues(alpha: 0.1) : Colors.transparent,
               borderRadius: BorderRadius.circular(PhotonRadius.control),
-              border: Border.all(color: hovered || filled ? color.withValues(alpha: 0.7) : c.border),
+              border: Border.all(color: hovered ? color.withValues(alpha: 0.7) : c.border),
             ),
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                if (icon != null) Icon(icon, size: 12, color: hovered || filled ? color : c.textMuted),
+                if (icon != null) Icon(icon, size: 12, color: hovered ? color : c.textMuted),
                 if (icon != null && label.isNotEmpty) const SizedBox(width: 4),
                 if (label.isNotEmpty)
                   Text(
                     label,
-                    style: t.text.labelCaps.copyWith(fontSize: 8, color: hovered || filled ? color : c.textMuted),
+                    style: t.text.labelCaps.copyWith(fontSize: 8, color: hovered ? color : c.textMuted),
                   ),
               ],
             ),
@@ -407,212 +406,6 @@ class _SwitchRow extends StatelessWidget {
 }
 
 // ----------------------------------------------------------------- profile
-
-class _ProfileIdentityCard extends StatefulWidget {
-  const _ProfileIdentityCard({required this.studio});
-
-  final StudioController studio;
-
-  @override
-  State<_ProfileIdentityCard> createState() => _ProfileIdentityCardState();
-}
-
-class _ProfileIdentityCardState extends State<_ProfileIdentityCard> {
-  bool _editing = false;
-  final TextEditingController _name = TextEditingController();
-  final TextEditingController _org = TextEditingController();
-
-  @override
-  void dispose() {
-    _name.dispose();
-    _org.dispose();
-    super.dispose();
-  }
-
-  void _toggleEdit() {
-    final a = widget.studio.account;
-    setState(() {
-      _editing = !_editing;
-      if (_editing) {
-        _name.text = a.displayName;
-        _org.text = a.organization;
-      }
-    });
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final t = context.photon;
-    final c = t.colors;
-    final a = widget.studio.account;
-    return _Card(
-      title: 'STUDIO IDENTITY & PROFILE',
-      icon: Icons.badge_outlined,
-      trailing: _MicroButton(
-        key: const Key('account-edit-profile-btn'),
-        label: _editing ? 'DONE' : 'EDIT PROFILE',
-        icon: _editing ? Icons.check : Icons.edit_outlined,
-        filled: _editing,
-        onTap: _toggleEdit,
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              _Avatar(initials: a.initials),
-              const SizedBox(width: PhotonSpace.md),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(a.displayName, maxLines: 1, overflow: TextOverflow.ellipsis, style: t.text.headlineSm),
-                    Text(a.handle, maxLines: 1, overflow: TextOverflow.ellipsis, style: t.text.telemetryMd.copyWith(color: c.violetInk)),
-                    Text(a.email, maxLines: 1, overflow: TextOverflow.ellipsis, style: t.text.telemetrySm.copyWith(color: c.textMuted)),
-                    const SizedBox(height: 4),
-                    Text(
-                      '${a.role} · ${a.organization}',
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
-                      style: t.text.bodySm.copyWith(color: c.carbon),
-                    ),
-                  ],
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: PhotonSpace.md - 2),
-          Row(
-            children: [
-              Text('WORKSPACE', style: t.text.labelCaps.copyWith(fontSize: 8)),
-              const SizedBox(width: PhotonSpace.sm),
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                decoration: BoxDecoration(
-                  color: c.hoverFill,
-                  borderRadius: BorderRadius.circular(PhotonRadius.control - 1),
-                ),
-                child: Text(a.workspaceId, style: t.text.telemetrySm.copyWith(fontWeight: FontWeight.w600)),
-              ),
-            ],
-          ),
-          if (_editing) ...[
-            const SizedBox(height: PhotonSpace.md - 2),
-            _EditField(
-              fieldKey: const Key('account-name-field'),
-              label: 'DISPLAY NAME',
-              controller: _name,
-              onChanged: (v) => widget.studio.updateAccountProfile(displayName: v),
-            ),
-            const SizedBox(height: PhotonSpace.sm),
-            _EditField(
-              fieldKey: const Key('account-org-field'),
-              label: 'ORGANIZATION',
-              controller: _org,
-              onChanged: (v) => widget.studio.updateAccountProfile(organization: v),
-            ),
-          ],
-        ],
-      ),
-    );
-  }
-}
-
-class _EditField extends StatelessWidget {
-  const _EditField({required this.fieldKey, required this.label, required this.controller, required this.onChanged});
-
-  final Key fieldKey;
-  final String label;
-  final TextEditingController controller;
-  final ValueChanged<String> onChanged;
-
-  @override
-  Widget build(BuildContext context) {
-    final t = context.photon;
-    final c = t.colors;
-    OutlineInputBorder border(Color color) => OutlineInputBorder(
-      borderRadius: BorderRadius.circular(PhotonRadius.control),
-      borderSide: BorderSide(color: color),
-    );
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(label, style: t.text.labelCaps.copyWith(fontSize: 8)),
-        const SizedBox(height: 3),
-        SizedBox(
-          height: 30,
-          child: TextField(
-            key: fieldKey,
-            controller: controller,
-            onChanged: onChanged,
-            maxLines: 1,
-            cursorColor: c.violetInk,
-            style: t.text.telemetryMd.copyWith(color: c.carbon),
-            decoration: InputDecoration(
-              isDense: true,
-              filled: true,
-              fillColor: c.substrate,
-              contentPadding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
-              border: border(c.border),
-              enabledBorder: border(c.border),
-              focusedBorder: border(c.violet),
-            ),
-          ),
-        ),
-      ],
-    );
-  }
-}
-
-/// `MF` monogram inside a violet-to-rose ring with an online pip.
-class _Avatar extends StatelessWidget {
-  const _Avatar({required this.initials});
-
-  final String initials;
-
-  @override
-  Widget build(BuildContext context) {
-    final t = context.photon;
-    final c = t.colors;
-    return SizedBox(
-      width: 58,
-      height: 58,
-      child: Stack(
-        children: [
-          Container(
-            padding: const EdgeInsets.all(2.5),
-            decoration: const BoxDecoration(
-              shape: BoxShape.circle,
-              gradient: SweepGradient(colors: [Color(0xFF8A2BE2), Color(0xFFFF2D78), Color(0xFF8A2BE2)]),
-            ),
-            child: Container(
-              alignment: Alignment.center,
-              decoration: BoxDecoration(color: c.substrate, shape: BoxShape.circle),
-              child: Text(
-                initials,
-                style: t.text.ui(size: 18, weight: FontWeight.w600, tracking: -0.02),
-              ),
-            ),
-          ),
-          Positioned(
-            right: 1,
-            bottom: 1,
-            child: Container(
-              width: 13,
-              height: 13,
-              decoration: BoxDecoration(
-                color: const Color(0xFF22C55E),
-                shape: BoxShape.circle,
-                border: Border.all(color: c.substrate, width: 2),
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
 
 // -------------------------------------------------------------------- plan
 

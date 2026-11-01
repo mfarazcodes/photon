@@ -4,6 +4,7 @@ import '../services/render_socket.dart';
 import '../state/studio_controller.dart';
 import '../theme/photon_theme.dart';
 import 'photon_primitives.dart';
+import 'shader_theme_switch.dart';
 
 /// The studio header: one 40px architectural bar with the Photon mark and name
 /// on the left, workspace quick-switches in the middle, and GPU telemetry,
@@ -133,7 +134,14 @@ class _TelemetryCluster extends StatelessWidget {
         const SizedBox(width: PhotonSpace.sm),
         _StatusCapsule(studio: studio),
         const SizedBox(width: PhotonSpace.sm),
-        _ThemeToggle(studio: studio),
+        _ShowcasePill(studio: studio),
+        const SizedBox(width: PhotonSpace.sm),
+        ShaderThemeSwitch(
+          key: const Key('shader-theme-switch'),
+          dark: studio.darkGrading,
+          onChanged: studio.setDarkGrading,
+          animate: studio.animateShader,
+        ),
         const SizedBox(width: PhotonSpace.sm),
         PhotonButton(
           label: 'Export EXR',
@@ -223,36 +231,47 @@ class _StatusCapsule extends StatelessWidget {
   }
 }
 
-/// Daylight Cyclorama / Dark Grading Mode switch.
-class _ThemeToggle extends StatelessWidget {
-  const _ThemeToggle({required this.studio});
+/// `SHOWCASE`: reopens the launch film.
+class _ShowcasePill extends StatelessWidget {
+  const _ShowcasePill({required this.studio});
 
   final StudioController studio;
 
   @override
   Widget build(BuildContext context) {
     final t = context.photon;
-    return PillCapsule(
-      padding: const EdgeInsets.all(3),
-      shadow: false,
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          _Segment(
-            icon: Icons.wb_sunny_outlined,
-            label: 'DAYLIGHT',
-            selected: !studio.darkGrading,
-            onTap: () => studio.setDarkGrading(false),
-            tokens: t,
+    final c = t.colors;
+    return Tooltip(
+      message: 'Showcase / launch portal',
+      child: Semantics(
+        button: true,
+        label: 'Showcase launch portal',
+        child: HoverBuilder(
+          cursor: SystemMouseCursors.click,
+          builder: (context, hovered) => GestureDetector(
+            key: const Key('open-launch-portal-btn'),
+            behavior: HitTestBehavior.opaque,
+            onTap: studio.openLaunchPortal,
+            child: AnimatedContainer(
+              duration: const Duration(milliseconds: 140),
+              height: 28,
+              padding: const EdgeInsets.symmetric(horizontal: PhotonSpace.sm + 2),
+              decoration: BoxDecoration(
+                color: hovered ? c.violet.withValues(alpha: 0.12) : Colors.transparent,
+                borderRadius: BorderRadius.circular(PhotonRadius.pill),
+                border: Border.all(color: hovered ? c.violet.withValues(alpha: 0.6) : c.border),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(Icons.play_circle_outline, size: 13, color: hovered ? c.violetInk : c.textMuted),
+                  const SizedBox(width: PhotonSpace.xs + 1),
+                  Text('SHOWCASE', style: t.text.labelCaps.copyWith(color: hovered ? c.violetInk : c.textMuted)),
+                ],
+              ),
+            ),
           ),
-          _Segment(
-            icon: Icons.dark_mode_outlined,
-            label: 'DARK GRADING',
-            selected: studio.darkGrading,
-            onTap: () => studio.setDarkGrading(true),
-            tokens: t,
-          ),
-        ],
+        ),
       ),
     );
   }
@@ -260,15 +279,12 @@ class _ThemeToggle extends StatelessWidget {
 
 class _Segment extends StatelessWidget {
   const _Segment({
-    this.icon,
     required this.label,
     required this.selected,
     required this.onTap,
     required this.tokens,
   });
 
-  /// Optional glyph; the workspace switch omits it to stay compact.
-  final IconData? icon;
   final String label;
   final bool selected;
   final VoidCallback onTap;
@@ -297,10 +313,6 @@ class _Segment extends StatelessWidget {
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                if (icon != null) ...[
-                  Icon(icon, size: 11, color: selected ? c.onCarbon : c.textMuted),
-                  const SizedBox(width: PhotonSpace.xs + 1),
-                ],
                 Text(
                   label,
                   style: tokens.text.labelCaps.copyWith(color: selected ? c.onCarbon : c.textMuted),
@@ -338,6 +350,7 @@ class _AccountPill extends StatelessWidget {
             behavior: HitTestBehavior.opaque,
             onTap: studio.toggleAccountModal,
             child: AnimatedContainer(
+              key: const Key('profile-card-trigger'),
               duration: const Duration(milliseconds: 140),
               height: 28,
               padding: const EdgeInsets.fromLTRB(4, 0, PhotonSpace.sm, 0),

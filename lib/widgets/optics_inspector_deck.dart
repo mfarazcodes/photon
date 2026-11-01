@@ -371,9 +371,17 @@ class _ScrubTrack extends StatelessWidget {
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
                   Text('PATH-TRACING SCRUB', style: t.text.labelCaps.copyWith(fontSize: 8)),
-                  Text(
-                    '$samples / ${studio.targetSamples} SPP · ${(pct * 100).toStringAsFixed(1)}%',
-                    style: t.text.telemetrySm.copyWith(fontSize: 9, color: c.textMuted),
+                  // The counter grows to nine characters as it converges; it
+                  // scales down rather than push past a narrow deck.
+                  Flexible(
+                    child: FittedBox(
+                      fit: BoxFit.scaleDown,
+                      alignment: Alignment.centerRight,
+                      child: Text(
+                        '$samples / ${studio.targetSamples} SPP · ${(pct * 100).toStringAsFixed(1)}%',
+                        style: t.text.telemetrySm.copyWith(fontSize: 9, color: c.textMuted),
+                      ),
+                    ),
                   ),
                 ],
               ),

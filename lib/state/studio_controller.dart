@@ -6,6 +6,8 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../models/hero_chapter.dart';
+import '../models/prompt_result.dart';
 import '../models/render_snapshot.dart';
 import '../models/scene_asset.dart';
 import '../models/studio_account.dart';
@@ -13,6 +15,8 @@ import '../models/studio_project.dart';
 import '../services/render_socket.dart';
 import '../theme/photon_theme.dart';
 
+export '../models/hero_chapter.dart';
+export '../models/prompt_result.dart' show PromptExecutionResult, PromptResultKind, RollerCell;
 export '../models/render_snapshot.dart' show RenderSnapshot;
 export '../models/studio_account.dart';
 export '../models/studio_project.dart'
@@ -158,13 +162,21 @@ class StudioController extends ChangeNotifier {
   /// [now] replaces the wall clock for the idle-frame check and undo
   /// coalescing (tests). [animateShader] false freezes the live procedural
   /// scenes at a fixed phase, so tests never wait on a free-running ticker.
+  ///
+  /// [startInLaunchPortal] opens the launch film over the workspace (the app
+  /// does; tests land in the workspace). [startInDeckView] shows the project
+  /// sidebar as a stacked deck instead of a list.
   StudioController({
     RenderSocket? socket,
     bool autoConnect = true,
     DateTime Function()? now,
     bool animateShader = true,
+    bool startInLaunchPortal = false,
+    bool startInDeckView = false,
   }) : socket = socket ?? RenderSocket(),
        _now = now ?? DateTime.now,
+       _showLaunchPortal = startInLaunchPortal,
+       _deckView = startInDeckView,
        // A private field cannot be a named parameter, so this stays an assignment.
        // ignore: prefer_initializing_formals
        _animateShader = animateShader {
@@ -326,6 +338,7 @@ class StudioController extends ChangeNotifier {
   }
 
   void _tick() {
+    _advanceUpload();
     final target = targetSamples;
     if (_samplesF < target) {
       // Exponential approach with a floor so the last samples still land.
@@ -340,7 +353,7 @@ class StudioController extends ChangeNotifier {
       fps.value = 0;
       _lastFrameAt = null;
     }
-    if (_samplesF >= target && _lastFrameAt == null) {
+    if (_samplesF >= target && _lastFrameAt == null && !_isUploading) {
       _ticker?.cancel();
       _ticker = null;
     }
@@ -530,17 +543,107 @@ class StudioController extends ChangeNotifier {
 
   // --- Prompt & export -------------------------------------------------
 
-  /// Returns true when the prompt reached the engine.
+  /// Sends [text] to the engine and applies what it asks for locally, so the
+  /// studio visibly responds with the engine offline too (`f/2.8`, `ior 2.4`,
+  /// `diamond`, `gold`, ...). Returns true when the prompt reached the engine.
   bool sendPrompt(String text) {
     final prompt = text.trim();
     if (prompt.isEmpty) {
       showToast('DESCRIBE A SCENE FIRST');
       return false;
     }
+    final changes = _applyPromptIntent(PromptIntent.parse(prompt));
     final sent = socket.send({'prompt': prompt});
     _restartConvergence();
+    _publishPromptResult(prompt: prompt, changes: changes, sent: sent);
     showToast(sent ? 'PROMPT DISPATCHED' : 'ENGINE OFFLINE · PROMPT NOT SENT');
+    notifyListeners();
     return sent;
+  }
+
+  /// Writes one parameter without recording undo or notifying; the caller
+  /// does both once for the whole batch. Returns whether it changed.
+  bool _writeParam(String id, double value) {
+    final v = _def(id).clamp(value);
+    if (_params[id] == v) return false;
+    _params[id] = v;
+    socket.send({'param': id, 'value': v});
+    return true;
+  }
+
+  /// Applies a parsed prompt as one undo step and returns labels for what
+  /// changed, in the order the roller banner reads them.
+  List<String> _applyPromptIntent(PromptIntent intent) {
+    if (intent.isEmpty) return const [];
+    _recordUndo(Object());
+    final changes = <String>[];
+
+    final project = _projects.where((p) => p.id == intent.projectId).firstOrNull;
+    if (project != null && project.id != _activeProjectId) {
+      _applyProject(project);
+      socket.send({'load_project': project.id, 'params': Map<String, double>.of(_params)});
+      changes.add('SCENE ${project.name}');
+    }
+    final mode = intent.integrator;
+    if (mode != null && mode != _integrator) {
+      _integrator = mode;
+      socket.send({'integrator': mode.name});
+      changes.add(mode.label);
+    }
+
+    String label(String id) => '${_def(id).label.toUpperCase()} ${_def(id).format(_params[id]!)}';
+    for (final id in const ['ior']) {
+      final v = intent.params[id];
+      if (v != null && _writeParam(id, v)) changes.add(label(id));
+    }
+    final roughness = intent.roughness;
+    if (roughness != null) changes.add('ROUGHNESS ${roughness.clamp(0.0, 1.0).toStringAsFixed(2)}');
+    for (final id in const ['aperture', 'focal_distance', 'max_bounces']) {
+      final v = intent.params[id];
+      if (v != null && _writeParam(id, v)) changes.add(label(id));
+    }
+    final spp = intent.params['samples_per_pixel'];
+    if (spp != null && _writeParam('samples_per_pixel', spp)) {
+      changes.add('$targetSamples SPP');
+    }
+    _syncActiveProject();
+    return changes;
+  }
+
+  // --- Prompt result banner -------------------------------------------
+
+  PromptExecutionResult? _promptResult;
+  int _resultSeq = 0;
+
+  /// The latest prompt or ingest outcome, shown by the roller banner until it
+  /// is dismissed.
+  PromptExecutionResult? get promptResult => _promptResult;
+
+  void _publishPromptResult({required String prompt, required List<String> changes, required bool sent}) {
+    final spp = targetSamples;
+    final parts = [...changes];
+    if (!parts.any((c) => c.endsWith(' SPP'))) parts.add('$spp SPP');
+    _promptResult = PromptExecutionResult(
+      id: ++_resultSeq,
+      kind: PromptResultKind.prompt,
+      prompt: prompt,
+      changes: changes,
+      dispatched: sent,
+      headline: changes.isEmpty ? 'PROMPT QUEUED · $spp SPP' : 'PROMPT APPLIED · ${parts.join(' · ')}',
+      cells: [
+        RollerCell('KERNEL', _integrator.solverCaption.toUpperCase()),
+        RollerCell('SOLVER', 'MIS · ${maxBounces}B'),
+        RollerCell('DELTA', changes.isEmpty ? 'Δ 0' : 'Δ ${changes.length}'),
+        RollerCell('SPP', '$spp'),
+        RollerCell('STATUS', sent ? 'DISPATCHED' : 'LOCAL'),
+      ],
+    );
+  }
+
+  void dismissPromptResult() {
+    if (_promptResult == null) return;
+    _promptResult = null;
+    notifyListeners();
   }
 
   void exportExr() {
@@ -975,6 +1078,278 @@ class StudioController extends ChangeNotifier {
 
   void toggleCommandPalette() => setCommandPaletteOpen(!_commandPaletteOpen);
 
+  // --- Launch portal ---------------------------------------------------
+
+  bool _showLaunchPortal;
+  bool get showLaunchPortal => _showLaunchPortal;
+
+  /// Playhead of the launch film, seconds. The portal's ticker advances it;
+  /// chapter and scrubber taps set it directly.
+  final ValueNotifier<double> heroTime = ValueNotifier(0);
+
+  bool _heroPlaying = true;
+  bool get heroPlaying => _heroPlaying;
+
+  void openLaunchPortal() {
+    if (_showLaunchPortal) return;
+    _showLaunchPortal = true;
+    // Every showing starts from the top of the film.
+    heroTime.value = 0;
+    _heroPlaying = true;
+    _accountModalOpen = false;
+    _commandPaletteOpen = false;
+    notifyListeners();
+  }
+
+  void dismissLaunchPortal() {
+    if (!_showLaunchPortal) return;
+    _showLaunchPortal = false;
+    notifyListeners();
+  }
+
+  void toggleLaunchPortal() => _showLaunchPortal ? dismissLaunchPortal() : openLaunchPortal();
+
+  void seekHero(double seconds) => heroTime.value = seconds.clamp(0.0, kHeroDurationSeconds).toDouble();
+
+  void setHeroPlaying(bool value) {
+    if (_heroPlaying == value) return;
+    _heroPlaying = value;
+    // At the end of the film, play restarts it.
+    if (value && heroTime.value >= kHeroDurationSeconds) heroTime.value = 0;
+    notifyListeners();
+  }
+
+  void toggleHeroPlaying() => setHeroPlaying(!_heroPlaying);
+
+  /// Loads the studio preset behind chapter [index] and leaves the portal.
+  void applyHeroChapterPreset(int index) {
+    if (index < 0 || index >= kHeroChapters.length) return;
+    final chapter = kHeroChapters[index];
+    switch (index) {
+      case 0:
+        if (_projects.any((p) => p.id == 'volumetric_prism')) selectProject('volumetric_prism');
+        setWavelengthNm(470);
+      case 1:
+        setIntegrator(IntegratorMode.bidirectional);
+        setParam('max_bounces', 12);
+      case 2:
+        if (_projects.any((p) => p.id == 'gold_atelier_bsdf')) selectProject('gold_atelier_bsdf');
+      case 3:
+        setAbWipeEnabled(true);
+        resetAbSplit();
+      case 4:
+        setBvhOverlay(true);
+    }
+    _showLaunchPortal = false;
+    showToast('PRESET · ${chapter.title.toUpperCase()}');
+    notifyListeners();
+  }
+
+  /// Adds the film frame under the playhead as a still reference project and
+  /// opens it in the viewport.
+  void loadHeroAsViewportReference() {
+    final frame = nearestHeroKeyframe(heroTime.value);
+    final tc = heroTimecode(heroTime.value);
+    _projectSeq++;
+    final project = StudioProject(
+      id: 'hero_reference_$_projectSeq',
+      name: 'HERO_REF_${tc.substring(6).replaceAll(':', '_')}',
+      code: 'PRJ-${_projectSeq.toString().padLeft(2, '0')}',
+      sceneType: 'Launch Film Reference',
+      subtitle: '.mp4 · TC $tc',
+      updatedAt: 'just now',
+      status: ProjectStatus.rendered,
+      previewAsset: frame.asset,
+      params: Map<String, double>.of(_params),
+      integrator: _integrator,
+      sceneKind: activeProject?.sceneKind ?? ProceduralSceneKind.causticWave,
+      isDynamic: false,
+    );
+    _projects.insert(0, project);
+    _showLaunchPortal = false;
+    selectProject(project.id);
+    showToast('VIEWPORT REFERENCE · TC $tc');
+  }
+
+  // --- File ingest & upload --------------------------------------------
+
+  bool _ingestSheetOpen = false;
+  bool get ingestSheetOpen => _ingestSheetOpen;
+
+  void setIngestSheetOpen(bool open) {
+    if (_ingestSheetOpen == open) return;
+    _ingestSheetOpen = open;
+    if (open) {
+      _accountModalOpen = false;
+      _commandPaletteOpen = false;
+    }
+    notifyListeners();
+  }
+
+  bool _isUploading = false;
+  double _uploadProgress = 0.0;
+  String? _uploadingFileName;
+  int _uploadPhaseIndex = 0;
+  double _uploadSizeMb = 0;
+  double _uploadSeconds = 3;
+  Timer? _uploadLingerTimer;
+  bool _uploadLingering = false;
+
+  bool get isUploading => _isUploading;
+  double get uploadProgress => _uploadProgress;
+  String? get uploadingFileName => _uploadingFileName;
+  int get uploadPhaseIndex => _uploadPhaseIndex;
+  double get uploadSizeMb => _uploadSizeMb;
+
+  /// True while the loader should be on screen: during the transfer and for a
+  /// moment after it, so 100% is seen.
+  bool get uploadLoaderVisible => _isUploading || _uploadLingering;
+
+  static const List<String> uploadPhases = [
+    'PARSING USD SCENE GRAPH...',
+    'BUILDING BVH OCTREE ACCELERATOR...',
+    'COMPILING SPECTRAL BSDF SHADERS...',
+    'CONVERGING FIRST LIGHT PASS...',
+  ];
+
+  String get uploadPhaseLabel => uploadPhases[_uploadPhaseIndex];
+
+  static int _phaseFor(double progress) {
+    if (progress < 0.25) return 0;
+    if (progress < 0.55) return 1;
+    if (progress < 0.85) return 2;
+    return 3;
+  }
+
+  /// Starts ingesting [fileName]. Progress advances with the studio ticker;
+  /// when it reaches 100% the asset joins the project list.
+  void startFileUpload(String fileName, {double sizeMb = 48.5}) {
+    if (_isUploading) {
+      showToast('INGEST IN PROGRESS · $_uploadingFileName');
+      return;
+    }
+    _uploadLingerTimer?.cancel();
+    _uploadLingering = false;
+    _isUploading = true;
+    _uploadProgress = 0;
+    _uploadPhaseIndex = 0;
+    _uploadingFileName = fileName;
+    _uploadSizeMb = sizeMb;
+    // Bigger files take longer; 2s to 5s.
+    _uploadSeconds = (1.6 + sizeMb / 40).clamp(2.0, 5.0).toDouble();
+    _ingestSheetOpen = false;
+    _ensureTicking();
+    notifyListeners();
+  }
+
+  void _advanceUpload() {
+    if (!_isUploading) return;
+    _setUploadProgress(_uploadProgress + 0.1 / _uploadSeconds);
+  }
+
+  /// Jumps the transfer to [progress] (0..1). For tests; the ticker does the
+  /// same in small steps.
+  @visibleForTesting
+  void advanceUploadForTest(double progress) => _setUploadProgress(progress);
+
+  void _setUploadProgress(double progress) {
+    if (!_isUploading) return;
+    _uploadProgress = progress.clamp(0.0, 1.0).toDouble();
+    _uploadPhaseIndex = _phaseFor(_uploadProgress);
+    if (_uploadProgress >= 1.0) {
+      _finishUpload();
+    } else {
+      notifyListeners();
+    }
+  }
+
+  static const Map<String, String> _ingestSceneTypes = {
+    'usd': 'USD Scene Graph',
+    'exr': 'EXR Multi-Layer',
+    'ior': 'IOR Shader',
+    'bsdf': 'BSDF Material',
+    'hdr': 'HDRI Dome Light',
+    'obj': 'OBJ Mesh',
+  };
+
+  void _finishUpload() {
+    final fileName = _uploadingFileName ?? 'UNTITLED.usd';
+    _isUploading = false;
+    _uploadProgress = 1.0;
+    _uploadPhaseIndex = uploadPhases.length - 1;
+    _uploadLingering = true;
+    _uploadLingerTimer?.cancel();
+    _uploadLingerTimer = Timer(const Duration(milliseconds: 1400), () {
+      _uploadLingering = false;
+      notifyListeners();
+    });
+
+    final dot = fileName.lastIndexOf('.');
+    final stem = (dot > 0 ? fileName.substring(0, dot) : fileName).toUpperCase();
+    final ext = dot > 0 ? fileName.substring(dot + 1).toLowerCase() : 'usd';
+    // A stable pick, so the same file always lands on the same look.
+    final pick = fileName.codeUnits.fold<int>(0, (a, b) => a + b);
+    final kind = ProceduralSceneKind.values[pick % ProceduralSceneKind.values.length];
+    final preview = _ingestPreviews[pick % _ingestPreviews.length];
+
+    _projectSeq++;
+    final project = StudioProject(
+      id: '${stem.toLowerCase().replaceAll(RegExp(r'[^a-z0-9]+'), '_')}_$_projectSeq',
+      name: stem,
+      code: 'PRJ-${_projectSeq.toString().padLeft(2, '0')}',
+      sceneType: _ingestSceneTypes[ext] ?? 'Imported Asset',
+      subtitle: '.$ext · ${_uploadSizeMb.toStringAsFixed(1)} MB',
+      updatedAt: 'just now',
+      status: ProjectStatus.draft,
+      previewAsset: preview,
+      params: Map<String, double>.of(_params),
+      integrator: _integrator,
+      sceneKind: kind,
+      isDynamic: const {'usd', 'ior', 'obj'}.contains(ext),
+    );
+    _projects.insert(0, project);
+    selectProject(project.id);
+
+    _promptResult = PromptExecutionResult(
+      id: ++_resultSeq,
+      kind: PromptResultKind.ingest,
+      prompt: fileName,
+      changes: ['+ $stem'],
+      headline: 'ASSET INGESTED · $fileName · ${_uploadSizeMb.toStringAsFixed(1)} MB · $targetSamples SPP',
+      cells: [
+        RollerCell('KERNEL', '.${ext.toUpperCase()} IMPORT'),
+        const RollerCell('SOLVER', 'BVH · OCTREE'),
+        const RollerCell('DELTA', '+1 ASSET'),
+        RollerCell('SPP', '$targetSamples'),
+        const RollerCell('STATUS', 'INGESTED'),
+      ],
+    );
+    showToast('ASSET INGESTED · $fileName');
+    notifyListeners();
+  }
+
+  static const List<String> _ingestPreviews = [
+    'assets/images/volumetric_prism.png',
+    'assets/images/chrome_anisotropic.png',
+    'assets/images/emerald_subsurface.png',
+    'assets/images/blackhole_lensing.png',
+    'assets/images/caustic_wave.jpg',
+    'assets/images/gold_bsdf_sphere.jpg',
+  ];
+
+  // --- Sidebar deck ----------------------------------------------------
+
+  bool _deckView;
+
+  /// True when the projects sidebar shows the stacked deck; false for the list.
+  bool get deckView => _deckView;
+
+  void setDeckView(bool value) {
+    if (_deckView == value) return;
+    _deckView = value;
+    notifyListeners();
+  }
+
   // --- Toast -----------------------------------------------------------
 
   final ValueNotifier<String?> toast = ValueNotifier(null);
@@ -992,6 +1367,7 @@ class StudioController extends ChangeNotifier {
     _ticker?.cancel();
     _ticker = null;
     _toastTimer?.cancel();
+    _uploadLingerTimer?.cancel();
     _messageSub.cancel();
     socket.link.removeListener(_onLinkChanged);
     socket.dispose();
@@ -1004,6 +1380,7 @@ class StudioController extends ChangeNotifier {
     focusPoint.dispose();
     abSplit.dispose();
     probePosition.dispose();
+    heroTime.dispose();
     toast.dispose();
     super.dispose();
   }

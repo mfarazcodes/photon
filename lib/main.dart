@@ -19,7 +19,9 @@ class PhotonApp extends StatefulWidget {
 }
 
 class _PhotonAppState extends State<PhotonApp> {
-  late final StudioController _studio = widget.controller ?? StudioController();
+  // The app opens on the launch film and shows the projects as a stacked deck.
+  late final StudioController _studio =
+      widget.controller ?? StudioController(startInLaunchPortal: true, startInDeckView: true);
   late bool _dark = _studio.darkGrading;
 
   // Built once: ThemeData construction pulls in the Google Fonts text theme.

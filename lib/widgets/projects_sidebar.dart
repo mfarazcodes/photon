@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 
 import '../state/studio_controller.dart';
 import '../theme/photon_theme.dart';
+import 'card_deck_carousel.dart';
+import 'intent_file_trigger.dart';
 import 'photon_primitives.dart';
 
 /// Shot manager: the studio's saved projects.
@@ -71,17 +73,28 @@ class _ProjectsSidebarState extends State<ProjectsSidebar> {
       dragAffinity: vertical ? Axis.horizontal : Axis.vertical,
     );
 
+    final deck = studio.deckView;
     final controls = [
-      _Header(count: all.length, onNew: studio.createNewProject),
-      const SizedBox(height: PhotonSpace.xs + 2),
-      _FilterStrip(
-        selected: _filter,
-        onChanged: (f) => setState(() => _filter = f),
+      _Header(
+        count: all.length,
+        onNew: studio.createNewProject,
+        onIngest: () => studio.setIngestSheetOpen(true),
       ),
       const SizedBox(height: PhotonSpace.xs + 2),
-      _SearchField(onChanged: (q) => setState(() => _query = q)),
+      _ViewToggle(deck: deck, onChanged: studio.setDeckView),
+      const SizedBox(height: PhotonSpace.xs + 2),
+      // The deck always shows every project, so it has no filter or search.
+      if (!deck) ...[
+        _FilterStrip(
+          selected: _filter,
+          onChanged: (f) => setState(() => _filter = f),
+        ),
+        const SizedBox(height: PhotonSpace.xs + 2),
+        _SearchField(onChanged: (q) => setState(() => _query = q)),
+      ],
       const SizedBox(height: PhotonSpace.sm),
     ];
+    const deckWidget = CardDeckCarousel(key: Key('card-deck-carousel'));
 
     final empty = Padding(
       padding: const EdgeInsets.all(PhotonSpace.md),
@@ -100,7 +113,9 @@ class _ProjectsSidebarState extends State<ProjectsSidebar> {
           children: [
             ...controls,
             Expanded(
-              child: projects.isEmpty
+              child: deck
+                  ? const SingleChildScrollView(child: deckWidget)
+                  : projects.isEmpty
                   ? empty
                   // Eager (not a lazy ListView): the list is short, and every
                   // card should exist for accessibility and drag targets.
@@ -126,6 +141,9 @@ class _ProjectsSidebarState extends State<ProjectsSidebar> {
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         ...controls,
+        if (deck)
+          const Center(child: SizedBox(width: ProjectsSidebar.width + 16, child: deckWidget))
+        else
         SizedBox(
           height: ProjectsSidebar.carouselHeight,
           child: projects.isEmpty
@@ -256,11 +274,75 @@ class _SearchField extends StatelessWidget {
   }
 }
 
+/// `LIST VIEW` / `STACK DECK`.
+class _ViewToggle extends StatelessWidget {
+  const _ViewToggle({required this.deck, required this.onChanged});
+
+  final bool deck;
+  final ValueChanged<bool> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = context.photon;
+    final c = t.colors;
+    Widget seg(bool value, String label, Key key) {
+      final on = deck == value;
+      return Expanded(
+        child: Semantics(
+          button: true,
+          selected: on,
+          label: label,
+          child: HoverBuilder(
+            cursor: SystemMouseCursors.click,
+            builder: (context, hovered) => GestureDetector(
+              key: key,
+              behavior: HitTestBehavior.opaque,
+              onTap: () => onChanged(value),
+              child: AnimatedContainer(
+                duration: const Duration(milliseconds: 120),
+                height: 20,
+                alignment: Alignment.center,
+                decoration: BoxDecoration(
+                  color: on ? c.violet.withValues(alpha: 0.14) : (hovered ? c.hoverFill : Colors.transparent),
+                  borderRadius: BorderRadius.circular(PhotonRadius.pill),
+                ),
+                child: FittedBox(
+                  fit: BoxFit.scaleDown,
+                  child: Text(
+                    label,
+                    maxLines: 1,
+                    style: t.text.labelCaps.copyWith(fontSize: 7.5, color: on ? c.violetInk : c.textMuted),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+    }
+
+    return Container(
+      padding: const EdgeInsets.all(2),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(PhotonRadius.pill),
+        border: Border.all(color: c.border),
+      ),
+      child: Row(
+        children: [
+          seg(false, 'LIST VIEW', const Key('sidebar-view-list')),
+          seg(true, 'STACK DECK', const Key('sidebar-view-deck')),
+        ],
+      ),
+    );
+  }
+}
+
 class _Header extends StatelessWidget {
-  const _Header({required this.count, required this.onNew});
+  const _Header({required this.count, required this.onNew, required this.onIngest});
 
   final int count;
   final VoidCallback onNew;
+  final VoidCallback onIngest;
 
   @override
   Widget build(BuildContext context) {
@@ -285,6 +367,8 @@ class _Header extends StatelessWidget {
             child: Text('$count', style: t.text.labelCaps.copyWith(fontSize: 8, color: c.violetInk)),
           ),
           const Spacer(),
+          IntentFileTrigger(key: const Key('intent-file-trigger'), onTap: onIngest, scale: 0.78),
+          const SizedBox(width: PhotonSpace.xs),
           Tooltip(
             message: 'New project from current settings',
             child: Semantics(
