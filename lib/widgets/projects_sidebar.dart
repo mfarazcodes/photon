@@ -8,7 +8,7 @@ import 'photon_primitives.dart';
 
 /// Shot manager: the studio's saved projects.
 ///
-/// [Axis.vertical] is the 188px desktop column; [Axis.horizontal] is the
+/// [Axis.vertical] is the 210px desktop column; [Axis.horizontal] is the
 /// companion carousel. A card loads its project when tapped, or when dragged
 /// onto `SCENE_VIEWPORT.rt` (the card carries the project id as a
 /// `Draggable<String>`).
@@ -17,7 +17,7 @@ class ProjectsSidebar extends StatefulWidget {
 
   final Axis axis;
 
-  static const double width = 188;
+  static const double width = 210;
   static const double carouselCardWidth = 176;
   static const double carouselHeight = 126;
 

@@ -3,6 +3,7 @@ import 'dart:io';
 import 'dart:math' as math;
 import 'dart:ui' as ui;
 
+import 'package:flutter/foundation.dart' show ValueListenable;
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
@@ -16,8 +17,11 @@ import 'package:photon/theme/photon_theme.dart';
 import 'package:photon/widgets/ab_render_wipe.dart';
 import 'package:photon/widgets/animated_profile_card.dart';
 import 'package:photon/widgets/bvh_ray_overlay.dart';
+import 'package:photon/widgets/command_dock.dart';
 import 'package:photon/widgets/intent_file_trigger.dart';
+import 'package:photon/widgets/launch_hero_portal.dart';
 import 'package:photon/widgets/mac_window_viewport.dart';
+import 'package:photon/widgets/optics_inspector_deck.dart';
 import 'package:photon/widgets/photon_primitives.dart';
 import 'package:photon/widgets/pixel_loupe_probe.dart';
 import 'package:photon/widgets/procedural_scene_canvas.dart';
@@ -26,6 +30,7 @@ import 'package:photon/widgets/projects_sidebar.dart';
 import 'package:photon/widgets/rauno_tick_scrubber.dart';
 import 'package:photon/widgets/shader_theme_switch.dart';
 import 'package:photon/widgets/spatial_canvas.dart';
+import 'package:photon/widgets/top_telemetry_bar.dart';
 
 /// A socket that never touches the network.
 class _FakeSocket extends RenderSocket {
@@ -2908,13 +2913,13 @@ void main() {
     });
   });
 
-  group('launch portal', () {
+  group('landing page', () {
     final portal = find.byKey(const Key('launch-hero-portal'));
+    final takeMe = find.byKey(const Key('take-me-to-photon-btn'));
 
-    Future<StudioController> openPortal(WidgetTester tester) async {
-      final studio = await _pumpStudio(tester, const Size(1280, 800));
-      await _tapKey(tester, const Key('open-launch-portal-btn'));
-      await _pumpFor(tester, const Duration(milliseconds: 600));
+    Future<StudioController> pumpLanding(WidgetTester tester, {bool animate = false}) async {
+      final studio = StudioController(autoConnect: false, animateShader: animate, startInLandingPage: true);
+      await _pumpStudio(tester, const Size(1280, 800), controller: studio);
       return studio;
     }
 
@@ -2935,222 +2940,200 @@ void main() {
       ]);
     });
 
-    test('timecode, chapters and keyframes follow the playhead', () {
-      expect(heroTimecode(0), '00:00:00:00');
-      expect(heroTimecode(3.34), '00:00:03:20');
-      expect(heroTimecode(kHeroDurationSeconds), '00:00:07:04');
-      expect(heroTimecode(99), '00:00:07:04', reason: 'clamped to the end of the film');
-      expect(heroChapterAt(1.0), isNull, reason: 'the prism scene comes before the chapters');
-      expect(heroChapterAt(3.2)!.index, 0);
-      expect(heroChapterAt(4.2)!.index, 1, reason: 'the film lights BiDir Path Tracing at 4.2s');
-      expect(heroChapterAt(6.9)!.index, 4);
-      expect(kHeroChapters.map((c) => c.title), [
-        'Cauchy Dispersion',
-        'BiDir Path Tracing',
-        'Microfacet GGX',
-        'OIDN Denoiser',
-        'Vulkan RT Core',
-      ]);
-      expect(nearestHeroKeyframe(0).seconds, 0.5);
-      expect(nearestHeroKeyframe(3.0).seconds, 2.0);
-      expect(nearestHeroKeyframe(3.4).seconds, 4.2);
-      expect(nearestHeroKeyframe(7).seconds, 6.5);
-    });
-
-    test('the controller opens, toggles and dismisses the portal', () {
+    test('the controller starts in the workspace or on the landing page, and enters the studio', () {
       final studio = StudioController(autoConnect: false, animateShader: false);
       addTearDown(studio.dispose);
       expect(studio.showLaunchPortal, isFalse, reason: 'tests land in the workspace');
+      expect(studio.inStudioWorkspace, isTrue);
+
       studio.openLaunchPortal();
       expect(studio.showLaunchPortal, isTrue);
-      studio.seekHero(5);
-      studio.setHeroPlaying(false);
-      studio.dismissLaunchPortal();
+      expect(studio.inStudioWorkspace, isFalse);
+      studio.enterPhotonStudio();
       expect(studio.showLaunchPortal, isFalse);
+      expect(studio.inStudioWorkspace, isTrue);
       studio.toggleLaunchPortal();
       expect(studio.showLaunchPortal, isTrue);
-      expect(studio.heroTime.value, 0, reason: 'every showing starts at the top');
-      expect(studio.heroPlaying, isTrue);
-      studio.toggleLaunchPortal();
-      expect(studio.showLaunchPortal, isFalse);
+      studio.dismissLaunchPortal();
+      expect(studio.inStudioWorkspace, isTrue);
 
-      final launching = StudioController(autoConnect: false, animateShader: false, startInLaunchPortal: true, startInDeckView: true);
+      final launching = StudioController(autoConnect: false, animateShader: false, startInLandingPage: true, startInDeckView: true);
       addTearDown(launching.dispose);
       expect(launching.showLaunchPortal, isTrue);
+      expect(launching.inStudioWorkspace, isFalse);
       expect(launching.deckView, isTrue);
+      var notified = 0;
+      launching.addListener(() => notified++);
+      launching.enterPhotonStudio();
+      launching.enterPhotonStudio();
+      expect(notified, 1, reason: 'entering twice changes nothing the second time');
     });
 
-    testWidgets('the SHOWCASE pill opens the portal; ENTER SPATIAL STUDIO returns to the studio', (tester) async {
-      final studio = await _pumpStudio(tester, const Size(1280, 800));
-      expect(portal, findsNothing);
-      expect(find.byKey(const Key('open-launch-portal-btn')), findsOneWidget);
+    test('the live scenes pause under any overlay', () {
+      final studio = StudioController(autoConnect: false, animateShader: false);
+      addTearDown(studio.dispose);
+      expect(studio.sceneAnimationPaused, isFalse);
+      studio.setAccountModalOpen(true);
+      expect(studio.sceneAnimationPaused, isTrue);
+      studio.setAccountModalOpen(false);
+      studio.setCommandPaletteOpen(true);
+      expect(studio.sceneAnimationPaused, isTrue);
+      studio.setCommandPaletteOpen(false);
+      studio.setIngestSheetOpen(true);
+      expect(studio.sceneAnimationPaused, isTrue);
+      studio.setIngestSheetOpen(false);
+      studio.openLaunchPortal();
+      expect(studio.sceneAnimationPaused, isTrue);
+      studio.enterPhotonStudio();
+      expect(studio.sceneAnimationPaused, isFalse);
+    });
 
-      await _tapKey(tester, const Key('open-launch-portal-btn'));
-      await _pumpFor(tester, const Duration(milliseconds: 600));
+    testWidgets('launching shows the full-screen landing page with one way in and no player controls', (tester) async {
+      final studio = await pumpLanding(tester);
       expect(studio.showLaunchPortal, isTrue);
       expect(portal, findsOneWidget);
-      expect(find.text("PHOTON EDITION // WINTER '26"), findsOneWidget);
-      expect(find.text("PHOTON VFX STUDIO® — EDITION WINTER '26"), findsOneWidget);
-      expect(find.text('TC 00:00:00:00 · 60 FPS'), findsOneWidget);
-      for (final chapter in kHeroChapters) {
-        expect(find.text(chapter.title), findsOneWidget, reason: chapter.title);
-        expect(find.text(chapter.detail), findsOneWidget, reason: chapter.detail);
-        expect(find.text('${chapter.number} /'), findsOneWidget);
-      }
-      expect(find.text('ENTER SPATIAL STUDIO →'), findsOneWidget);
-      expect(find.text('LOAD AS VIEWPORT REFERENCE'), findsOneWidget);
-      expect(find.byKey(const Key('hero-video-play-toggle')), findsOneWidget);
-      expect(tester.takeException(), isNull);
+      expect(tester.getSize(portal), const Size(1280, 800), reason: 'full bleed');
 
-      await _tapKey(tester, const Key('enter-studio-btn'));
+      expect(find.text('Physically Based Light Transport.'), findsOneWidget);
+      expect(find.text("EDITION WINTER '26 // SPATIAL RAY-TRACING ENGINE"), findsOneWidget);
+      expect(find.text('PHOTON®'), findsOneWidget);
+      expect(find.text('Take me to Photon'), findsOneWidget);
+      expect(takeMe, findsOneWidget);
+      expect(find.byKey(const Key('enter-studio-btn')), findsOneWidget, reason: 'the compatibility alias');
+      expect(find.byIcon(Icons.arrow_forward), findsOneWidget);
+
+      // Not a player: no controls, timeline, timecode or reference button.
+      for (final gone in ['hero-video-play-toggle', 'hero-scrubber', 'hero-timecode', 'hero-clock', 'hero-load-reference-btn', 'hero-chapter-0']) {
+        expect(find.byKey(Key(gone)), findsNothing, reason: gone);
+      }
+      for (final text in ['PLAY', 'PAUSE', 'LOAD AS VIEWPORT REFERENCE', 'ENTER SPATIAL STUDIO →']) {
+        expect(find.text(text), findsNothing, reason: text);
+      }
+      expect(find.textContaining('TC 00:'), findsNothing);
+      expect(find.byType(Slider), findsNothing);
+
+      // The studio is not on screen behind it.
+      expect(find.text('SCENE_VIEWPORT.rt'), findsNothing);
+      expect(find.text('OPTICS_PARAMETERS'), findsNothing);
+      expect(tester.takeException(), isNull);
+      await _teardown(tester, studio);
+    });
+
+    testWidgets('the backdrop is a vignetted film frame', (tester) async {
+      final studio = await pumpLanding(tester);
+      final vignette = tester.widget<DecoratedBox>(find.byKey(const Key('hero-vignette')));
+      final gradient = (vignette.decoration as BoxDecoration).gradient! as RadialGradient;
+      expect(gradient.colors.last, const Color(0xFF0E0E10), reason: '#0E0E10 at the edges');
+      expect(gradient.colors.first.a, 0, reason: 'clear in the middle');
+      final frames = tester.widgetList<Image>(find.descendant(of: find.byKey(const Key('hero-stage')), matching: find.byType(Image)));
+      expect(frames, hasLength(1), reason: 'one frame while holding');
+      expect(frames.single.filterQuality, FilterQuality.medium);
+      expect(((frames.single.image as ResizeImage).imageProvider as AssetImage).assetName, 'assets/images/hero_frame_01.jpg');
+      await _teardown(tester, studio);
+    });
+
+    testWidgets('tapping Take me to Photon stops the landing animation and opens the studio', (tester) async {
+      final studio = await pumpLanding(tester, animate: true);
+      // The loop is running: its single ticker is the only thing scheduling frames.
+      expect(tester.binding.hasScheduledFrame, isTrue);
+      await tester.pump(const Duration(seconds: 1));
+
+      await tester.tap(takeMe);
       await tester.pump();
+      expect(studio.inStudioWorkspace, isTrue);
       expect(studio.showLaunchPortal, isFalse);
+
+      // Mid-transition the page is still there, fading; its ticker already stopped.
+      await tester.pump(const Duration(milliseconds: 100));
+      expect(portal, findsOneWidget);
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(portal, findsNothing, reason: 'gone after the 260ms transition');
+
+      expect(find.text('SCENE_VIEWPORT.rt'), findsOneWidget);
+      expect(find.text('OPTICS_PARAMETERS'), findsOneWidget);
+      expect(find.text('PROJECTS'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+      await _teardown(tester, studio);
+    });
+
+    testWidgets('the enter-studio-btn alias enters too, and the loop stops with the page', (tester) async {
+      final studio = await pumpLanding(tester);
+      await tester.tap(find.byKey(const Key('enter-studio-btn')));
+      await _pumpFor(tester, const Duration(milliseconds: 400));
+      expect(portal, findsNothing);
+      expect(studio.inStudioWorkspace, isTrue);
+      // Nothing of the page is left animating once the studio is up.
+      expect(find.byKey(const Key('hero-stage')), findsNothing);
+      await _teardown(tester, studio);
+    });
+
+    testWidgets('the loop cross-fades the keyframes in order, then wraps', (tester) async {
+      final studio = await pumpLanding(tester, animate: true);
+      Iterable<String> shown() => tester
+          .widgetList<Image>(find.descendant(of: find.byKey(const Key('hero-stage')), matching: find.byType(Image)))
+          .map((i) => ((i.image as ResizeImage).imageProvider as AssetImage).assetName);
+      // _pumpStudio already ran 300ms: still holding frame 1.
+      expect(shown().toList(), ['assets/images/hero_frame_01.jpg']);
+      await tester.pump(const Duration(milliseconds: 2900));
+      expect(shown().toList(), ['assets/images/hero_frame_01.jpg', 'assets/images/hero_frame_02.jpg'], reason: 'cross-fading in the last 40% of a 4s segment');
+      await tester.pump(const Duration(milliseconds: 1500));
+      expect(shown().toList(), ['assets/images/hero_frame_02.jpg']);
+      for (var i = 0; i < 12; i++) {
+        await tester.pump(const Duration(seconds: 1));
+      }
+      expect(tester.takeException(), isNull);
+      await _teardown(tester, studio);
+    });
+
+    testWidgets('the SHOWCASE pill brings the landing page back', (tester) async {
+      final studio = await _pumpStudio(tester, const Size(1280, 800));
+      expect(portal, findsNothing);
+      await _tapKey(tester, const Key('open-launch-portal-btn'));
+      await _pumpFor(tester, const Duration(milliseconds: 600));
+      expect(portal, findsOneWidget);
+      expect(studio.inStudioWorkspace, isFalse);
+      await tester.tap(takeMe);
+      await _pumpFor(tester, const Duration(milliseconds: 400));
       expect(portal, findsNothing);
       expect(find.text('SCENE_VIEWPORT.rt'), findsOneWidget);
       await _teardown(tester, studio);
     });
 
-    testWidgets('chapters, the scrubber and the play toggle move the playhead', (tester) async {
-      final studio = await openPortal(tester);
-      expect(find.text('PAUSE'), findsOneWidget);
-
-      await _tapKey(tester, const Key('hero-chapter-2'));
-      await tester.pump();
-      expect(studio.heroTime.value, closeTo(kHeroChapters[2].startSeconds + 0.05, 1e-9));
-      expect(find.textContaining('TC 00:00:04:'), findsOneWidget);
-      expect(heroChapterAt(studio.heroTime.value)!.index, 2);
-
-      await tester.tapAt(tester.getCenter(find.byKey(const Key('hero-scrubber'))));
-      await tester.pump();
-      expect(studio.heroTime.value, closeTo(kHeroDurationSeconds / 2, 0.05));
-
-      await _tapKey(tester, const Key('hero-video-play-toggle'));
-      await tester.pump();
-      expect(studio.heroPlaying, isFalse);
-      expect(find.text('PLAY'), findsOneWidget);
-      await _tapKey(tester, const Key('hero-video-play-toggle'));
-      await tester.pump();
-      expect(studio.heroPlaying, isTrue);
-      expect(tester.takeException(), isNull);
+    testWidgets('PhotonApp opens on the landing page unless told otherwise', (tester) async {
+      tester.view.physicalSize = const Size(1280, 800);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.reset);
+      final studio = StudioController(autoConnect: false, animateShader: false, startInLandingPage: true);
+      await tester.pumpWidget(PhotonApp(controller: studio));
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(find.byKey(const Key('launch-hero-portal')), findsOneWidget);
+      expect(const PhotonApp().startInLandingPage, isTrue, reason: 'the app boots into the landing page');
+      expect(const PhotonApp(startInLandingPage: false).startInLandingPage, isFalse);
       await _teardown(tester, studio);
     });
 
-    testWidgets('the stage cross-fades the keyframes along the playhead', (tester) async {
-      final studio = await openPortal(tester);
-      Iterable<Image> frames() => tester.widgetList<Image>(find.descendant(of: find.byKey(const Key('hero-stage')), matching: find.byType(Image)));
-      String name(Image i) => (i.image as ResizeImage).imageProvider is AssetImage ? ((i.image as ResizeImage).imageProvider as AssetImage).assetName : '';
-
-      studio.seekHero(0);
-      await tester.pump();
-      expect(frames().map(name), ['assets/images/hero_frame_01.jpg']);
-
-      studio.seekHero(3.1);
-      await tester.pump();
-      expect(frames().map(name), ['assets/images/hero_frame_02.jpg', 'assets/images/hero_frame_03.jpg'], reason: 'between 2.0s and 4.2s');
-
-      studio.seekHero(kHeroDurationSeconds);
-      await tester.pump();
-      expect(frames().map(name), ['assets/images/hero_frame_04.jpg']);
+    testWidgets('a narrow window keeps the headline and the way in', (tester) async {
+      tester.view.physicalSize = const Size(390, 700);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.reset);
+      final studio = StudioController(autoConnect: false, animateShader: false, startInLandingPage: true);
+      await tester.pumpWidget(PhotonApp(controller: studio));
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(find.text('Physically Based Light Transport.'), findsOneWidget);
+      expect(takeMe, findsOneWidget);
       expect(tester.takeException(), isNull);
       await _teardown(tester, studio);
     });
+  });
 
-    testWidgets('a chapter\'s preset button loads its studio setup and leaves the portal', (tester) async {
-      final studio = await openPortal(tester);
-
-      await _tapKey(tester, const Key('hero-chapter-preset-1'));
-      await tester.pump();
+  group('landing page state', () {
+    test('a workspace controller is already inside the studio', () {
+      final studio = StudioController(autoConnect: false, animateShader: false);
+      addTearDown(studio.dispose);
       expect(studio.showLaunchPortal, isFalse);
-      expect(studio.integrator, IntegratorMode.bidirectional);
-      expect(studio.maxBounces, 12);
-
-      studio.openLaunchPortal();
-      await _pumpFor(tester, const Duration(milliseconds: 600));
-      await _tapKey(tester, const Key('hero-chapter-preset-4'));
-      await tester.pump();
-      expect(studio.bvhOverlayEnabled, isTrue);
-
-      studio.openLaunchPortal();
-      await _pumpFor(tester, const Duration(milliseconds: 600));
-      await _tapKey(tester, const Key('hero-chapter-preset-0'));
-      await tester.pump();
-      expect(studio.activeProjectId, 'volumetric_prism');
-      expect(studio.wavelengthNm, 470);
-
-      studio.openLaunchPortal();
-      await _pumpFor(tester, const Duration(milliseconds: 600));
-      await _tapKey(tester, const Key('hero-chapter-preset-2'));
-      await tester.pump();
-      expect(studio.activeProjectId, 'gold_atelier_bsdf');
-      expect(tester.takeException(), isNull);
-      await _teardown(tester, studio);
+      expect(studio.inStudioWorkspace, isTrue);
     });
 
-    testWidgets('LOAD AS VIEWPORT REFERENCE adds the frame under the playhead as a project', (tester) async {
-      final studio = await openPortal(tester);
-      final before = studio.projects.length;
-      studio.seekHero(6.5);
-      await tester.pump();
-
-      await _tapKey(tester, const Key('hero-load-reference-btn'));
-      await tester.pump();
-      expect(studio.showLaunchPortal, isFalse);
-      expect(studio.projects.length, before + 1);
-      expect(studio.activeProject!.name, startsWith('HERO_REF_'));
-      expect(studio.activeProject!.previewAsset, 'assets/images/hero_frame_04.jpg');
-      expect(studio.activeProject!.isDynamic, isFalse);
-      expect(tester.takeException(), isNull);
-      await _teardown(tester, studio);
-    });
-
-    testWidgets('Escape leaves the portal; Space plays and pauses', (tester) async {
-      final studio = await openPortal(tester);
-      await tester.sendKeyEvent(LogicalKeyboardKey.space);
-      await tester.pump();
-      expect(studio.heroPlaying, isFalse);
-      await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
-      await tester.pump();
-      expect(studio.heroTime.value, closeTo(1, 1e-9));
-      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
-      await tester.pump();
-      expect(studio.showLaunchPortal, isFalse);
-      expect(tester.takeException(), isNull);
-      await _teardown(tester, studio);
-    });
-
-    testWidgets('the film plays in real time and holds on its last frame', (tester) async {
-      final studio = StudioController(autoConnect: false, startInLaunchPortal: true);
-      await _pumpStudio(tester, const Size(1280, 800), controller: studio);
-      expect(studio.heroPlaying, isTrue);
-
-      // The 300ms the harness already pumped have played too.
-      final start = studio.heroTime.value;
-      await tester.pump(const Duration(seconds: 1));
-      expect(studio.heroTime.value - start, closeTo(1.0, 0.1));
-
-      studio.seekHero(kHeroDurationSeconds - 0.4);
-      await _pumpFor(tester, const Duration(seconds: 1));
-      expect(studio.heroTime.value, kHeroDurationSeconds);
-      expect(studio.heroPlaying, isFalse, reason: 'it stops on the last frame');
-      expect(find.text('TC 00:00:07:04 · 60 FPS'), findsOneWidget);
-
-      // Play at the end starts over.
-      studio.setHeroPlaying(true);
-      expect(studio.heroTime.value, 0);
-      await _teardown(tester, studio);
-    });
-
-    testWidgets('a narrow window drops the chapter rail but keeps the transport', (tester) async {
-      final studio = await openPortal(tester);
-      await tester.binding.setSurfaceSize(null);
-      tester.view.physicalSize = const Size(600, 800);
-      await tester.pump(const Duration(milliseconds: 100));
-      expect(find.byKey(const Key('hero-chapter-0')), findsNothing);
-      expect(find.byKey(const Key('hero-video-play-toggle')), findsOneWidget);
-      expect(find.text('LOAD REFERENCE'), findsOneWidget);
-      expect(tester.takeException(), isNull);
-      await _teardown(tester, studio);
-    });
   });
 
   group('Intent file trigger and Progressive Flux Loader', () {
@@ -4036,6 +4019,214 @@ void main() {
       expect(find.text('CAUSTIC_STUDY_04'), findsOneWidget, reason: 'the deck wraps round');
       expect(tester.takeException(), isNull);
       await _teardown(tester, studio);
+    });
+
+    testWidgets('a print showing under the top one selects its project on one click', (tester) async {
+      final studio = await openDeck(tester);
+      // Only the lower edge of the second print shows below the top one.
+      final peek = find.byKey(const ValueKey('deck-peek-gold_atelier_bsdf'));
+      // (The slot is scaled to 0.95 about its centre, so its bottom edge is
+      // 0.475 of its height below the centre.)
+      final edge = tester.getCenter(peek) + Offset(0, tester.getSize(peek).height * 0.475 - 1.5);
+      await tester.tapAt(edge);
+      await _pumpFor(tester, const Duration(milliseconds: 500));
+      expect(studio.activeProjectId, 'gold_atelier_bsdf');
+      expect(tester.takeException(), isNull);
+      await _teardown(tester, studio);
+    });
+
+    testWidgets('a released print springs home with a small overshoot', (tester) async {
+      final studio = await openDeck(tester);
+      final gesture = await tester.startGesture(tester.getCenter(top));
+      await gesture.moveBy(const Offset(40, 0));
+      await tester.pump(const Duration(milliseconds: 50));
+      await gesture.moveBy(const Offset(30, 0));
+      await tester.pump(const Duration(milliseconds: 300));
+      double dx() => tester
+          .widgetList<Transform>(find.ancestor(of: top, matching: find.byType(Transform)))
+          .elementAt(1)
+          .transform
+          .getTranslation()
+          .x;
+      final start = dx();
+      expect(start, greaterThan(20));
+
+      await gesture.up();
+      var lowest = start;
+      for (var i = 0; i < 60; i++) {
+        await tester.pump(const Duration(milliseconds: 16));
+        lowest = math.min(lowest, dx());
+      }
+      expect(lowest, lessThan(-0.2), reason: 'damped spring: it passes through home once');
+      expect(lowest, greaterThan(-start * 0.2), reason: 'but only a little');
+      expect(dx().abs(), lessThan(0.3), reason: 'and settles');
+      expect(studio.activeProjectId, 'caustic_study_04');
+      await _teardown(tester, studio);
+    });
+  });
+
+  group('performance architecture', () {
+    test('upload ticks move only the progress notifiers, not the workspace', () {
+      final studio = StudioController(autoConnect: false, animateShader: false);
+      addTearDown(studio.dispose);
+      studio.startFileUpload('CHRONOS_WATCH.usd', sizeMb: 112.4);
+      var workspace = 0, progress = 0, phase = 0;
+      studio.addListener(() => workspace++);
+      studio.uploadProgressNotifier.addListener(() => progress++);
+      studio.uploadPhaseNotifier.addListener(() => phase++);
+
+      for (var i = 0; i < 12; i++) {
+        studio.debugTick();
+      }
+      expect(studio.uploadProgress, greaterThan(0.25));
+      expect(progress, 12, reason: 'the loader hears every tick');
+      expect(phase, greaterThanOrEqualTo(1), reason: 'and a phase change');
+      expect(workspace, 0, reason: 'the workspace hears none of them');
+
+      studio.advanceUploadForTest(1.0);
+      expect(workspace, greaterThanOrEqualTo(1), reason: 'finishing adds a project, so it does notify');
+      expect(studio.uploadProgressNotifier.value, 1.0);
+      expect(studio.uploadPhaseNotifier.value, 3);
+    });
+
+    testWidgets('the loader advances without rebuilding the workspace', (tester) async {
+      final studio = await _pumpStudio(tester, const Size(1280, 800));
+      studio.startFileUpload('CHRONOS_WATCH.usd', sizeMb: 112.4);
+      await tester.pump();
+      var rebuilds = 0;
+      studio.addListener(() => rebuilds++);
+      studio.advanceUploadForTest(0.3);
+      await tester.pump();
+      expect(find.text('30%'), findsOneWidget);
+      studio.advanceUploadForTest(0.6);
+      await tester.pump();
+      expect(find.text('60%'), findsOneWidget);
+      expect(rebuilds, 0);
+      studio.advanceUploadForTest(1.0);
+      await _pumpFor(tester, const Duration(milliseconds: 300));
+      await _teardown(tester, studio);
+    });
+
+    testWidgets('each window repaints on its own layer', (tester) async {
+      final studio = await _pumpStudio(tester, const Size(1280, 800));
+      for (final type in [TopTelemetryBar, ProjectsSidebar, MacWindowViewport, OpticsInspectorDeck, CommandDock]) {
+        final nearest = find.ancestor(of: find.byType(type), matching: find.byType(RepaintBoundary)).first;
+        expect(tester.widget<RepaintBoundary>(nearest).child.runtimeType, type, reason: '$type');
+      }
+      expect(tester.takeException(), isNull);
+      await _teardown(tester, studio);
+    });
+
+    test('the Monte Carlo speckle is built once per sample step and size', () {
+      const size = Size(800, 500);
+      final a = MonteCarloNoisePainter.pointsFor(5, size);
+      final b = MonteCarloNoisePainter.pointsFor(5, size);
+      expect(identical(a.$1, b.$1), isTrue, reason: 'same step: the cached arrays are reused');
+      expect(identical(a.$2, b.$2), isTrue);
+      expect(a.$1, hasLength(4));
+      expect(a.$1.first.length, (800 * 500 / 90).round().clamp(0, 6000) ~/ 4 * 2);
+
+      final next = MonteCarloNoisePainter.pointsFor(6, size);
+      expect(identical(a.$1, next.$1), isFalse, reason: 'a new step re-rolls');
+      expect(next.$1.first, isNot(a.$1.first));
+      final resized = MonteCarloNoisePainter.pointsFor(6, const Size(400, 300));
+      expect(identical(next.$1, resized.$1), isFalse, reason: 'a new size rebuilds');
+      // Deterministic: the same step always rolls the same points.
+      final again = MonteCarloNoisePainter.pointsFor(5, size);
+      expect(again.$1.first, a.$1.first);
+    });
+
+    testWidgets('the live scene stops its clock under a modal and resumes after it', (tester) async {
+      final studio = StudioController(autoConnect: false);
+      await _pumpStudio(tester, const Size(1280, 800), controller: studio);
+      ValueListenable<double> clock() => tester
+          .widgetList<CustomPaint>(find.byType(CustomPaint))
+          .map((p) => p.painter)
+          .whereType<ProceduralScenePainter>()
+          // The A/B wipe draws the scene on both sides; they share one clock.
+          .first
+          .time;
+
+      final t0 = clock().value;
+      await _pumpFor(tester, const Duration(milliseconds: 400));
+      expect(clock().value, greaterThan(t0), reason: 'running');
+
+      studio.setAccountModalOpen(true);
+      await _pumpFor(tester, const Duration(milliseconds: 100));
+      final paused = clock().value;
+      await _pumpFor(tester, const Duration(milliseconds: 500));
+      expect(clock().value, paused, reason: 'held still while the modal is up');
+
+      studio.setAccountModalOpen(false);
+      await _pumpFor(tester, const Duration(milliseconds: 100));
+      final resumed = clock().value;
+      await _pumpFor(tester, const Duration(milliseconds: 400));
+      expect(clock().value, greaterThan(resumed), reason: 'and running again');
+
+      studio.setCommandPaletteOpen(true);
+      await _pumpFor(tester, const Duration(milliseconds: 100));
+      final palette = clock().value;
+      await _pumpFor(tester, const Duration(milliseconds: 400));
+      expect(clock().value, palette, reason: 'the palette pauses it too');
+      await _teardown(tester, studio);
+    });
+
+    testWidgets('the scenes draw with no blur filters in the hot path', (tester) async {
+      // Paint every scene into a recorder; any MaskFilter would show up as a
+      // saveLayer-free blur pass, so assert on the source instead.
+      final source = File('lib/widgets/procedural_scene_canvas.dart').readAsStringSync();
+      expect(RegExp(r'maskFilter\s*[:=]|\.\.maskFilter').hasMatch(source), isFalse, reason: 'no per-frame blur passes in the procedural scenes');
+      expect(source.contains('MaskFilter.blur'), isFalse);
+      for (final kind in ProceduralSceneKind.values) {
+        final recorder = ui.PictureRecorder();
+        final canvas = Canvas(recorder);
+        final painter = ProceduralScenePainter(
+          kind: kind,
+          time: ValueNotifier(3.7),
+          orbit: ValueNotifier(Offset.zero),
+          zoom: ValueNotifier(1),
+          focus: ValueNotifier(const Offset(0.5, 0.5)),
+          ior: 1.8,
+          aperture: 2.0,
+          focalDistance: 2,
+          causticsEnergy: 1,
+          bounces: 32,
+          wavelengthNm: 540,
+        );
+        painter.paint(canvas, const Size(1000, 620));
+        recorder.endRecording().dispose();
+      }
+    });
+
+    testWidgets('the landing page and project previews are decoded ahead of use', (tester) async {
+      final studio = StudioController(autoConnect: false, startInLandingPage: true);
+      await _pumpStudio(tester, const Size(1280, 800), controller: studio);
+      final cache = PaintingBinding.instance.imageCache;
+      final tracked = await tester.runAsync(() async {
+        final out = <String, bool>{};
+        for (final provider in LaunchHeroPortal.frameProviders) {
+          final key = await provider.obtainKey(ImageConfiguration.empty);
+          out['hero ${(key as dynamic).hashCode}'] = cache.statusForKey(key).tracked;
+        }
+        for (final p in studio.projects) {
+          for (final image in <ImageProvider>[
+            AssetImage(p.previewAsset),
+            ResizeImage(AssetImage(p.previewAsset), width: 96),
+            ResizeImage(AssetImage(p.previewAsset), width: 400),
+          ]) {
+            final key = await image.obtainKey(ImageConfiguration.empty);
+            out['${p.id} ${(key as dynamic).hashCode}'] = cache.statusForKey(key).tracked;
+          }
+        }
+        return out;
+      });
+      expect(tracked!.values, isNotEmpty);
+      expect(tracked.values.every((v) => v), isTrue, reason: tracked.entries.where((e) => !e.value).map((e) => e.key).join(', '));
+      await _teardown(tester, studio);
+    });
+
+    test('the sidebar is 210px wide', () {
+      expect(ProjectsSidebar.width, 210);
     });
   });
 }

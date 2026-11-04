@@ -318,14 +318,29 @@ class MonteCarloNoisePainter extends CustomPainter {
     (Color(0xFF4FE0FF), 0.45),
   ];
 
-  @override
-  void paint(Canvas canvas, Size size) {
-    if (size.isEmpty) return;
-    final strength = 1.0 - studio.convergence * 0.75;
+  // The point sets are a pure function of (sample step, size), so the last
+  // set is kept and reused: a repaint at the same step (resize-free, or a
+  // second wipe) neither re-rolls the PRNG nor reallocates the arrays.
+  static int? _cachedStep;
+  static Size? _cachedSize;
+  static List<Float32List> _cachedLayers = const [];
+  static Float32List _cachedFireflies = Float32List(0);
+
+  static final Paint _speckle = Paint()
+    ..strokeWidth = 1
+    ..strokeCap = StrokeCap.square;
+  static final Paint _firefly = Paint()
+    ..strokeWidth = 2.5
+    ..strokeCap = StrokeCap.square;
+
+  /// Builds (or returns) the speckle and firefly points for [step] at [size].
+  /// Exposed for tests.
+  @visibleForTesting
+  static (List<Float32List>, Float32List) pointsFor(int step, Size size) {
+    if (_cachedStep == step && _cachedSize == size) return (_cachedLayers, _cachedFireflies);
     final total = (size.width * size.height / 90).clamp(0, 6000).round();
     final perLayer = total ~/ _layers.length;
-    // Re-roll every few samples so accumulation reads as shimmer.
-    var state = ((studio.samples.value ~/ 3) * 0x9E3779B1 + 0x85EBCA6B) & 0xFFFFFFFF;
+    var state = (step * 0x9E3779B1 + 0x85EBCA6B) & 0xFFFFFFFF;
     double next() {
       state = (state * 1664525 + 1013904223) & 0xFFFFFFFF;
       return state / 4294967296.0;
@@ -340,25 +355,27 @@ class MonteCarloNoisePainter extends CustomPainter {
       return points;
     }
 
-    for (final (color, alpha) in _layers) {
-      canvas.drawRawPoints(
-        PointMode.points,
-        scatter(perLayer),
-        Paint()
-          ..color = color.withValues(alpha: alpha * strength)
-          ..strokeWidth = 1
-          ..strokeCap = StrokeCap.square,
-      );
+    _cachedLayers = [for (var i = 0; i < _layers.length; i++) scatter(perLayer)];
+    _cachedFireflies = scatter((total / 60).round());
+    _cachedStep = step;
+    _cachedSize = size;
+    return (_cachedLayers, _cachedFireflies);
+  }
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (size.isEmpty) return;
+    final strength = 1.0 - studio.convergence * 0.75;
+    // Re-roll every few samples so accumulation reads as shimmer.
+    final (layers, fireflies) = pointsFor(studio.samples.value ~/ 3, size);
+    for (var i = 0; i < _layers.length; i++) {
+      final (color, alpha) = _layers[i];
+      _speckle.color = color.withValues(alpha: alpha * strength);
+      canvas.drawRawPoints(PointMode.points, layers[i], _speckle);
     }
     // Sparse bright fireflies.
-    canvas.drawRawPoints(
-      PointMode.points,
-      scatter((total / 60).round()),
-      Paint()
-        ..color = Colors.white.withValues(alpha: 0.9 * strength)
-        ..strokeWidth = 2.5
-        ..strokeCap = StrokeCap.square,
-    );
+    _firefly.color = Colors.white.withValues(alpha: 0.9 * strength);
+    canvas.drawRawPoints(PointMode.points, fireflies, _firefly);
   }
 
   @override

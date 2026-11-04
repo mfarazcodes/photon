@@ -93,16 +93,21 @@ class ProceduralSceneCanvas extends StatefulWidget {
 class _ProceduralSceneCanvasState extends State<ProceduralSceneCanvas> with SingleTickerProviderStateMixin {
   late final SceneClock _clock = SceneClock(this);
 
+  /// The clock runs only while the scene is both enabled and visible: a modal,
+  /// the palette, the ingest sheet or the landing page over it pauses it.
+  void _syncClock() =>
+      _clock.sync(animate: widget.studio.animateShader && !widget.studio.sceneAnimationPaused);
+
   @override
   void initState() {
     super.initState();
-    _clock.sync(animate: widget.studio.animateShader);
+    _syncClock();
   }
 
   @override
   void didUpdateWidget(ProceduralSceneCanvas old) {
     super.didUpdateWidget(old);
-    _clock.sync(animate: widget.studio.animateShader);
+    _syncClock();
   }
 
   @override
@@ -283,12 +288,14 @@ void _zoomAboutFocus(SceneFrame f) {
   f.canvas.translate(-f.focus.dx, -f.focus.dy);
 }
 
-Paint _glow(Color c, double width, double sigma) => Paint()
+/// A cheap glow: one wide, translucent additive stroke. A real blur
+/// (`MaskFilter`) costs a render pass per call, and the scenes make dozens of
+/// calls a frame, so none are used in the hot path.
+Paint _glow(Color c, double width) => Paint()
   ..color = c
   ..style = PaintingStyle.stroke
   ..strokeWidth = width
   ..strokeCap = StrokeCap.round
-  ..maskFilter = MaskFilter.blur(BlurStyle.normal, sigma)
   ..blendMode = BlendMode.plus;
 
 Paint _line(Color c, double width, {BlendMode mode = BlendMode.srcOver}) => Paint()
@@ -344,7 +351,7 @@ void _causticWave(SceneFrame f) {
     final u = k / (ribbons - 1);
     final base = f.h * (0.12 + 0.76 * u);
     final path = Path();
-    for (var x = -20.0; x <= f.w + 20; x += 8) {
+    for (var x = -20.0; x <= f.w + 20; x += 12) {
       final y = base +
           amp * math.sin(x * freq + f.t * (0.5 + 0.08 * k) + k * 0.9 + shift) +
           amp * 0.55 * math.sin(x * freq * 2.3 - f.t * 0.7 + k * 1.7 - shift * 1.4) +
@@ -362,7 +369,7 @@ void _causticWave(SceneFrame f) {
       const [0.0, 0.5, 1.0],
     );
     // Soft glow, glass body, then the specular edge.
-    f.canvas.drawPath(path, _glow(c1.withValues(alpha: 0.10 * (0.6 + 0.4 * f.energy)), width * 2.2, 14));
+    f.canvas.drawPath(path, _glow(c1.withValues(alpha: 0.10 * (0.6 + 0.4 * f.energy)), width * 2.2));
     f.canvas.drawPath(path, _line(Colors.white, width)..shader = shader..blendMode = BlendMode.plus);
     f.canvas.save();
     f.canvas.translate(0, -width * 0.28);
@@ -470,7 +477,7 @@ void _spectralPrism(SceneFrame f) {
 
   // Incoming white beam with bloom.
   final glowW = 6 + 26 / f.aperture.clamp(1.0, 16.0);
-  f.canvas.drawLine(beamStart, p1, _glow(Colors.white.withValues(alpha: 0.35 * (0.5 + 0.5 * f.energy)), glowW, 8));
+  f.canvas.drawLine(beamStart, p1, _glow(Colors.white.withValues(alpha: 0.35 * (0.5 + 0.5 * f.energy)), glowW));
   f.canvas.drawLine(beamStart, p1, _line(Colors.white, 3));
 
   const bands = 16;
@@ -515,14 +522,13 @@ void _spectralPrism(SceneFrame f) {
     final end = exit + exitDir * len;
     final probe = i == nearest;
     final energyGain = 0.55 + 0.45 * f.energy.clamp(0.0, 2.0);
-    f.canvas.drawLine(exit, end, _glow(color.withValues(alpha: (probe ? 0.5 : 0.16) * energyGain), glowW * (probe ? 1.4 : 1), 7));
+    f.canvas.drawLine(exit, end, _glow(color.withValues(alpha: (probe ? 0.5 : 0.16) * energyGain), glowW * (probe ? 1.4 : 1)));
     f.canvas.drawLine(exit, end, _line(color.withValues(alpha: probe ? 1 : 0.8), probe ? 3.6 : 2.2, mode: BlendMode.plus));
     if (exitDir.dy > 0.001 && end.dy >= floorY - 1) {
       f.canvas.drawOval(
         Rect.fromCenter(center: Offset(end.dx, floorY), width: 46 * energyGain, height: 8),
         Paint()
-          ..color = color.withValues(alpha: 0.5 * energyGain)
-          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 4)
+          ..color = color.withValues(alpha: 0.4 * energyGain)
           ..blendMode = BlendMode.plus,
       );
     }
@@ -534,7 +540,12 @@ void _spectralPrism(SceneFrame f) {
   }
   // Glass edges.
   f.canvas.drawPath(body, _line(const Color(0xFFCFE0FF).withValues(alpha: 0.6), 1.4));
-  f.canvas.drawCircle(p1, 7, Paint()..color = Colors.white.withValues(alpha: 0.5)..maskFilter = const MaskFilter.blur(BlurStyle.normal, 6));
+  // The entry flare: a radial falloff, not a blur.
+  f.canvas.drawCircle(
+    p1,
+    11,
+    Paint()..shader = ui.Gradient.radial(p1, 11, [Colors.white.withValues(alpha: 0.7), Colors.white.withValues(alpha: 0)]),
+  );
   f.canvas.restore();
 }
 
@@ -552,7 +563,7 @@ void _liquidChrome(SceneFrame f) {
     final u = k / (ribbons - 1);
     final base = f.h * (0.1 + 0.8 * u);
     final path = Path();
-    for (var x = -30.0; x <= f.w + 30; x += 10) {
+    for (var x = -30.0; x <= f.w + 30; x += 14) {
       final y = base +
           f.h * 0.09 * math.sin(x * 0.0065 + f.t * 0.45 + k * 1.1 + f.orbit.dx * 0.008) +
           f.h * 0.045 * math.sin(x * 0.0175 - f.t * 0.8 + k * 2.3);
@@ -574,9 +585,8 @@ void _liquidChrome(SceneFrame f) {
       Color(0xFF9FB2D6),
       Color(0xFF14151D),
     ], const [0.0, 0.18, 0.38, 0.52, 0.7, 0.86, 1.0]);
-    final body = _line(Colors.white, width)
-      ..shader = shader
-      ..maskFilter = blur > 0.4 ? MaskFilter.blur(BlurStyle.normal, blur) : null;
+    // Defocus widens the band instead of blurring it.
+    final body = _line(Colors.white, width + blur * 1.5)..shader = shader;
     f.canvas.drawPath(path, body);
 
     // Chromatic dispersion fringes at the ribbon edges.
@@ -618,7 +628,7 @@ void _blackHole(SceneFrame f) {
   final lens = 0.8 + 0.5 * f.ior.clamp(1.0, 3.0);
 
   // Lensed starfield: sources sit farther out than they appear.
-  for (var i = 0; i < 260; i++) {
+  for (var i = 0; i < 180; i++) {
     final px = _rand(i, 5) * f.w * 1.1 - f.w * 0.05, py = _rand(i, 6) * f.h * 1.1 - f.h * 0.05;
     final d = Offset(px, py) - c;
     final r = d.distance;
@@ -679,8 +689,7 @@ void _blackHole(SceneFrame f) {
     Paint()
       ..style = PaintingStyle.stroke
       ..strokeWidth = rs * 0.34
-      ..shader = dopplerSweep(lensedRect, 0.6, 0.6 * (0.5 + 0.5 * f.energy.clamp(0.0, 2.0)))
-      ..maskFilter = MaskFilter.blur(BlurStyle.normal, rs * 0.12)
+      ..shader = dopplerSweep(lensedRect, 0.6, 0.5 * (0.5 + 0.5 * f.energy.clamp(0.0, 2.0)))
       ..blendMode = BlendMode.plus,
   );
   // Event-horizon shadow.
@@ -695,8 +704,7 @@ void _blackHole(SceneFrame f) {
     Paint()
       ..style = PaintingStyle.stroke
       ..strokeWidth = 5
-      ..shader = dopplerSweep(ringRect, 1)
-      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 5)
+      ..shader = dopplerSweep(ringRect, 1, 0.5)
       ..blendMode = BlendMode.plus,
   );
   f.canvas.drawCircle(
@@ -782,7 +790,7 @@ void _emerald(SceneFrame f) {
     final path = Path()
       ..moveTo(a.dx, a.dy)
       ..quadraticBezierTo(mid.dx, mid.dy, b.dx, b.dy);
-    f.canvas.drawPath(path, _glow(const Color(0xFFE6C42E).withValues(alpha: 0.4 * f.energy.clamp(0.0, 2.0)), 3, 3));
+    f.canvas.drawPath(path, _glow(const Color(0xFFE6C42E).withValues(alpha: 0.4 * f.energy.clamp(0.0, 2.0)), 4));
     f.canvas.drawPath(path, _line(const Color(0xFFFFE680).withValues(alpha: 0.7), 1.1, mode: BlendMode.plus));
   }
 

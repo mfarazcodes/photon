@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/physics.dart';
 import 'package:flutter/services.dart';
 
 import '../state/studio_controller.dart';
@@ -77,7 +78,10 @@ class _CardDeckCarouselState extends State<CardDeckCarousel> with TickerProvider
   Offset _drag = Offset.zero;
   bool _dragging = false;
 
-  late final AnimationController _settle = AnimationController(vsync: this, duration: const Duration(milliseconds: 260));
+  /// Springs a released print home: slightly under-damped, so it settles with
+  /// one small overshoot. Unbounded, so the overshoot is not clamped away.
+  late final AnimationController _settle = AnimationController.unbounded(vsync: this);
+  static final SpringDescription _spring = SpringDescription.withDampingRatio(mass: 1, stiffness: 340, ratio: 0.74);
   late final AnimationController _fly = AnimationController(vsync: this, duration: CardDeckCarousel.flyDuration);
   late final AnimationController _back = AnimationController(vsync: this, duration: CardDeckCarousel.backDuration);
   late final AnimationController _enter = AnimationController(vsync: this, duration: const Duration(milliseconds: 320));
@@ -101,7 +105,7 @@ class _CardDeckCarouselState extends State<CardDeckCarousel> with TickerProvider
   void initState() {
     super.initState();
     _settle.addListener(() {
-      setState(() => _drag = Offset.lerp(_settleFrom, Offset.zero, Curves.easeOutBack.transform(_settle.value))!);
+      setState(() => _drag = Offset.lerp(_settleFrom, Offset.zero, _settle.value)!);
     });
     _fly.addStatusListener((s) {
       if (s == AnimationStatus.completed) _beginBack();
@@ -167,7 +171,8 @@ class _CardDeckCarouselState extends State<CardDeckCarousel> with TickerProvider
   void _springBack() {
     _settleFrom = _drag;
     _dragging = false;
-    _settle.forward(from: 0);
+    _settle.value = 0;
+    _settle.animateWith(SpringSimulation(_spring, 0, 1, 0));
   }
 
   void _next() {
@@ -224,7 +229,7 @@ class _CardDeckCarouselState extends State<CardDeckCarousel> with TickerProvider
 
     return LayoutBuilder(
       builder: (context, box) {
-        final cardWidth = math.min(box.maxWidth - 20, 172.0);
+        final cardWidth = math.min(box.maxWidth - 20, 190.0);
         final cardHeight = cardWidth * 0.74;
         final stageHeight = cardHeight + _poses[4].dy + 8;
 
@@ -235,6 +240,18 @@ class _CardDeckCarouselState extends State<CardDeckCarousel> with TickerProvider
           final pose = depth == 0 ? base : _Pose.lerp(base, _poses[depth - 1], lift);
           final enter = isTop && p.id == _enteringId ? Curves.easeOutBack.transform(_enter.value) : 1.0;
           Widget card = _DeckCard(project: p, width: cardWidth, height: cardHeight, top: isTop);
+          if (!isTop) {
+            // A print showing under the top one is one click from the top.
+            card = MouseRegion(
+              cursor: SystemMouseCursors.click,
+              child: GestureDetector(
+                key: ValueKey('deck-peek-${p.id}'),
+                behavior: HitTestBehavior.opaque,
+                onTap: _busy ? null : () => studio.selectProject(p.id),
+                child: card,
+              ),
+            );
+          }
           if (isTop) {
             card = _TopCardGestures(
               projectId: p.id,

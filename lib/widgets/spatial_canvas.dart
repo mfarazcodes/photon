@@ -43,10 +43,40 @@ class _SpatialCanvasState extends State<SpatialCanvas> {
   /// moving the mouse repaints one layer and rebuilds nothing.
   final ValueNotifier<Offset?> _pointerPos = ValueNotifier(null);
 
+  bool _precached = false;
+
   @override
   void initState() {
     super.initState();
     HardwareKeyboard.instance.addHandler(_onKey);
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (_precached) return;
+    _precached = true;
+    final studio = StudioScope.read(context);
+    // With animation off (tests, deterministic renders) nothing is on a clock
+    // to stutter, and ~20 background decodes per run only slow things down.
+    if (studio.animateShader) _precacheImages(studio);
+  }
+
+  /// Decodes every preview render once, up front, at each size the studio
+  /// shows it (viewport, sidebar thumbnail, deck print), so switching projects
+  /// or flicking the deck never waits on a disk decode.
+  void _precacheImages(StudioController studio) {
+    final assets = <String>{for (final p in studio.projects) p.previewAsset};
+    for (final asset in assets) {
+      final provider = AssetImage(asset);
+      for (final image in <ImageProvider>[
+        provider,
+        ResizeImage(provider, width: 96),
+        ResizeImage(provider, width: 400),
+      ]) {
+        precacheImage(image, context, onError: (_, _) {});
+      }
+    }
   }
 
   @override
@@ -99,19 +129,32 @@ class _SpatialCanvasState extends State<SpatialCanvas> {
           child: Stack(
             fit: StackFit.expand,
             children: [
-              RepaintBoundary(
-                child: DotMatrixSubstrate(
-                  color: c.isDark ? const Color(0xFF2E3036) : const Color(0xFFD0D0D8),
-                  highlight: c.isDark ? Colors.white : const Color(0xFF0E0E10),
-                  tint: c.isDark ? const Color(0xFFB57BFF) : c.violet,
-                  pointerPos: _pointerPos,
-                ),
-              ),
-              SafeArea(
-                child: LayoutBuilder(
-                  builder: (context, box) => box.maxWidth >= SpatialCanvas.wideBreakpoint
-                      ? _desktop(studio, box)
-                      : _companion(studio, box),
+              // Under the landing page the workspace is neither painted nor
+              // ticking, so the page costs the studio nothing and vice versa.
+              Offstage(
+                offstage: studio.showLaunchPortal,
+                child: TickerMode(
+                  enabled: !studio.showLaunchPortal,
+                  child: Stack(
+                    fit: StackFit.expand,
+                    children: [
+                      RepaintBoundary(
+                        child: DotMatrixSubstrate(
+                          color: c.isDark ? const Color(0xFF2E3036) : const Color(0xFFD0D0D8),
+                          highlight: c.isDark ? Colors.white : const Color(0xFF0E0E10),
+                          tint: c.isDark ? const Color(0xFFB57BFF) : c.violet,
+                          pointerPos: _pointerPos,
+                        ),
+                      ),
+                      SafeArea(
+                        child: LayoutBuilder(
+                          builder: (context, box) => box.maxWidth >= SpatialCanvas.wideBreakpoint
+                              ? _desktop(studio, box)
+                              : _companion(studio, box),
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
               ),
               // Overlays sit above everything, header and dock included.
@@ -123,8 +166,22 @@ class _SpatialCanvasState extends State<SpatialCanvas> {
               if (studio.accountModalOpen)
                 const Positioned.fill(key: ValueKey('overlay-account'), child: AccountInspectorModal(key: Key('account-modal'))),
               if (studio.commandPaletteOpen) const Positioned.fill(key: ValueKey('overlay-palette'), child: CommandPalette()),
-              if (studio.showLaunchPortal)
-                const Positioned.fill(key: ValueKey('overlay-portal'), child: LaunchHeroPortal(key: Key('launch-hero-portal'))),
+              // Entering the studio fades and shrinks the landing page away in
+              // 260ms; the page has already stopped its animation by then.
+              Positioned.fill(
+                key: const ValueKey('overlay-portal'),
+                child: AnimatedSwitcher(
+                  duration: const Duration(milliseconds: 260),
+                  switchOutCurve: Curves.easeIn,
+                  transitionBuilder: (child, animation) => FadeTransition(
+                    opacity: animation,
+                    child: ScaleTransition(scale: Tween<double>(begin: 1.04, end: 1).animate(animation), child: child),
+                  ),
+                  child: studio.showLaunchPortal
+                      ? const LaunchHeroPortal(key: Key('launch-hero-portal'))
+                      : const SizedBox.shrink(key: ValueKey('no-portal')),
+                ),
+              ),
             ],
           ),
         ),
@@ -139,18 +196,24 @@ class _SpatialCanvasState extends State<SpatialCanvas> {
       key: const ValueKey('overlay-flux'),
       child: IgnorePointer(
         child: Padding(
-          padding: const EdgeInsets.only(top: TopTelemetryBar.height + 64),
+          // Below the viewport's title bar and tool strip, so it covers neither.
+          padding: const EdgeInsets.only(top: TopTelemetryBar.height + 112),
           child: Align(
             alignment: Alignment.topCenter,
-            child: ProgressiveFluxLoader(
-              key: const Key('progressive-flux-loader'),
-              fileName: studio.uploadingFileName ?? '',
-              progress: studio.uploadProgress,
-              phaseLabel: studio.uploadPhaseLabel,
-              phaseIndex: studio.uploadPhaseIndex,
-              phaseCount: StudioController.uploadPhases.length,
-              sizeMb: studio.uploadSizeMb,
-              animate: studio.animateShader,
+            // Progress ticks move only these notifiers: the loader repaints at
+            // tick rate and nothing else in the workspace rebuilds.
+            child: AnimatedBuilder(
+              animation: Listenable.merge([studio.uploadProgressNotifier, studio.uploadPhaseNotifier]),
+              builder: (context, _) => ProgressiveFluxLoader(
+                key: const Key('progressive-flux-loader'),
+                fileName: studio.uploadingFileName ?? '',
+                progress: studio.uploadProgress,
+                phaseLabel: studio.uploadPhaseLabel,
+                phaseIndex: studio.uploadPhaseIndex,
+                phaseCount: StudioController.uploadPhases.length,
+                sizeMb: studio.uploadSizeMb,
+                animate: studio.animateShader,
+              ),
             ),
           ),
         ),
@@ -184,8 +247,9 @@ class _SpatialCanvasState extends State<SpatialCanvas> {
     if (maximized == 'account') return const [Expanded(child: AccountSheet(embedded: true))];
     final showViewport = maximized != 'optics';
     final showOptics = maximized != 'viewport';
-    const viewport = MacWindowViewport();
-    const optics = OpticsInspectorDeck();
+    // Each window repaints on its own layer.
+    const viewport = RepaintBoundary(child: MacWindowViewport());
+    const optics = RepaintBoundary(child: OpticsInspectorDeck());
     return [
       if (showViewport) studio.viewportCollapsed ? viewport : const Expanded(child: viewport),
       if (showViewport && showOptics) const SizedBox(height: PhotonSpace.md),
@@ -201,7 +265,7 @@ class _SpatialCanvasState extends State<SpatialCanvas> {
     final layout = Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        const TopTelemetryBar(),
+        const RepaintBoundary(child: TopTelemetryBar()),
         Expanded(
           child: Padding(
             padding: const EdgeInsets.all(PhotonSpace.lg),
@@ -212,7 +276,7 @@ class _SpatialCanvasState extends State<SpatialCanvas> {
                   child: Row(
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
-                      const ProjectsSidebar(),
+                      const RepaintBoundary(child: ProjectsSidebar()),
                       const SizedBox(width: PhotonSpace.lg),
                       Expanded(
                         child: Column(
@@ -224,7 +288,7 @@ class _SpatialCanvasState extends State<SpatialCanvas> {
                   ),
                 ),
                 const SizedBox(height: PhotonSpace.md),
-                const CommandDock(),
+                const RepaintBoundary(child: CommandDock()),
               ],
             ),
           ),
@@ -247,7 +311,7 @@ class _SpatialCanvasState extends State<SpatialCanvas> {
         Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            const TopTelemetryBar(),
+            const RepaintBoundary(child: TopTelemetryBar()),
             Expanded(
               child: SingleChildScrollView(
                 padding: EdgeInsets.fromLTRB(
@@ -259,14 +323,14 @@ class _SpatialCanvasState extends State<SpatialCanvas> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    const ProjectsSidebar(axis: Axis.horizontal),
+                    const RepaintBoundary(child: ProjectsSidebar(axis: Axis.horizontal)),
                     const SizedBox(height: PhotonSpace.lg),
                     if (maximized == 'account')
                       const AccountSheet(embedded: false)
                     else ...[
-                      if (maximized != 'optics') const MacWindowViewport(stageAspectRatio: 16 / 10),
+                      if (maximized != 'optics') const RepaintBoundary(child: MacWindowViewport(stageAspectRatio: 16 / 10)),
                       if (maximized == null) const SizedBox(height: PhotonSpace.lg),
-                      if (maximized != 'viewport') const OpticsInspectorDeck(),
+                      if (maximized != 'viewport') const RepaintBoundary(child: OpticsInspectorDeck()),
                     ],
                   ],
                 ),
@@ -278,7 +342,7 @@ class _SpatialCanvasState extends State<SpatialCanvas> {
           left: PhotonSpace.md,
           right: PhotonSpace.md,
           bottom: PhotonSpace.md,
-          child: CommandDock(),
+          child: RepaintBoundary(child: CommandDock()),
         ),
       ],
     );
@@ -393,18 +457,19 @@ class DotMatrixPainter extends CustomPainter {
   Color colorAt(double t) =>
       t < 0.5 ? Color.lerp(color, tint, t * 2)! : Color.lerp(tint, highlight, (t - 0.5) * 2)!;
 
+  // Allocated once per painter, not once per frame.
+  late final Paint _restPaint = Paint()
+    ..color = color
+    ..strokeWidth = baseStroke
+    ..strokeCap = StrokeCap.round;
+  final Paint _spotPaint = Paint();
+
   @override
   void paint(Canvas canvas, Size size) {
     final coords = cache.coordsFor(size);
-    canvas.drawRawPoints(
-      PointMode.points,
-      coords,
-      Paint()
-        ..color = color
-        ..strokeWidth = baseStroke
-        ..strokeCap = StrokeCap.round,
-    );
+    canvas.drawRawPoints(PointMode.points, coords, _restPaint);
 
+    // No pointer, no spotlight pass.
     final p = pointerPos.value;
     if (p == null) return;
 
@@ -417,7 +482,7 @@ class DotMatrixPainter extends CustomPainter {
     final rowMax = math.min(cache.rows - 1, ((p.dy + spotlightRadius - half) / pitch).floor());
     const r2 = spotlightRadius * spotlightRadius;
 
-    final paint = Paint();
+    final paint = _spotPaint;
     for (var row = rowMin; row <= rowMax; row++) {
       for (var col = colMin; col <= colMax; col++) {
         final i = (row * cache.columns + col) * 2;

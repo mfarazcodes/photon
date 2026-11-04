@@ -9,10 +9,14 @@ void main() {
 }
 
 class PhotonApp extends StatefulWidget {
-  const PhotonApp({super.key, this.controller});
+  const PhotonApp({super.key, this.controller, this.startInLandingPage = true});
 
   /// Injected by tests; the app creates (and owns) its own when null.
   final StudioController? controller;
+
+  /// Whether the app it creates opens on the full-screen landing page. A
+  /// [controller] passed in carries its own choice.
+  final bool startInLandingPage;
 
   @override
   State<PhotonApp> createState() => _PhotonAppState();
@@ -21,7 +25,7 @@ class PhotonApp extends StatefulWidget {
 class _PhotonAppState extends State<PhotonApp> {
   // The app opens on the launch film and shows the projects as a stacked deck.
   late final StudioController _studio =
-      widget.controller ?? StudioController(startInLaunchPortal: true, startInDeckView: true);
+      widget.controller ?? StudioController(startInLandingPage: widget.startInLandingPage, startInDeckView: true);
   late bool _dark = _studio.darkGrading;
 
   // Built once: ThemeData construction pulls in the Google Fonts text theme.

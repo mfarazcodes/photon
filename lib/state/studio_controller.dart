@@ -6,7 +6,6 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
-import '../models/hero_chapter.dart';
 import '../models/prompt_result.dart';
 import '../models/render_snapshot.dart';
 import '../models/scene_asset.dart';
@@ -163,19 +162,20 @@ class StudioController extends ChangeNotifier {
   /// coalescing (tests). [animateShader] false freezes the live procedural
   /// scenes at a fixed phase, so tests never wait on a free-running ticker.
   ///
-  /// [startInLaunchPortal] opens the launch film over the workspace (the app
-  /// does; tests land in the workspace). [startInDeckView] shows the project
+  /// [startInLandingPage] opens the full-bleed landing page over the workspace
+  /// (the app does, via [PhotonApp]; tests land in the workspace). [startInDeckView] shows the project
   /// sidebar as a stacked deck instead of a list.
   StudioController({
     RenderSocket? socket,
     bool autoConnect = true,
     DateTime Function()? now,
     bool animateShader = true,
-    bool startInLaunchPortal = false,
+    bool startInLandingPage = false,
     bool startInDeckView = false,
   }) : socket = socket ?? RenderSocket(),
        _now = now ?? DateTime.now,
-       _showLaunchPortal = startInLaunchPortal,
+       _showLaunchPortal = startInLandingPage,
+       _inStudioWorkspace = !startInLandingPage,
        _deckView = startInDeckView,
        // A private field cannot be a named parameter, so this stays an assignment.
        // ignore: prefer_initializing_formals
@@ -1078,98 +1078,44 @@ class StudioController extends ChangeNotifier {
 
   void toggleCommandPalette() => setCommandPaletteOpen(!_commandPaletteOpen);
 
-  // --- Launch portal ---------------------------------------------------
+  // --- Landing page ----------------------------------------------------
 
   bool _showLaunchPortal;
+  bool _inStudioWorkspace;
+
+  /// True while the full-bleed landing page covers the workspace.
   bool get showLaunchPortal => _showLaunchPortal;
 
-  /// Playhead of the launch film, seconds. The portal's ticker advances it;
-  /// chapter and scrubber taps set it directly.
-  final ValueNotifier<double> heroTime = ValueNotifier(0);
+  /// True once the user has entered the studio window.
+  bool get inStudioWorkspace => _inStudioWorkspace;
 
-  bool _heroPlaying = true;
-  bool get heroPlaying => _heroPlaying;
-
+  /// Brings the landing page back (the header's SHOWCASE pill).
   void openLaunchPortal() {
     if (_showLaunchPortal) return;
     _showLaunchPortal = true;
-    // Every showing starts from the top of the film.
-    heroTime.value = 0;
-    _heroPlaying = true;
+    _inStudioWorkspace = false;
     _accountModalOpen = false;
     _commandPaletteOpen = false;
+    _ingestSheetOpen = false;
     notifyListeners();
   }
 
-  void dismissLaunchPortal() {
-    if (!_showLaunchPortal) return;
+  /// Leaves the landing page for the studio. The page stops its own animation
+  /// ticker as it goes, so nothing of it runs once the studio is up.
+  void enterPhotonStudio() {
+    if (_inStudioWorkspace && !_showLaunchPortal) return;
     _showLaunchPortal = false;
+    _inStudioWorkspace = true;
     notifyListeners();
   }
 
-  void toggleLaunchPortal() => _showLaunchPortal ? dismissLaunchPortal() : openLaunchPortal();
+  void dismissLaunchPortal() => enterPhotonStudio();
 
-  void seekHero(double seconds) => heroTime.value = seconds.clamp(0.0, kHeroDurationSeconds).toDouble();
+  void toggleLaunchPortal() => _showLaunchPortal ? enterPhotonStudio() : openLaunchPortal();
 
-  void setHeroPlaying(bool value) {
-    if (_heroPlaying == value) return;
-    _heroPlaying = value;
-    // At the end of the film, play restarts it.
-    if (value && heroTime.value >= kHeroDurationSeconds) heroTime.value = 0;
-    notifyListeners();
-  }
-
-  void toggleHeroPlaying() => setHeroPlaying(!_heroPlaying);
-
-  /// Loads the studio preset behind chapter [index] and leaves the portal.
-  void applyHeroChapterPreset(int index) {
-    if (index < 0 || index >= kHeroChapters.length) return;
-    final chapter = kHeroChapters[index];
-    switch (index) {
-      case 0:
-        if (_projects.any((p) => p.id == 'volumetric_prism')) selectProject('volumetric_prism');
-        setWavelengthNm(470);
-      case 1:
-        setIntegrator(IntegratorMode.bidirectional);
-        setParam('max_bounces', 12);
-      case 2:
-        if (_projects.any((p) => p.id == 'gold_atelier_bsdf')) selectProject('gold_atelier_bsdf');
-      case 3:
-        setAbWipeEnabled(true);
-        resetAbSplit();
-      case 4:
-        setBvhOverlay(true);
-    }
-    _showLaunchPortal = false;
-    showToast('PRESET · ${chapter.title.toUpperCase()}');
-    notifyListeners();
-  }
-
-  /// Adds the film frame under the playhead as a still reference project and
-  /// opens it in the viewport.
-  void loadHeroAsViewportReference() {
-    final frame = nearestHeroKeyframe(heroTime.value);
-    final tc = heroTimecode(heroTime.value);
-    _projectSeq++;
-    final project = StudioProject(
-      id: 'hero_reference_$_projectSeq',
-      name: 'HERO_REF_${tc.substring(6).replaceAll(':', '_')}',
-      code: 'PRJ-${_projectSeq.toString().padLeft(2, '0')}',
-      sceneType: 'Launch Film Reference',
-      subtitle: '.mp4 · TC $tc',
-      updatedAt: 'just now',
-      status: ProjectStatus.rendered,
-      previewAsset: frame.asset,
-      params: Map<String, double>.of(_params),
-      integrator: _integrator,
-      sceneKind: activeProject?.sceneKind ?? ProceduralSceneKind.causticWave,
-      isDynamic: false,
-    );
-    _projects.insert(0, project);
-    _showLaunchPortal = false;
-    selectProject(project.id);
-    showToast('VIEWPORT REFERENCE · TC $tc');
-  }
+  /// Whether the live scenes should hold still: something sits over them.
+  bool get sceneAnimationPaused =>
+      _showLaunchPortal || _accountModalOpen || _commandPaletteOpen || _ingestSheetOpen;
 
   // --- File ingest & upload --------------------------------------------
 
@@ -1187,18 +1133,23 @@ class StudioController extends ChangeNotifier {
   }
 
   bool _isUploading = false;
-  double _uploadProgress = 0.0;
   String? _uploadingFileName;
-  int _uploadPhaseIndex = 0;
   double _uploadSizeMb = 0;
   double _uploadSeconds = 3;
   Timer? _uploadLingerTimer;
   bool _uploadLingering = false;
 
+  /// Transfer progress (0..1) and the phase it is in. Each tick moves these
+  /// two notifiers only, so the loader repaints at tick rate without the
+  /// controller rebuilding the workspace; listeners are told once when the
+  /// transfer starts and once when it finishes.
+  final ValueNotifier<double> uploadProgressNotifier = ValueNotifier(0);
+  final ValueNotifier<int> uploadPhaseNotifier = ValueNotifier(0);
+
   bool get isUploading => _isUploading;
-  double get uploadProgress => _uploadProgress;
+  double get uploadProgress => uploadProgressNotifier.value;
   String? get uploadingFileName => _uploadingFileName;
-  int get uploadPhaseIndex => _uploadPhaseIndex;
+  int get uploadPhaseIndex => uploadPhaseNotifier.value;
   double get uploadSizeMb => _uploadSizeMb;
 
   /// True while the loader should be on screen: during the transfer and for a
@@ -1212,9 +1163,10 @@ class StudioController extends ChangeNotifier {
     'CONVERGING FIRST LIGHT PASS...',
   ];
 
-  String get uploadPhaseLabel => uploadPhases[_uploadPhaseIndex];
+  String get uploadPhaseLabel => uploadPhases[uploadPhaseIndex];
 
-  static int _phaseFor(double progress) {
+  /// The phase [progress] (0..1) falls in.
+  static int uploadPhaseFor(double progress) {
     if (progress < 0.25) return 0;
     if (progress < 0.55) return 1;
     if (progress < 0.85) return 2;
@@ -1231,8 +1183,8 @@ class StudioController extends ChangeNotifier {
     _uploadLingerTimer?.cancel();
     _uploadLingering = false;
     _isUploading = true;
-    _uploadProgress = 0;
-    _uploadPhaseIndex = 0;
+    uploadProgressNotifier.value = 0;
+    uploadPhaseNotifier.value = 0;
     _uploadingFileName = fileName;
     _uploadSizeMb = sizeMb;
     // Bigger files take longer; 2s to 5s.
@@ -1244,7 +1196,7 @@ class StudioController extends ChangeNotifier {
 
   void _advanceUpload() {
     if (!_isUploading) return;
-    _setUploadProgress(_uploadProgress + 0.1 / _uploadSeconds);
+    _setUploadProgress(uploadProgress + 0.1 / _uploadSeconds);
   }
 
   /// Jumps the transfer to [progress] (0..1). For tests; the ticker does the
@@ -1254,13 +1206,12 @@ class StudioController extends ChangeNotifier {
 
   void _setUploadProgress(double progress) {
     if (!_isUploading) return;
-    _uploadProgress = progress.clamp(0.0, 1.0).toDouble();
-    _uploadPhaseIndex = _phaseFor(_uploadProgress);
-    if (_uploadProgress >= 1.0) {
-      _finishUpload();
-    } else {
-      notifyListeners();
-    }
+    final p = progress.clamp(0.0, 1.0).toDouble();
+    uploadProgressNotifier.value = p;
+    uploadPhaseNotifier.value = uploadPhaseFor(p);
+    // Mid-transfer ticks touch only the notifiers; the workspace is not
+    // rebuilt. Finishing adds a project, so that one notifies.
+    if (p >= 1.0) _finishUpload();
   }
 
   static const Map<String, String> _ingestSceneTypes = {
@@ -1275,8 +1226,8 @@ class StudioController extends ChangeNotifier {
   void _finishUpload() {
     final fileName = _uploadingFileName ?? 'UNTITLED.usd';
     _isUploading = false;
-    _uploadProgress = 1.0;
-    _uploadPhaseIndex = uploadPhases.length - 1;
+    uploadProgressNotifier.value = 1.0;
+    uploadPhaseNotifier.value = uploadPhases.length - 1;
     _uploadLingering = true;
     _uploadLingerTimer?.cancel();
     _uploadLingerTimer = Timer(const Duration(milliseconds: 1400), () {
@@ -1380,7 +1331,8 @@ class StudioController extends ChangeNotifier {
     focusPoint.dispose();
     abSplit.dispose();
     probePosition.dispose();
-    heroTime.dispose();
+    uploadProgressNotifier.dispose();
+    uploadPhaseNotifier.dispose();
     toast.dispose();
     super.dispose();
   }
