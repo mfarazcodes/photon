@@ -8,6 +8,7 @@ import 'package:flutter/services.dart';
 import '../state/studio_controller.dart';
 import '../theme/photon_theme.dart';
 import 'photon_primitives.dart';
+import 'project_image.dart';
 
 /// The projects as a pile of loose darkroom prints.
 ///
@@ -35,11 +36,11 @@ class CardDeckCarousel extends StatefulWidget {
 
   /// Vertical room the deck needs besides its cards: the pile's fan, and the
   /// PREV / NEXT and AUTOPLAY rows.
-  static const double _chromeHeight = 116;
+  static const double _chromeHeight = 134;
 
   /// The shortest stage the deck is laid out for: the cards at their smallest,
   /// the pile's fan, and both control rows.
-  static const double minDesignHeight = 208;
+  static const double minDesignHeight = 226;
 
   /// Decode width for the prints.
 
@@ -56,18 +57,44 @@ class CardDeckCarousel extends StatefulWidget {
 /// Where a print sits in the pile.
 @immutable
 class _Pose {
-  const _Pose(this.rotation, this.dy, this.scale);
+  const _Pose(this.rotation, this.dy, this.scale, [this.pitch = 0]);
 
+  /// Z tilt, radians.
   final double rotation;
   final double dy;
   final double scale;
+
+  /// X-axis pitch, radians: the pile leans back into the perspective.
+  final double pitch;
 
   static _Pose lerp(_Pose a, _Pose b, double t) => _Pose(
     a.rotation + (b.rotation - a.rotation) * t,
     a.dy + (b.dy - a.dy) * t,
     a.scale + (b.scale - a.scale) * t,
+    a.pitch + (b.pitch - a.pitch) * t,
   );
+
+  // Value equality: the implicit pose animation must see an unchanged target as
+  // unchanged, or every rebuild (one per frame while a print flies) would
+  // restart it and flatten the spring.
+  @override
+  bool operator ==(Object other) =>
+      other is _Pose && other.rotation == rotation && other.dy == dy && other.scale == scale && other.pitch == pitch;
+
+  @override
+  int get hashCode => Object.hash(rotation, dy, scale, pitch);
+
+  /// The pose as a perspective transform about the print's centre.
+  Matrix4 get matrix => Matrix4.identity()
+    ..setEntry(3, 2, _perspective)
+    ..translateByDouble(0, dy, 0, 1)
+    ..rotateX(pitch)
+    ..rotateZ(rotation)
+    ..scaleByDouble(scale, scale, 1, 1);
 }
+
+/// Perspective strength of the whole deck.
+const double _perspective = 0.0015;
 
 class _PoseTween extends Tween<_Pose> {
   _PoseTween({required _Pose super.end});
@@ -76,14 +103,15 @@ class _PoseTween extends Tween<_Pose> {
   _Pose lerp(double t) => _Pose.lerp(begin ?? end!, end!, t);
 }
 
-/// Poses by depth: tilts `-3.5, +2.8, -1.8` degrees, offsets `8, 16, 24` px,
-/// scales `0.95, 0.90, 0.85`. Depth 4 is the slot a print slides back to.
+/// Poses by depth: a 3D fan with tilts `-4.2, +3.2, -2.2` degrees, offsets
+/// `14, 28, 40` px, scales `0.93, 0.86, 0.79` and a growing pitch. Depth 4 is
+/// the slot a print slides back to.
 const List<_Pose> _poses = [
   _Pose(0, 0, 1),
-  _Pose(-3.5 * math.pi / 180, 8, 0.95),
-  _Pose(2.8 * math.pi / 180, 16, 0.90),
-  _Pose(-1.8 * math.pi / 180, 24, 0.85),
-  _Pose(2.0 * math.pi / 180, 32, 0.80),
+  _Pose(-4.2 * math.pi / 180, 14, 0.93, 0.05),
+  _Pose(3.2 * math.pi / 180, 28, 0.86, 0.08),
+  _Pose(-2.2 * math.pi / 180, 40, 0.79, 0.11),
+  _Pose(2.0 * math.pi / 180, 50, 0.74, 0.13),
 ];
 
 class _CardDeckCarouselState extends State<CardDeckCarousel> with TickerProviderStateMixin {
@@ -181,6 +209,9 @@ class _CardDeckCarouselState extends State<CardDeckCarousel> with TickerProvider
     _settle.stop();
     _flier = top;
     _flierStart = _drag;
+    // The next print arrives on top where the pile is, not where the thrown
+    // one was let go.
+    _drag = Offset.zero;
     _flierDir = direction.distance < 1e-6 ? const Offset(1, 0) : direction / direction.distance;
     // The thrown print ends up last in the pile (or off the visible four).
     _flierSlot = math.min(order.length - 1, 4);
@@ -270,7 +301,7 @@ class _CardDeckCarouselState extends State<CardDeckCarousel> with TickerProvider
           final isTop = depth == 0;
           final base = _poses[depth];
           // The print below the top one grows toward full size as it is dragged.
-          final lift = (_drag.distance / 140).clamp(0.0, 1.0);
+          final lift = (_drag.distance / 110).clamp(0.0, 1.0);
           final pose = depth == 0 ? base : _Pose.lerp(base, _poses[depth - 1], lift);
           final enter = isTop && p.id == _enteringId ? Curves.easeOutBack.transform(_enter.value) : 1.0;
           Widget card = _card(p, cardWidth, cardHeight, isTop);
@@ -305,23 +336,36 @@ class _CardDeckCarouselState extends State<CardDeckCarousel> with TickerProvider
                   _springBack();
                 }
               },
-              onTap: () => studio.selectProject(p.id),
+              onTap: () {
+                // Tapping the top print opens that project, full screen.
+                studio.selectProject(p.id);
+                studio.setDeckView(false);
+                studio.setMaximizedPanel('viewport');
+              },
               child: card,
             );
-            final shift = _drag + Offset((1 - enter) * -220, 0);
-            card = Transform.translate(
-              offset: shift,
-              child: Transform.rotate(angle: _drag.dx * 0.0015, child: card),
+            // Bank and yaw with the drag, in perspective.
+            card = Transform(
+              alignment: Alignment.center,
+              transform: Matrix4.identity()
+                ..setEntry(3, 2, _perspective)
+                ..translateByDouble(_drag.dx + (1 - enter) * -220, _drag.dy, 0, 1)
+                ..rotateX(-_drag.dy * 0.001)
+                ..rotateY(_drag.dx * 0.0014)
+                ..rotateZ(_drag.dx * 0.0018),
+              child: card,
             );
           }
           return TweenAnimationBuilder<_Pose>(
             key: ValueKey('deck-slot-${p.id}'),
             tween: _PoseTween(end: pose),
-            duration: _dragging ? const Duration(milliseconds: 40) : const Duration(milliseconds: 260),
-            curve: Curves.easeOutCubic,
-            builder: (context, v, child) => Transform.translate(
-              offset: Offset(0, v.dy),
-              child: Transform.rotate(angle: v.rotation, child: Transform.scale(scale: v.scale, child: child)),
+            duration: _dragging ? const Duration(milliseconds: 40) : const Duration(milliseconds: 320),
+            // The print surfacing to the front pops with a little overshoot.
+            curve: _dragging ? Curves.easeOutCubic : Curves.easeOutBack,
+            builder: (context, v, child) => Transform(
+              alignment: Alignment.center,
+              transform: v.matrix,
+              child: child,
             ),
             child: card,
           );
@@ -333,38 +377,43 @@ class _CardDeckCarouselState extends State<CardDeckCarousel> with TickerProvider
           final double angle;
           final double scale;
           final double opacity;
+          var arcLift = 0.0, yaw = 0.0, pitch = 0.0;
           if (_back.isAnimating || _back.value > 0) {
             // Sliding back to the bottom of the pile.
             final u = Curves.easeOutCubic.transform(_back.value);
             final slot = _poses[_flierSlot];
             offset = Offset.lerp(_flierEnd, Offset(0, slot.dy), u)!;
-            angle = _flierEnd.dx * 0.0015 + (slot.rotation - _flierEnd.dx * 0.0015) * u;
+            angle = _flierEnd.dx * 0.0018 + (slot.rotation - _flierEnd.dx * 0.0018) * u;
             scale = 1 + (slot.scale - 1) * u;
             opacity = _flierSlot > 3 ? 1 - u : 1;
+            yaw = _flierEnd.dx * 0.0014 * (1 - u);
+            pitch = slot.pitch * u;
           } else {
-            final f = Curves.easeIn.transform(_fly.value);
+            // An arcing 3D throw: fast off the hand, then easing out.
+            final f = Curves.easeOutExpo.transform(_fly.value);
             offset = _flierStart + _flierDir * (520 * f);
-            angle = offset.dx * 0.0015;
+            arcLift = -math.sin(math.pi * f) * 36;
+            angle = offset.dx * 0.0018;
+            yaw = offset.dx * 0.0014;
             scale = 1;
             opacity = 1 - 0.3 * f;
           }
           return Opacity(
             opacity: opacity.clamp(0.0, 1.0),
-            child: Transform.translate(
-              offset: offset,
-              child: Transform.rotate(
-                angle: angle,
-                child: Transform.scale(
-                  scale: scale,
-                  child: _card(flier, cardWidth, cardHeight, false),
-                ),
-              ),
+            child: Transform(
+              alignment: Alignment.center,
+              transform: Matrix4.identity()
+                ..setEntry(3, 2, _perspective)
+                ..translateByDouble(offset.dx, offset.dy + arcLift, 0, 1)
+                ..rotateX(pitch)
+                ..rotateY(yaw)
+                ..rotateZ(angle)
+                ..scaleByDouble(scale, scale, 1, 1),
+              child: _card(flier, cardWidth, cardHeight, false),
             ),
           );
         }
 
-        final backing = _back.isAnimating || _back.value > 0;
-        final flying = flierWidget();
         return Focus(
           focusNode: _focus,
           onKeyEvent: _onKey,
@@ -377,19 +426,25 @@ class _CardDeckCarouselState extends State<CardDeckCarousel> with TickerProvider
             children: [
               AnimatedBuilder(
                 animation: Listenable.merge([_fly, _back, _enter, _dragNotifier]),
-                builder: (context, _) => SizedBox(
-                  height: stageHeight,
-                  child: Stack(
-                    clipBehavior: Clip.none,
-                    alignment: Alignment.topCenter,
-                    children: [
-                      // Sliding back: under the pile. Flying: over it.
-                      if (backing && flying != null) KeyedSubtree(key: const ValueKey('deck-flier'), child: flying),
-                      for (var d = visible.length - 1; d >= 0; d--) slot(visible[d], d),
-                      if (!backing && flying != null) KeyedSubtree(key: const ValueKey('deck-flier'), child: flying),
-                    ],
-                  ),
-                ),
+                builder: (context, _) {
+                  // Read the flight's controllers here, per frame: this is the
+                  // only part of the deck that rebuilds while a print flies.
+                  final backing = _back.isAnimating || _back.value > 0;
+                  final flying = flierWidget();
+                  return SizedBox(
+                    height: stageHeight,
+                    child: Stack(
+                      clipBehavior: Clip.none,
+                      alignment: Alignment.topCenter,
+                      children: [
+                        // Sliding back: under the pile. Flying: over it.
+                        if (backing && flying != null) KeyedSubtree(key: const ValueKey('deck-flier'), child: flying),
+                        for (var d = visible.length - 1; d >= 0; d--) slot(visible[d], d),
+                        if (!backing && flying != null) KeyedSubtree(key: const ValueKey('deck-flier'), child: flying),
+                      ],
+                    ),
+                  );
+                },
               ),
               const SizedBox(height: PhotonSpace.xs),
               Row(
@@ -507,13 +562,7 @@ class _DeckCard extends StatelessWidget {
       child: Stack(
         fit: StackFit.expand,
         children: [
-          Image.asset(
-            project.previewAsset,
-            fit: BoxFit.cover,
-            cacheWidth: CardDeckCarousel.imageWidth,
-            filterQuality: FilterQuality.medium,
-            errorBuilder: (_, _, _) => ColoredBox(color: c.hoverFill),
-          ),
+          ProjectImage(project: project, cacheWidth: CardDeckCarousel.imageWidth, iconSize: 28),
           // Darken the lower third for the caption.
           const DecoratedBox(
             decoration: BoxDecoration(
@@ -562,6 +611,30 @@ class _DeckCard extends StatelessWidget {
               ),
             ),
           ),
+          if (top)
+            Positioned(
+              right: 6,
+              top: 6,
+              child: ConstrainedBox(
+                constraints: BoxConstraints(maxWidth: math.max(0.0, width - 70)),
+                child: Container(
+                  key: const Key('deck-open-hint'),
+                  padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1.5),
+                  decoration: BoxDecoration(
+                    color: c.violet.withValues(alpha: 0.85),
+                    borderRadius: BorderRadius.circular(PhotonRadius.control - 1),
+                  ),
+                  child: FittedBox(
+                    fit: BoxFit.scaleDown,
+                    child: Text(
+                      'TAP TO OPEN FULLSCREEN · SWIPE TO CYCLE',
+                      maxLines: 1,
+                      style: t.text.labelCaps.copyWith(fontSize: 6.5, color: Colors.white, letterSpacing: 0.4),
+                    ),
+                  ),
+                ),
+              ),
+            ),
         ],
       ),
       ),

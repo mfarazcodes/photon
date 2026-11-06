@@ -4,6 +4,7 @@ import '../state/studio_controller.dart';
 import '../theme/photon_theme.dart';
 import 'intent_file_trigger.dart';
 import 'photon_primitives.dart';
+import 'project_image.dart';
 
 /// Shot manager: the studio's saved projects.
 ///
@@ -76,7 +77,7 @@ class _ProjectsSidebarState extends State<ProjectsSidebar> {
     final controls = [
       _Header(
         count: all.length,
-        onNew: studio.createNewProject,
+        onNew: () => studio.setNewProjectSheetOpen(true),
         onIngest: () => studio.setIngestSheetOpen(true),
       ),
       const SizedBox(height: PhotonSpace.xs + 2),
@@ -509,13 +510,7 @@ class _CardBody extends StatelessWidget {
                   borderRadius: BorderRadius.circular(PhotonRadius.control),
                   child: SizedBox.square(
                     dimension: 32,
-                    child: Image.asset(
-                      project.previewAsset,
-                      fit: BoxFit.cover,
-                      cacheWidth: 96,
-                      filterQuality: FilterQuality.medium,
-                      errorBuilder: (_, _, _) => ColoredBox(color: c.hoverFill),
-                    ),
+                    child: ProjectImage(project: project, cacheWidth: 96),
                   ),
                 ),
                 const SizedBox(width: PhotonSpace.sm),

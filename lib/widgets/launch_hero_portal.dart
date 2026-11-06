@@ -267,7 +267,7 @@ class _Masthead extends StatelessWidget {
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                const PhotonLogoMark(size: 22, isDark: true, semanticLabel: 'Photon'),
+                const PhotonLogoMark(size: 22, semanticLabel: 'Photon'),
                 const SizedBox(width: PhotonSpace.sm + 2),
                 Text(
                   'PHOTON®',

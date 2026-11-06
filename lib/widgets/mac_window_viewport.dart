@@ -633,6 +633,9 @@ class _RenderSurface extends StatelessWidget {
     // disk, an embedded URL), falling back to its bundled render if that cannot
     // be shown (deleted, offline, not an image).
     Widget still() {
+      // A project started blank has nothing to show until the user gives it a
+      // picture: say so, and offer to.
+      if (project != null && !project.hasImage) return _BlankProject(studio: studio, project: project);
       final bytes = project?.customBytes;
       final path = project?.localFilePath;
       final url = project?.externalUrl;
@@ -692,6 +695,94 @@ class _RenderSurface extends StatelessWidget {
         }
         return still();
       },
+    );
+  }
+}
+
+/// The stage of a project that has no picture yet. Always dark, like the render
+/// it stands in for.
+class _BlankProject extends StatefulWidget {
+  const _BlankProject({required this.studio, required this.project});
+
+  final StudioController studio;
+  final StudioProject project;
+
+  @override
+  State<_BlankProject> createState() => _BlankProjectState();
+}
+
+class _BlankProjectState extends State<_BlankProject> {
+  bool _busy = false;
+
+  Future<void> _choose() async {
+    if (_busy) return;
+    setState(() => _busy = true);
+    try {
+      await widget.studio.chooseImageForActiveProject();
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final t = context.photon;
+    const ink = Color(0xFFF0F1FA);
+    final about = widget.project.description;
+    return ColoredBox(
+      key: const Key('blank-project-stage'),
+      color: const Color(0xFF0B0C10),
+      child: Center(
+        child: Padding(
+          padding: const EdgeInsets.all(PhotonSpace.lg),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.add_photo_alternate_outlined, size: 34, color: Color(0xFF6878FF)),
+              const SizedBox(height: PhotonSpace.sm),
+              Text('NO IMAGE YET', style: t.text.labelCaps.copyWith(color: ink, fontSize: 10)),
+              if (about.isNotEmpty) ...[
+                const SizedBox(height: PhotonSpace.xs),
+                ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 360),
+                  child: Text(
+                    about,
+                    key: const Key('blank-project-about'),
+                    textAlign: TextAlign.center,
+                    maxLines: 3,
+                    overflow: TextOverflow.ellipsis,
+                    style: t.text.ui(size: 11, height: 1.4, color: ink.withValues(alpha: 0.6)),
+                  ),
+                ),
+              ],
+              const SizedBox(height: PhotonSpace.md),
+              HoverBuilder(
+                cursor: SystemMouseCursors.click,
+                builder: (context, hovered) => GestureDetector(
+                  key: const Key('blank-project-add-image'),
+                  behavior: HitTestBehavior.opaque,
+                  onTap: _choose,
+                  child: AnimatedContainer(
+                    duration: const Duration(milliseconds: 120),
+                    height: 28,
+                    padding: const EdgeInsets.symmetric(horizontal: PhotonSpace.md),
+                    alignment: Alignment.center,
+                    decoration: BoxDecoration(
+                      color: hovered ? const Color(0xFF1A2FFB) : Colors.transparent,
+                      borderRadius: BorderRadius.circular(PhotonRadius.pill),
+                      border: Border.all(color: hovered ? const Color(0xFF1A2FFB) : ink.withValues(alpha: 0.35)),
+                    ),
+                    child: Text(
+                      _busy ? 'OPENING...' : 'CHOOSE IMAGE...',
+                      style: t.text.labelCaps.copyWith(fontSize: 8.5, color: ink, fontWeight: FontWeight.w700),
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }

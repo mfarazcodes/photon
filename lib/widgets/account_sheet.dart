@@ -1,5 +1,3 @@
-import 'dart:ui' show ImageFilter;
-
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -7,8 +5,8 @@ import '../state/studio_controller.dart';
 import '../theme/photon_theme.dart';
 import 'animated_profile_card.dart';
 
-/// The account console: the [AnimatedBlueProfileCard] centred over a dimmed,
-/// blurred backdrop. A backdrop click, Escape or the card's close button
+/// The account console: the [AnimatedBlueProfileCard] centred over a dimmed
+/// backdrop. A backdrop click, Escape or the card's close button
 /// dismisses it. The card holds the whole account (identity, plan and quota,
 /// auth, keys and sessions) in its own tabs.
 class AccountInspectorModal extends StatelessWidget {
@@ -37,10 +35,9 @@ class AccountInspectorModal extends StatelessWidget {
             key: const Key('account-backdrop'),
             behavior: HitTestBehavior.opaque,
             onTap: close,
-            child: BackdropFilter(
-              filter: ImageFilter.blur(sigmaX: 5, sigmaY: 5),
-              child: ColoredBox(color: Colors.black.withValues(alpha: 0.5)),
-            ),
+            // A flat scrim, not a blur: a BackdropFilter re-blurs the whole
+            // window behind the card on every frame the card tilts.
+            child: ColoredBox(color: Colors.black.withValues(alpha: 0.62)),
           ),
           LayoutBuilder(
             builder: (context, box) => Center(

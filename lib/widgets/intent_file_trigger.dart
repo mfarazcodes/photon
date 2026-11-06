@@ -8,20 +8,19 @@ import '../state/studio_controller.dart';
 import '../theme/photon_theme.dart';
 import 'photon_primitives.dart';
 
-/// A tactile folder button for adding `.USD`, `.EXR`, `.BSDF`, `.IOR` and `.OBJ`
-/// scene files.
+/// The spatial ingest button for adding `.USD`, `.EXR`, `.BSDF`, `.IOR` and
+/// `.OBJ` scene files.
 ///
-/// At rest it is a closed folder: a back plate with its tab, two miniature file
-/// sheets (`USD` and `EXR`) tucked inside, and a frosted front flap. On hover
-/// the flap tilts forward 14 degrees in perspective, the sheets fan up and out
-/// on an overshoot spring (`Curves.easeOutBack`), and the border lights with a
-/// violet halo.
+/// A squircle chassis holding an isometric portal tray with a bold arrow rising
+/// out of it and two orbital nodes (USD blue, EXR coral). On hover the border
+/// lights Lusion Electric Blue with a soft glow, the arrow lifts 3.5px on an
+/// overshoot spring (`Curves.easeOutBack`), and the nodes drift outward.
 class IntentFileTrigger extends StatefulWidget {
   const IntentFileTrigger({super.key, required this.onTap, this.scale = 1});
 
   final VoidCallback onTap;
 
-  /// Uniform size multiplier; the folder is 36x28 at 1.
+  /// Uniform size multiplier; the button is 36x28 at 1.
   final double scale;
 
   static const Size baseSize = Size(36, 28);
@@ -70,7 +69,7 @@ class _IntentFileTriggerState extends State<IntentFileTrigger> with SingleTicker
                       // easeOutBack overshoots 1 before settling: the spring.
                       final raw = _open.value;
                       final spring = Curves.easeOutBack.transform(raw);
-                      return _FolderArt(spring: spring, glow: raw, colors: c);
+                      return _SpatialIngestArt(spring: spring, glow: raw, colors: c);
                     },
                   ),
                 ),
@@ -83,146 +82,120 @@ class _IntentFileTriggerState extends State<IntentFileTrigger> with SingleTicker
   }
 }
 
-class _FolderArt extends StatelessWidget {
-  const _FolderArt({required this.spring, required this.glow, required this.colors});
+/// The button itself: a squircle chassis whose hairline lights Lusion blue on
+/// hover, around the portal artwork.
+class _SpatialIngestArt extends StatelessWidget {
+  const _SpatialIngestArt({required this.spring, required this.glow, required this.colors});
 
-  /// Overshooting open amount (0 closed, 1 fully open, briefly beyond).
+  /// Overshooting hover amount (0 at rest, 1 hovered, briefly beyond).
   final double spring;
 
-  /// Plain 0..1 open amount, for the halo.
+  /// Plain 0..1 hover amount, for the halo and the colours.
   final double glow;
   final PhotonPalette colors;
 
   @override
   Widget build(BuildContext context) {
     final c = colors;
-    final t = context.photon;
-    final plate = c.isDark ? const Color(0xFF2B2C34) : const Color(0xFFDADAE3);
-    final edge = Color.lerp(c.isDark ? const Color(0xFF45464F) : const Color(0xFFBDBDC9), c.violet, glow)!;
-
-    Widget sheet({required String label, required double left, required double restTilt, required double openTilt, required Offset openShift, required Color accent}) {
-      final tilt = (restTilt + (openTilt - restTilt) * spring) * math.pi / 180;
-      return Positioned(
-        left: left + openShift.dx * spring,
-        top: 8 + openShift.dy * spring,
-        child: Transform.rotate(
-          angle: tilt,
-          alignment: Alignment.bottomCenter,
-          child: Container(
-            width: 17,
-            height: 21,
-            alignment: Alignment.topCenter,
-            padding: const EdgeInsets.only(top: 3),
-            decoration: BoxDecoration(
-              color: c.isDark ? const Color(0xFFF3F3F5) : Colors.white,
-              borderRadius: BorderRadius.circular(2),
-              border: Border.all(color: accent.withValues(alpha: 0.7), width: 1),
-            ),
-            child: Text(
-              label,
-              style: t.text.mono(size: 5.5, weight: FontWeight.w700, height: 1, color: accent),
-            ),
-          ),
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+          colors: [c.substrate, c.surface],
         ),
-      );
-    }
-
-    return Stack(
-      clipBehavior: Clip.none,
-      children: [
-        // Back plate with its tab.
-        Positioned.fill(child: CustomPaint(painter: _FolderPlatePainter(plate: plate, edge: edge, glow: glow, violet: c.violet))),
-        sheet(
-          label: 'USD',
-          left: 4,
-          restTilt: -3,
-          openTilt: -17,
-          openShift: const Offset(-2.5, -10),
-          accent: const Color(0xFF8A2BE2),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: Color.lerp(c.border, c.violet, glow)!),
+        boxShadow: [
+          if (glow > 0.01) BoxShadow(color: c.violet.withValues(alpha: 0.45 * glow), blurRadius: 10, spreadRadius: 0.5),
+        ],
+      ),
+      child: CustomPaint(
+        painter: _SpatialIngestPainter(
+          spring: spring,
+          glow: glow,
+          tray: Color.lerp(c.textMuted, c.violetInk, glow)!,
+          arrow: c.carbon,
+          blue: const Color(0xFF1A2FFB),
+          coral: const Color(0xFFFF4C41),
         ),
-        sheet(
-          label: 'EXR',
-          left: 14,
-          restTilt: 3,
-          openTilt: 15,
-          openShift: const Offset(2.5, -11),
-          accent: const Color(0xFFFF2D78),
-        ),
-        // Front flap: frosted glass, hinged along its bottom edge.
-        Positioned(
-          left: 0,
-          right: 0,
-          bottom: 0,
-          height: 17,
-          child: Transform(
-            alignment: Alignment.bottomCenter,
-            transform: Matrix4.identity()
-              ..setEntry(3, 2, 0.012)
-              ..rotateX(-14 * math.pi / 180 * spring),
-            child: DecoratedBox(
-              decoration: BoxDecoration(
-                gradient: LinearGradient(
-                  begin: Alignment.topCenter,
-                  end: Alignment.bottomCenter,
-                  colors: c.isDark
-                      ? [const Color(0xFF51525C).withValues(alpha: 0.92), const Color(0xFF32333B).withValues(alpha: 0.96)]
-                      : [Colors.white.withValues(alpha: 0.96), const Color(0xFFE6E6EE).withValues(alpha: 0.96)],
-                ),
-                borderRadius: const BorderRadius.vertical(top: Radius.circular(3), bottom: Radius.circular(4)),
-                border: Border.all(color: edge),
-                boxShadow: [BoxShadow(color: c.violet.withValues(alpha: 0.55 * glow), blurRadius: 10, spreadRadius: 0.5)],
-              ),
-            ),
-          ),
-        ),
-      ],
+      ),
     );
   }
 }
 
-class _FolderPlatePainter extends CustomPainter {
-  const _FolderPlatePainter({required this.plate, required this.edge, required this.glow, required this.violet});
+/// The portal artwork on a 36x28 canvas: an isometric wireframe tray with a
+/// ring, a bold arrow rising out of it (lifting 3.5px on hover), and two
+/// orbital nodes (USD blue, EXR coral) that drift outward.
+class _SpatialIngestPainter extends CustomPainter {
+  const _SpatialIngestPainter({
+    required this.spring,
+    required this.glow,
+    required this.tray,
+    required this.arrow,
+    required this.blue,
+    required this.coral,
+  });
 
-  final Color plate;
-  final Color edge;
+  final double spring;
   final double glow;
-  final Color violet;
+  final Color tray;
+  final Color arrow;
+  final Color blue;
+  final Color coral;
 
   @override
   void paint(Canvas canvas, Size size) {
-    final body = RRect.fromLTRBR(0, 4, size.width, size.height, const Radius.circular(4));
-    final tab = RRect.fromLTRBAndCorners(
-      0,
-      0,
-      15,
-      7,
-      topLeft: const Radius.circular(3),
-      topRight: const Radius.circular(3),
-    );
-    final path = Path()
-      ..addRRect(body)
-      ..addRRect(tab);
-    if (glow > 0.01) {
-      canvas.drawPath(
-        path,
-        Paint()
-          ..color = violet.withValues(alpha: 0.5 * glow)
-          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 5),
-      );
-    }
-    canvas.drawPath(path, Paint()..color = plate);
+    final sx = size.width / 36, sy = size.height / 28;
+    canvas.scale(sx, sy);
+    Offset o(double x, double y) => Offset(x, y);
+    final line = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.2
+      ..strokeJoin = StrokeJoin.round
+      ..strokeCap = StrokeCap.round
+      ..isAntiAlias = true
+      ..color = tray;
+
+    // The bounding tray (an isometric rhombus) and the portal ring in it.
     canvas.drawPath(
-      path,
-      Paint()
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 1
-        ..color = edge,
+      Path()
+        ..moveTo(7, 20)
+        ..lineTo(18, 15.5)
+        ..lineTo(29, 20)
+        ..lineTo(18, 24.5)
+        ..close(),
+      line,
     );
+    canvas.drawOval(Rect.fromCenter(center: o(18, 20), width: 13, height: 5.2), line..color = tray.withValues(alpha: 0.75));
+
+    // The magnetic arrow, rising 3.5px on hover (and a little past it).
+    final rise = -3.5 * spring;
+    final bold = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2.1
+      ..strokeCap = StrokeCap.round
+      ..strokeJoin = StrokeJoin.round
+      ..isAntiAlias = true
+      ..color = arrow;
+    canvas.drawLine(o(18, 18.5 + rise), o(18, 6.5 + rise), bold);
+    canvas.drawPath(
+      Path()
+        ..moveTo(13.6, 10.8 + rise)
+        ..lineTo(18, 6.4 + rise)
+        ..lineTo(22.4, 10.8 + rise),
+      bold,
+    );
+
+    // Orbital nodes on the tray's side corners; they expand outward on hover.
+    final r = 1.6 + 0.5 * glow;
+    canvas.drawCircle(o(7 - 2.5 * glow, 20), r, Paint()..color = blue..isAntiAlias = true);
+    canvas.drawCircle(o(29 + 2.5 * glow, 20), r, Paint()..color = coral..isAntiAlias = true);
   }
 
   @override
-  bool shouldRepaint(_FolderPlatePainter old) =>
-      old.plate != plate || old.edge != edge || old.glow != glow || old.violet != violet;
+  bool shouldRepaint(_SpatialIngestPainter old) =>
+      old.spring != spring || old.glow != glow || old.tray != tray || old.arrow != arrow;
 }
 
 /// One curated asset in the ingest sheet.

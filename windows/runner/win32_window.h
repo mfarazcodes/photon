@@ -76,6 +76,16 @@ class Win32Window {
   // The choice is remembered, so later system colorization changes re-apply it.
   static void UpdateTheme(HWND const window, bool dark_mode = true);
 
+  // Paints the frame with explicit colours (COLORREF, 0x00BBGGRR): used for
+  // the launch film's palette while the landing page plays. Remembered like
+  // UpdateTheme's choice.
+  static void UpdateFrame(HWND const window, bool dark_mode,
+                          COLORREF caption_color, COLORREF text_color,
+                          COLORREF border_color);
+
+  // Puts back the last frame colours (after a system colorization change).
+  static void ReapplyFrame(HWND const window);
+
  private:
   friend class WindowClassRegistrar;
 

@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
+import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:flutter/foundation.dart' show ValueListenable;
@@ -10,6 +11,7 @@ import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:photon/main.dart';
+import 'package:photon/models/studio_project.dart';
 import 'package:photon/models/prompt_result.dart';
 import 'package:photon/services/file_dialog.dart';
 import 'package:photon/services/render_socket.dart';
@@ -64,6 +66,26 @@ class _RecordingSocket extends RenderSocket {
   void disconnect() => disconnects++;
 }
 
+/// One circle a painter drew.
+class _LoggedCircle {
+  const _LoggedCircle(this.center, this.radius, this.paint);
+
+  final Offset center;
+  final double radius;
+  final Paint paint;
+}
+
+/// A canvas that remembers only the circles drawn on it.
+class _CircleLog implements Canvas {
+  final List<_LoggedCircle> circles = [];
+
+  @override
+  void drawCircle(Offset c, double radius, Paint paint) => circles.add(_LoggedCircle(c, radius, paint));
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => null;
+}
+
 /// A real 1x1 PNG.
 final Uint8List _tinyPng = base64Decode(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
@@ -99,6 +121,13 @@ Future<void> _tap(WidgetTester tester, Finder finder) async {
 }
 
 Future<void> _tapText(WidgetTester tester, String text) => _tap(tester, find.text(text));
+
+/// Puts the studio in Dark Grading ([dark]) or Daylight Lab by tapping the one
+/// theme icon, if it is not there already.
+Future<void> _setTheme(WidgetTester tester, {required bool dark}) async {
+  final icon = find.byType(ShaderThemeSwitch);
+  if (tester.widget<ShaderThemeSwitch>(icon).dark != dark) await _tap(tester, icon);
+}
 
 Future<void> _tapKey(WidgetTester tester, Key key) => _tap(tester, find.byKey(key));
 
@@ -222,11 +251,11 @@ void main() {
     final studio = await _pumpStudio(tester, const Size(1280, 800));
     expect(studio.darkGrading, isTrue);
     var theme = Theme.of(tester.element(find.byType(Scaffold)));
-    expect(theme.scaffoldBackgroundColor, const Color(0xFF18191C));
-    expect(theme.extension<PhotonTokens>()!.colors.substrate, const Color(0xFF141417));
-    expect(theme.extension<PhotonTokens>()!.colors.border, const Color(0xFF2A2B30));
+    expect(theme.scaffoldBackgroundColor, const Color(0xFF0B0C10));
+    expect(theme.extension<PhotonTokens>()!.colors.substrate, const Color(0xFF12141C));
+    expect(theme.extension<PhotonTokens>()!.colors.border, const Color(0xFF262936));
 
-    await _tapText(tester, 'DAYLIGHT');
+    await _setTheme(tester, dark: false);
     // MaterialApp animates theme changes: one frame to start, one to finish.
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 400));
@@ -236,7 +265,7 @@ void main() {
     expect(theme.scaffoldBackgroundColor, PhotonPalette.daylight.canvas);
     expect(theme.extension<PhotonTokens>()!.colors.isDark, isFalse);
 
-    await _tapText(tester, 'DARK GRADING');
+    await _setTheme(tester, dark: true);
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 400));
     expect(studio.darkGrading, isTrue);
@@ -492,9 +521,10 @@ void main() {
       expect(studio.integrator, IntegratorMode.restir);
     });
 
-    test('createNewProject snapshots the live studio and selects it', () {
+    test('createNewProject keeps the live optics, selects it, and starts with no image at all', () {
       final studio = StudioController(autoConnect: false);
       addTearDown(studio.dispose);
+      expect(studio.liveShaderEnabled, isTrue, reason: 'the first project is a live one');
 
       studio.setParam('ior', 1.9);
       studio.createNewProject();
@@ -505,9 +535,77 @@ void main() {
       expect(created.status, ProjectStatus.draft);
       expect(created.ior, 1.9);
       expect(studio.projects.first.id, created.id);
+      // Nothing is borrowed from the project it was made in.
+      expect(created.previewAsset, kNoPreview);
+      expect(created.hasImage, isFalse);
+      expect([created.customBytes, created.localFilePath, created.externalUrl], [null, null, null]);
+      expect(created.isDynamic, isFalse);
+      expect(studio.liveShaderEnabled, isFalse, reason: 'no simulation the user did not ask for');
+      expect(created.sceneType, 'Blank Project');
 
       studio.createNewProject('  MY_SHOT  ');
       expect(studio.activeProject!.name, 'MY_SHOT');
+    });
+
+    test('createNewProject keeps the name, the details and exactly the image it was given', () {
+      final studio = StudioController(autoConnect: false);
+      addTearDown(studio.dispose);
+      studio.createNewProject('  Chronos Watch  ', '  A hero shot of a steel watch.\nSecond line.  ', _tinyPng, '/shots/chronos.png');
+      var p = studio.activeProject!;
+      expect(p.name, 'Chronos Watch');
+      expect(p.description, 'A hero shot of a steel watch.\nSecond line.');
+      expect(p.subtitle, 'A hero shot of a steel watch.', reason: 'the card shows the first line');
+      expect(identical(p.customBytes, _tinyPng), isTrue);
+      expect(p.localFilePath, '/shots/chronos.png');
+      expect(p.hasImage, isTrue);
+      expect(p.previewAsset, kNoPreview, reason: 'still no bundled picture behind it');
+      expect(p.sceneType, 'Local Image');
+
+      studio.createNewProject('Linked', '', null, null, 'https://cdn.example.com/a.png');
+      p = studio.activeProject!;
+      expect(p.externalUrl, 'https://cdn.example.com/a.png');
+      expect(p.sceneType, 'Remote Image');
+      expect(p.hasImage, isTrue);
+      expect(p.subtitle, '.pht · ${studio.integrator.solverCaption}', reason: 'no details: the usual caption');
+    });
+
+    test('a blank project can be given an image later', () {
+      final studio = StudioController(autoConnect: false);
+      addTearDown(studio.dispose);
+      studio.createNewProject('Blank');
+      expect(studio.activeProject!.hasImage, isFalse);
+      studio.setProjectImage(bytes: _tinyPng, path: '/x/pic.png');
+      expect(studio.activeProject!.hasImage, isTrue);
+      expect(identical(studio.activeProject!.customBytes, _tinyPng), isTrue);
+      expect(studio.toast.value, 'IMAGE ADDED · Blank');
+      studio.setProjectImage();
+      expect(studio.activeProject!.hasImage, isTrue, reason: 'nothing given, nothing changed');
+    });
+
+    test('the sheet state is an overlay like the others, and a creation closes it', () {
+      final studio = StudioController(autoConnect: false, animateShader: false);
+      addTearDown(studio.dispose);
+      expect(studio.newProjectSheetOpen, isFalse);
+      studio.setNewProjectSheetOpen(true);
+      expect(studio.newProjectSheetOpen, isTrue);
+      expect(studio.sceneAnimationPaused, isTrue);
+      studio.setExportModalOpen(true);
+      expect(studio.newProjectSheetOpen, isFalse, reason: 'one overlay at a time');
+      studio.setNewProjectSheetOpen(true);
+      expect(studio.exportModalOpen, isFalse);
+      studio.createNewProject('Done');
+      expect(studio.newProjectSheetOpen, isFalse);
+    });
+
+    test('a project with no preview, bytes, file or link has no image; any one of them gives it one', () {
+      final blank = kDefaultProjects.first.copyWith(previewAsset: kNoPreview);
+      expect(blank.hasImage, isFalse);
+      expect(blank.copyWith(customBytes: _tinyPng).hasImage, isTrue);
+      expect(blank.copyWith(externalUrl: 'https://x/y.png').hasImage, isTrue);
+      expect(blank.copyWith(localFilePath: '/a/b.JPG').hasImage, isTrue);
+      expect(blank.copyWith(localFilePath: '/a/b.usd').hasImage, isFalse, reason: 'a scene file is not a picture');
+      expect(kDefaultProjects.every((p) => p.hasImage), isTrue);
+      expect(blank.copyWith(description: 'About it').description, 'About it');
     });
 
     test('duplicate and delete keep a valid active project', () {
@@ -621,9 +719,9 @@ void main() {
     testWidgets('is the dark charcoal grid by default and follows the pointer', (tester) async {
       final studio = await _pumpStudio(tester, const Size(1280, 800));
       final painter = _dotPainter(tester);
-      expect(painter.color, const Color(0xFF2E3036));
-      expect(painter.highlight, Colors.white);
-      expect(painter.tint, const Color(0xFFB57BFF));
+      expect(painter.color, const Color(0xFF262936));
+      expect(painter.highlight, const Color(0xFFF0F1FA));
+      expect(painter.tint, const Color(0xFF6878FF));
       expect(painter.pointerPos.value, isNull);
 
       final mouse = await _mouse(tester);
@@ -640,10 +738,12 @@ void main() {
 
     testWidgets('daylight mode uses the light grid', (tester) async {
       final studio = await _pumpStudio(tester, const Size(1280, 800));
-      await _tapText(tester, 'DAYLIGHT');
+      await _setTheme(tester, dark: false);
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 400));
-      expect(_dotPainter(tester).color, const Color(0xFFD0D0D8));
+      expect(_dotPainter(tester).color, const Color(0xFFD0D3E2));
+      expect(_dotPainter(tester).highlight, const Color(0xFF14151B));
+      expect(_dotPainter(tester).tint, const Color(0xFF1A2FFB));
       await _teardown(tester, studio);
     });
 
@@ -749,16 +849,24 @@ void main() {
       await _teardown(tester, studio);
     });
 
-    testWidgets('+ NEW adds a project from the current settings', (tester) async {
+    testWidgets('+ NEW opens the popup; it adds nothing until the project is created', (tester) async {
       final studio = await _pumpStudio(tester, const Size(1280, 800));
       expect(studio.projects, hasLength(5));
 
       await tester.tap(find.byKey(const Key('new-project-btn')));
       await tester.pump();
+      expect(studio.newProjectSheetOpen, isTrue);
+      expect(find.byKey(const Key('new-project-modal')), findsOneWidget);
+      expect(studio.projects, hasLength(5), reason: 'no project yet');
+
+      await tester.enterText(find.byKey(const Key('new-project-name')), 'MY_SHOT');
+      await _tapKey(tester, const Key('new-project-create'));
+      await tester.pump();
 
       expect(studio.projects, hasLength(6));
-      expect(studio.activeProject!.name, 'UNTITLED_06');
-      expect(find.text('UNTITLED_06'), findsOneWidget);
+      expect(studio.activeProject!.name, 'MY_SHOT');
+      expect(find.byKey(const Key('new-project-modal')), findsNothing);
+      expect(find.text('MY_SHOT'), findsOneWidget);
       expect(find.text('6'), findsOneWidget, reason: 'the count badge');
       expect(tester.takeException(), isNull);
 
@@ -798,6 +906,10 @@ void main() {
       await tester.pump();
       expect(studio.activeProjectId, 'caustic_study_04');
       await tester.tap(find.byKey(const Key('new-project-btn')));
+      await tester.pump();
+      expect(find.byKey(const Key('new-project-modal')), findsOneWidget, reason: 'the popup opens here too');
+      await tester.enterText(find.byKey(const Key('new-project-name')), 'COMPANION_SHOT');
+      await _tapKey(tester, const Key('new-project-create'));
       await tester.pump();
       expect(studio.projects, hasLength(6));
       expect(tester.takeException(), isNull);
@@ -1348,7 +1460,7 @@ void main() {
       expect(renders(), isNotEmpty);
       expect(renders().every((i) => i.fit == BoxFit.cover), isTrue);
 
-      await _tapText(tester, 'DAYLIGHT');
+      await _setTheme(tester, dark: false);
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 400));
 
@@ -1684,15 +1796,92 @@ void main() {
 
   group('theme synchronization', () {
     test('palette values match the studio spec', () {
-      expect(PhotonPalette.daylight.dock, const Color(0xFFFFFFFF));
-      expect(PhotonPalette.daylight.onDock, const Color(0xFF0E0E10));
-      expect(PhotonPalette.daylight.viewportMatte, const Color(0xFFE6E6EC));
-      expect(PhotonPalette.grading.dock, const Color(0xFF101012));
-      expect(PhotonPalette.grading.onDock, const Color(0xFFF3F3F5));
-      expect(PhotonPalette.grading.canvas, const Color(0xFF18191C));
-      expect(PhotonPalette.grading.substrate, const Color(0xFF141417));
-      expect(PhotonPalette.grading.surface, const Color(0xFF1E1F22));
-      expect(PhotonPalette.grading.border, const Color(0xFF2A2B30));
+      // Lusion Light (Daylight Lab).
+      const d = PhotonPalette.daylight;
+      expect(d.brightness, Brightness.light);
+      expect(
+        [d.canvas, d.surface, d.substrate, d.carbon, d.onCarbon, d.violet, d.violetInk, d.rose],
+        [
+          const Color(0xFFF0F1FA),
+          const Color(0xFFE4E6EF),
+          const Color(0xFFFFFFFF),
+          const Color(0xFF14151B),
+          const Color(0xFFF0F1FA),
+          const Color(0xFF1A2FFB),
+          const Color(0xFF1A2FFB),
+          const Color(0xFFFF4C41),
+        ],
+      );
+      expect(
+        [d.border, d.textMuted, d.ghost, d.hoverFill, d.dock, d.onDock, d.viewportMatte, d.shadow],
+        [
+          const Color(0xFFD8DAE8),
+          const Color(0xFF686B7A),
+          const Color(0xFF9EA1B2),
+          const Color(0xFFE4E6EF),
+          const Color(0xFFFFFFFF),
+          const Color(0xFF14151B),
+          const Color(0xFFE4E6EF),
+          const Color(0xFF010103),
+        ],
+      );
+      // Lusion Dark (Dark Grading).
+      const g = PhotonPalette.grading;
+      expect(g.brightness, Brightness.dark);
+      expect(
+        [g.canvas, g.surface, g.substrate, g.carbon, g.onCarbon, g.violet, g.violetInk, g.rose],
+        [
+          const Color(0xFF0B0C10),
+          const Color(0xFF14151B),
+          const Color(0xFF12141C),
+          const Color(0xFFF0F1FA),
+          const Color(0xFF0B0C10),
+          const Color(0xFF1A2FFB),
+          const Color(0xFF6878FF),
+          const Color(0xFFFF4C41),
+        ],
+      );
+      expect(
+        [g.border, g.textMuted, g.ghost, g.hoverFill, g.dock, g.onDock, g.viewportMatte, g.shadow],
+        [
+          const Color(0xFF262936),
+          const Color(0xFF8E92A4),
+          const Color(0xFF4E5263),
+          const Color(0xFF1E212D),
+          const Color(0xFF08090D),
+          const Color(0xFFF0F1FA),
+          const Color(0xFF14151B),
+          const Color(0xFF000000),
+        ],
+      );
+    });
+
+    test('the tier accents are Lusion cyan, blue and coral', () {
+      expect([for (final t in PlanTier.values) t.color], [const Color(0xFF22D3EE), const Color(0xFF1A2FFB), const Color(0xFFFF4C41)]);
+      expect(
+        [for (final t in PhotonModelTier.values) t.accent],
+        [const Color(0xFF22D3EE), const Color(0xFF1A2FFB), const Color(0xFFFF4C41)],
+      );
+    });
+
+    test('the native window frame is painted with the Lusion colours', () {
+      // COLORREF is 0x00BBGGRR.
+      final source = File('windows/runner/win32_window.cpp').readAsStringSync();
+      for (final entry in {
+        '0x000D0908': '#08090D dark caption',
+        '0x00FAF1F0': '#F0F1FA dark text / light caption',
+        '0x00362926': '#262936 dark border',
+        '0x001B1514': '#14151B light text',
+        '0x00E8DAD8': '#D8DAE8 light border',
+        '0x00100E0E': '#0E0E10 launch film caption',
+        '0x009A4A5B': '#5B4A9A launch film border',
+      }.entries) {
+        expect(source, contains(entry.key), reason: entry.value);
+      }
+      // The window starts in the film's palette, and Dart can repaint it freely.
+      expect(source, contains('UpdateFrame(window, true,'));
+      expect(File('windows/runner/flutter_window.cpp').readAsStringSync(), contains('setFrameColors'));
+      expect(source, contains('ReapplyFrame'), reason: 'a system colour change puts back the same frame');
     });
 
     testWidgets('switching to Daylight re-skins the dock and the header, and back', (tester) async {
@@ -1706,78 +1895,74 @@ void main() {
           .color;
       InputDecoration prompt() => tester.widget<TextField>(find.byKey(const Key('scene-prompt'))).decoration!;
 
-      expect(dockColor(), const Color(0xFF101012));
+      expect(dockColor(), const Color(0xFF08090D));
       expect(headerColor(), PhotonPalette.grading.substrate);
 
-      await _tapText(tester, 'DAYLIGHT');
+      await _setTheme(tester, dark: false);
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 400));
 
       expect(dockColor(), const Color(0xFFFFFFFF));
       expect((dockDecoration().border! as Border).top.color, PhotonPalette.daylight.border);
-      expect(headerColor(), const Color(0xFFF9F9FB));
+      expect(headerColor(), PhotonPalette.daylight.surface);
       expect(prompt().fillColor, PhotonPalette.daylight.canvas);
-      expect(tester.widget<TextField>(find.byKey(const Key('scene-prompt'))).style!.color, const Color(0xFF0E0E10));
+      expect(tester.widget<TextField>(find.byKey(const Key('scene-prompt'))).style!.color, const Color(0xFF14151B));
       expect(tester.takeException(), isNull);
 
-      await _tapText(tester, 'DARK GRADING');
+      await _setTheme(tester, dark: true);
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 400));
-      expect(dockColor(), const Color(0xFF101012));
+      expect(dockColor(), const Color(0xFF08090D));
       expect(headerColor(), PhotonPalette.grading.substrate);
       expect(prompt().fillColor, Colors.white.withValues(alpha: 0.08));
 
       await _teardown(tester, studio);
     });
 
-    testWidgets('the Photon mark swaps its tile between the two themes', (tester) async {
-      Future<Color> tile({required bool dark}) async {
-        final key = GlobalKey();
+    testWidgets('the Photon mark is the same tile in both themes: it is the app\'s identity', (tester) async {
+      final key = GlobalKey();
+      Future<ByteData> render(PhotonPalette palette) async {
         await tester.pumpWidget(
-          Directionality(
-            textDirection: TextDirection.ltr,
-            child: Center(
+          MaterialApp(
+            theme: buildPhotonTheme(palette),
+            themeAnimationDuration: Duration.zero,
+            home: Center(
               child: RepaintBoundary(
                 key: key,
-                child: SizedBox.square(dimension: 40, child: PhotonLogoMark(size: 40, isDark: dark)),
+                child: const SizedBox.square(dimension: 40, child: PhotonLogoMark(size: 40)),
               ),
             ),
           ),
         );
-        return _pixel(await _capture(tester, key), 40, 4, 20);
+        return _capture(tester, key);
       }
 
-      final dark = await tile(dark: true);
-      final light = await tile(dark: false);
-      expect(_channel(dark.r), lessThan(40), reason: 'Matte Carbon tile');
-      expect(_channel(light.r), greaterThan(230), reason: 'alabaster tile');
+      final dark = await render(PhotonPalette.grading);
+      final light = await render(PhotonPalette.daylight);
+      expect(dark.buffer.asUint8List(), light.buffer.asUint8List(), reason: 'pixel for pixel');
+      expect(_channel(_pixel(light, 40, 4, 20).r), lessThan(40), reason: 'the void tile even in Daylight Lab');
+      expect(_pixel(light, 40, 0, 0).a, 0);
     });
 
-    testWidgets('the mark follows the ambient theme when not forced', (tester) async {
-      final key = GlobalKey();
-      Future<Color> sample(Brightness b) async {
-        await tester.pumpWidget(
-          Theme(
-            data: ThemeData(brightness: b),
-            child: Directionality(
-              textDirection: TextDirection.ltr,
-              child: Center(
-                child: RepaintBoundary(
-                  key: key,
-                  child: const SizedBox.square(dimension: 40, child: PhotonLogoMark(size: 40)),
-                ),
-              ),
-            ),
-          ),
-        );
-        return _pixel(await _capture(tester, key), 40, 4, 20);
-      }
+    test('the native frame wears the launch film while it plays, the studio theme after', () {
+      final studio = StudioController(autoConnect: false, animateShader: false, startInLandingPage: true);
+      addTearDown(studio.dispose);
+      expect(studio.nativeFrame, NativeFrame.film);
+      studio.setDarkGrading(false);
+      expect(studio.nativeFrame, NativeFrame.film, reason: 'the film plays in its own colours whichever theme is set');
+      studio.enterPhotonStudio();
+      expect(studio.nativeFrame, NativeFrame.daylight);
+      studio.setDarkGrading(true);
+      expect(studio.nativeFrame, NativeFrame.grading);
+      studio.openLaunchPortal();
+      expect(studio.nativeFrame, NativeFrame.film);
 
-      expect(_channel((await sample(Brightness.dark)).r), lessThan(40));
-      expect(_channel((await sample(Brightness.light)).r), greaterThan(230));
+      expect(NativeFrame.film.caption, const Color(0xFF0E0E10), reason: 'the landing page\'s own near-black');
+      expect(NativeFrame.grading.toArguments(), {'dark': true, 'caption': 0x08090D, 'text': 0xF0F1FA, 'border': 0x262936});
+      expect(NativeFrame.daylight.toArguments(), {'dark': false, 'caption': 0xF0F1FA, 'text': 0x14151B, 'border': 0xD8DAE8});
     });
 
-    testWidgets('toggling the theme tells the native window to restyle its caption', (tester) async {
+    testWidgets('the window frame is sent as the app goes film, then theme, then film again', (tester) async {
       final calls = <MethodCall>[];
       const channel = MethodChannel('photon/window');
       tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(channel, (call) async {
@@ -1786,21 +1971,38 @@ void main() {
       });
       addTearDown(() => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(channel, null));
 
-      final studio = await _pumpStudio(tester, const Size(1280, 800));
-      expect(calls, isEmpty, reason: 'launch is already dark; nothing to send');
+      final studio = StudioController(autoConnect: false, animateShader: false, startInLandingPage: true);
+      await _pumpStudio(tester, const Size(1280, 800), controller: studio);
+      expect(calls.single.method, 'setFrameColors');
+      expect(calls.single.arguments, NativeFrame.film.toArguments(), reason: 'from the first frame');
 
-      await _tapText(tester, 'DAYLIGHT');
-      await tester.pump();
-      expect(calls.single.method, 'setDarkTheme');
-      expect(calls.single.arguments, false);
+      studio.setDarkGrading(false);
+      expect(calls, hasLength(1), reason: 'the film is still playing: nothing changes');
 
-      await _tapText(tester, 'DARK GRADING');
-      await tester.pump();
+      studio.enterPhotonStudio();
       expect(calls, hasLength(2));
-      expect(calls.last.arguments, true);
+      expect(calls.last.arguments, NativeFrame.daylight.toArguments(), reason: 'in the studio the frame follows the theme');
 
       studio.setDarkGrading(true);
-      expect(calls, hasLength(2), reason: 'no change, no call');
+      expect(calls.last.arguments, NativeFrame.grading.toArguments());
+      studio.setDarkGrading(true);
+      expect(calls, hasLength(3), reason: 'no change, no call');
+
+      studio.openLaunchPortal();
+      expect(calls.last.arguments, NativeFrame.film.toArguments());
+      await _teardown(tester, studio);
+    });
+
+    testWidgets('a studio opened in the workspace (tests) starts on its theme\'s frame', (tester) async {
+      final calls = <MethodCall>[];
+      const channel = MethodChannel('photon/window');
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(channel, (call) async {
+        calls.add(call);
+        return null;
+      });
+      addTearDown(() => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(channel, null));
+      final studio = await _pumpStudio(tester, const Size(1280, 800));
+      expect(calls.single.arguments, NativeFrame.grading.toArguments());
       await _teardown(tester, studio);
     });
 
@@ -2077,6 +2279,8 @@ void main() {
 
     testWidgets('the wavelength pill steps through the spectrum and scrubs by drag', (tester) async {
       final studio = await _pumpStudio(tester, const Size(1280, 800));
+      studio.setProbeVisible(true); // the readout is off until the probe is
+      await tester.pump();
       expect(find.text('λ: 540nm | IOR: 2.253'), findsOneWidget);
 
       for (final nm in [590, 650, 380, 470, 540]) {
@@ -2147,7 +2351,9 @@ void main() {
       expect(studio.param('focal_distance'), isNot(focalBefore));
       expect(studio.param('focal_distance'), closeTo(0.4 + (1 - uv.dy) * 4.6, 1e-6));
 
-      // The probe follows the focus point.
+      // The probe follows the focus point (once it is on).
+      studio.setProbeVisible(true);
+      await tester.pump();
       expect(tester.getCenter(pillKey).dx, closeTo(point.dx, 1.0));
       expect(tester.takeException(), isNull);
       await _teardown(tester, studio);
@@ -2544,7 +2750,7 @@ void main() {
       await tester.pump();
       await tester.testTextInput.receiveAction(TextInputAction.done);
       await tester.pump();
-      expect(studio.probeVisible, isFalse, reason: 'arrow up from the first row wraps to the last: Toggle Optical Focus Probe');
+      expect(studio.probeVisible, isTrue, reason: 'arrow up from the first row wraps to the last: Toggle Optical Focus Probe (off by default, so now on)');
       expect(studio.falseColorEnabled, isFalse);
       await _teardown(tester, studio);
     });
@@ -3036,6 +3242,251 @@ void main() {
       await _teardown(tester, studio);
     });
 
+    group('Lusion theme coordination', () {
+      final surface = find.byKey(const Key('profile-card-surface'));
+
+      /// The shell: hairline border and ambient shadow.
+      BoxDecoration decoration(WidgetTester tester) => tester.widget<Container>(surface).decoration! as BoxDecoration;
+
+      /// The backdrop: the three-stop architectural gradient inside the shell.
+      List<Color> backdrop(WidgetTester tester) => tester
+          .widgetList<DecoratedBox>(find.descendant(of: surface, matching: find.byType(DecoratedBox)))
+          .map((d) => d.decoration)
+          .whereType<BoxDecoration>()
+          .map((d) => d.gradient)
+          .whereType<LinearGradient>()
+          .firstWhere((g) => g.colors.length == 3)
+          .colors;
+
+      Future<void> setTheme(WidgetTester tester, StudioController studio, {required bool dark}) async {
+        studio.setDarkGrading(dark);
+        await tester.pump();
+        await _pumpFor(tester, const Duration(milliseconds: 500));
+      }
+
+      testWidgets('Dark Grading: the void-to-slate surface, a blue-accented hairline, off-white type', (tester) async {
+        final studio = await openAccount(tester);
+        final deco = decoration(tester);
+        expect(backdrop(tester), [const Color(0xFF0B0C10), const Color(0xFF12141C), const Color(0xFF171A28)]);
+        final border = (deco.border! as Border).top;
+        expect(border.width, 1);
+        const g = PhotonPalette.grading;
+        expect(border.color, Color.alphaBlend(g.violet.withValues(alpha: 0.45), g.border), reason: 'c.border accented with the Lusion blue');
+        expect(border.color, isNot(g.border));
+        expect(deco.boxShadow!.single.color, g.violet.withValues(alpha: 0.22));
+        final name = tester.widget<Text>(find.text('Mohd Faraz'));
+        expect(name.style!.color, g.carbon, reason: 'crisp #F0F1FA');
+        expect(tester.takeException(), isNull);
+        await _teardown(tester, studio);
+      });
+
+      testWidgets('Daylight Lab: the white-to-lavender surface, the #D8DAE8 hairline, obsidian type', (tester) async {
+        final studio = await openAccount(tester);
+        await setTheme(tester, studio, dark: false);
+        final deco = decoration(tester);
+        expect(backdrop(tester), [const Color(0xFFFFFFFF), const Color(0xFFF0F1FA), const Color(0xFFE4E6EF)]);
+        expect((deco.border! as Border).top.color, const Color(0xFFD8DAE8));
+        expect(deco.boxShadow!.single.color, const Color(0xFF1A2FFB).withValues(alpha: 0.10));
+        final name = tester.widget<Text>(find.text('Mohd Faraz'));
+        expect(name.style!.color, const Color(0xFF14151B), reason: 'crisp #14151B');
+        expect(tester.takeException(), isNull);
+        await _teardown(tester, studio);
+      });
+
+      testWidgets('the drawer cards are frosted ink in the dark and white-on-lavender in the light', (tester) async {
+        final studio = await openAccount(tester);
+        BoxDecoration drawer() => tester
+            .widgetList<Container>(find.descendant(of: find.byKey(const Key('animated-profile-card')), matching: find.byType(Container)))
+            .map((c) => c.decoration)
+            .whereType<BoxDecoration>()
+            .firstWhere((d) => d.gradient is LinearGradient && d.borderRadius == BorderRadius.circular(14));
+        expect((drawer().gradient! as LinearGradient).colors.first.a, lessThan(0.2), reason: 'a wash');
+        await setTheme(tester, studio, dark: false);
+        expect((drawer().gradient! as LinearGradient).colors, [const Color(0xFFFFFFFF), const Color(0xFFE4E6EF)]);
+        expect((drawer().border! as Border).top.color, const Color(0xFFD8DAE8));
+        await _teardown(tester, studio);
+      });
+
+      testWidgets('there is no cursor circle: nothing is drawn around the pointer', (tester) async {
+        final studio = await openAccount(tester);
+        final card = find.byKey(const Key('animated-profile-card'));
+        final mouse = await _mouse(tester);
+        await mouse.moveTo(tester.getCenter(card) + const Offset(40, 30));
+        await tester.pump(const Duration(milliseconds: 60));
+
+        // Run the aurora painter into a canvas that logs every circle.
+        final aurora = tester
+            .widgetList<CustomPaint>(find.descendant(of: surface, matching: find.byType(CustomPaint)))
+            .map((c) => c.painter)
+            .whereType<CustomPainter>()
+            .firstWhere((p) => p.runtimeType.toString() == '_AuroraPainter');
+        final log = _CircleLog();
+        aurora.paint(log, tester.getSize(surface));
+        expect(log.circles, hasLength(3), reason: 'just the three drifting blooms');
+        for (final c in log.circles) {
+          expect(c.paint.shader, isNotNull, reason: 'a soft gradient bloom');
+          expect(c.paint.style, PaintingStyle.fill, reason: 'no stroked ring');
+          expect(c.radius, greaterThan(100), reason: 'not a 28px ring');
+        }
+        expect(log.circles.where((c) => c.radius == 28), isEmpty);
+
+        // Nor does it move with the pointer: the same canvas, the pointer elsewhere.
+        await mouse.moveTo(tester.getTopLeft(card) + const Offset(30, 30));
+        final again = _CircleLog();
+        aurora.paint(again, tester.getSize(surface));
+        expect(again.circles.length, 3);
+        expect(tester.takeException(), isNull);
+        await _teardown(tester, studio);
+      });
+
+      testWidgets('smooth: no backdrop blur, the card on its own cached layer', (tester) async {
+        final studio = await openAccount(tester);
+        expect(find.byType(BackdropFilter), findsNothing, reason: 'a blur re-runs over the whole window every frame the card tilts');
+        // The card is cached below the tilt, so tilting re-composites a texture:
+        // walking up from the card, a RepaintBoundary comes before the tilt.
+        final order = <String>[];
+        tester.element(surface).visitAncestorElements((e) {
+          if (e.widget is RepaintBoundary) order.add('boundary');
+          if (e.widget is Transform) order.add('tilt');
+          return !order.contains('tilt');
+        });
+        expect(order.take(2), ['boundary', 'tilt']);
+        expect(tester.takeException(), isNull);
+        await _teardown(tester, studio);
+      });
+
+      testWidgets('smooth: the aurora redraws about 20 times a second, not 60', (tester) async {
+        final studio = StudioController(autoConnect: false);
+        await _pumpStudio(tester, const Size(1280, 800), controller: studio);
+        studio.setAccountModalOpen(true);
+        await _pumpFor(tester, const Duration(milliseconds: 300));
+        final mouse = await _mouse(tester);
+        await mouse.moveTo(tester.getCenter(find.byKey(const Key('animated-profile-card'))));
+        await tester.pump();
+        dynamic aurora() => tester
+            .widgetList<CustomPaint>(find.descendant(of: surface, matching: find.byType(CustomPaint)))
+            .map((c) => c.painter)
+            .whereType<CustomPainter>()
+            .firstWhere((p) => p.runtimeType.toString() == '_AuroraPainter');
+        var last = aurora().aurora.value as double;
+        var changes = 0, frames = 0;
+        for (var i = 0; i < 62; i++) {
+          await tester.pump(const Duration(milliseconds: 16));
+          frames++;
+          final now = aurora().aurora.value as double;
+          if (now != last) changes++;
+          last = now;
+        }
+        expect(frames, greaterThan(55), reason: 'the studio is still running at full frame rate');
+        expect(changes, inInclusiveRange(10, 24), reason: 'one second of 16ms frames: about 20 repaints, not ~60');
+        expect(tester.takeException(), isNull);
+        await _teardown(tester, studio);
+      });
+
+      testWidgets('the aurora is a Lusion-blue glow: stronger in the dark (0.18) than in the light (0.08)', (tester) async {
+        final studio = await openAccount(tester);
+        final auroraFinder = find.descendant(
+          of: surface,
+          matching: find.byWidgetPredicate((w) => w is CustomPaint && w.painter.runtimeType.toString() == '_AuroraPainter'),
+        );
+        // The aurora sits on its own layer; read the glow back from its pixels
+        // at the first bloom's centre (the drift is at rest at 0.25 of its cycle).
+        Future<int> glowAlpha() async {
+          final boundary = tester.renderObject<RenderRepaintBoundary>(find.ancestor(of: auroraFinder, matching: find.byType(RepaintBoundary)).first);
+          final bytes = await tester.runAsync(() async {
+            final image = await boundary.toImage();
+            return (await image.toByteData())!;
+          });
+          final w = boundary.size.width.round(), h = boundary.size.height.round();
+          final x = (0.34 * w).round(), y = (0.155 * h).round();
+          return bytes!.getUint8((y * w + x) * 4 + 3);
+        }
+
+        dynamic painter() => tester.widget<CustomPaint>(auroraFinder).painter;
+        expect(painter().isDark, isTrue);
+        expect(painter().blue, PhotonPalette.grading.violet);
+        final dark = await glowAlpha();
+        expect(dark, inInclusiveRange(40, 75), reason: 'about 0.18 of 255');
+
+        await setTheme(tester, studio, dark: false);
+        expect(painter().isDark, isFalse);
+        expect(painter().blue, PhotonPalette.daylight.violet);
+        final light = await glowAlpha();
+        expect(light, inInclusiveRange(15, 35), reason: 'about 0.08 of 255');
+        expect(dark, greaterThan(light * 1.8));
+        await _teardown(tester, studio);
+      });
+
+      testWidgets('every tab is legible in both themes: type contrasts with the surface, nothing is stuck white', (tester) async {
+        for (final dark in [true, false]) {
+          for (final tab in ProfileTab.values) {
+            final studio = await openAccount(tester, tab);
+            if (!dark) await setTheme(tester, studio, dark: false);
+            final palette = dark ? PhotonPalette.grading : PhotonPalette.daylight;
+            // The surface is nearly the theme's own canvas end to end.
+            final bg = dark ? const Color(0xFF12141C) : const Color(0xFFF0F1FA);
+            final texts = find.descendant(of: find.byKey(const Key('animated-profile-card')), matching: find.byType(Text)).evaluate().toList();
+            expect(texts, isNotEmpty);
+            var checked = 0;
+            for (final element in texts) {
+              final text = element.widget as Text;
+              final colour = text.style?.color;
+              if (colour == null || colour.a == 0) continue;
+              if (colour == palette.onCarbon) continue; // ink on a filled-ink chip (a selected choice)
+              var inChip = false;
+              element.visitAncestorElements((a) {
+                if (a.widget.key.toString().contains('profile-tier-')) inChip = true;
+                return !inChip;
+              });
+              if (inChip) continue; // the selected chip is a filled ink pill
+              final seen = Color.alphaBlend(colour, bg);
+              final lighter = math.max(seen.computeLuminance(), bg.computeLuminance());
+              final darker = math.min(seen.computeLuminance(), bg.computeLuminance());
+              final ratio = (lighter + 0.05) / (darker + 0.05);
+              expect(ratio, greaterThan(2.8), reason: '"${text.data}" in ${dark ? 'dark' : 'light'} / ${tab.label}: $colour on $bg');
+              if (!dark) {
+                expect(colour == Colors.white, isFalse, reason: '"${text.data}" is hardcoded white in Daylight');
+              }
+              checked++;
+            }
+            expect(checked, greaterThan(5), reason: '${tab.label} ${dark ? 'dark' : 'light'}');
+            expect(palette.isDark, dark);
+            expect(tester.takeException(), isNull);
+            await _teardown(tester, studio);
+          }
+        }
+      });
+
+      testWidgets('the accent is Lusion blue: the focused field, a switched-on toggle and the quota bar', (tester) async {
+        final studio = await openAccount(tester, ProfileTab.auth);
+        // 2FA is on in the seeded account: its toggle track is the brand blue.
+        final toggle = find.byKey(const Key('profile-2fa-toggle'));
+        final track = tester
+            .widgetList<AnimatedContainer>(find.descendant(of: toggle, matching: find.byType(AnimatedContainer)))
+            .map((c) => c.decoration)
+            .whereType<BoxDecoration>()
+            .firstWhere((d) => d.shape != BoxShape.circle && d.borderRadius != null);
+        expect(track.color, PhotonPalette.grading.violet);
+        await setTheme(tester, studio, dark: false);
+        final lightTrack = tester
+            .widgetList<AnimatedContainer>(find.descendant(of: toggle, matching: find.byType(AnimatedContainer)))
+            .map((c) => c.decoration)
+            .whereType<BoxDecoration>()
+            .firstWhere((d) => d.shape != BoxShape.circle && d.borderRadius != null);
+        expect(lightTrack.color, const Color(0xFF1A2FFB));
+        expect(tester.takeException(), isNull);
+        await _teardown(tester, studio);
+      });
+
+      test('no navy, cobalt or cyan gradient is left in the card', () {
+        final source = File('lib/widgets/animated_profile_card.dart').readAsStringSync();
+        for (final gone in ['0xFF0A192F', '0xFF1E3A8A', '0xFF2563EB', '0xFF06B6D4', 'AnimatedBlueProfileCard.navy', 'AnimatedBlueProfileCard.cobalt']) {
+          expect(source.contains(gone), isFalse, reason: gone);
+        }
+        expect('Colors.white'.allMatches(source).length, lessThanOrEqualTo(1), reason: 'every white is derived from the theme; only a toggle knob stays white');
+      });
+    });
+
     testWidgets('every account control answers to its long-standing key and the card\'s own', (tester) async {
       final studio = await openAccount(tester, ProfileTab.plan);
       for (final tier in PlanTier.values) {
@@ -3445,41 +3896,105 @@ void main() {
       await _teardown(tester, studio);
     });
 
-    testWidgets('hovering the folder fans its sheets up and tilts the flap', (tester) async {
+    testWidgets('the ingest button is a modern spatial portal, not a retro folder', (tester) async {
       final studio = await _pumpStudio(tester, const Size(1280, 800));
       final trigger = find.byKey(const Key('intent-file-trigger'));
-      final usd = find.descendant(of: trigger, matching: find.text('USD'));
-      final exr = find.descendant(of: trigger, matching: find.text('EXR'));
-      final restUsd = tester.getTopLeft(usd);
-      final restExr = tester.getTopLeft(exr);
+      // No folder: no tab, no paper sheets, no flap.
+      expect(find.descendant(of: trigger, matching: find.text('USD')), findsNothing);
+      expect(find.descendant(of: trigger, matching: find.text('EXR')), findsNothing);
+      expect(
+        tester.widgetList<Transform>(find.descendant(of: trigger, matching: find.byType(Transform))).where((t) => t.transform.entry(3, 2) != 0),
+        isEmpty,
+      );
+      expect(tester.getSize(trigger), IntentFileTrigger.baseSize * (tester.getSize(trigger).width / IntentFileTrigger.baseSize.width));
+      expect(IntentFileTrigger.baseSize, const Size(36, 28));
+
+      // A squircle chassis (radius 8) with a 1px hairline in the theme border.
+      final box = tester.widgetList<DecoratedBox>(find.descendant(of: trigger, matching: find.byType(DecoratedBox))).first;
+      final deco = box.decoration as BoxDecoration;
+      expect(deco.borderRadius, BorderRadius.circular(8));
+      expect((deco.border! as Border).top.color, PhotonPalette.grading.border);
+      expect(deco.boxShadow, isEmpty, reason: 'no glow at rest');
+      expect(tester.takeException(), isNull);
+      await _teardown(tester, studio);
+    });
+
+    testWidgets('hovering lights the border Lusion blue, lifts the arrow 3.5px on a spring and spreads the nodes', (tester) async {
+      final studio = await _pumpStudio(tester, const Size(1280, 800));
+      final trigger = find.byKey(const Key('intent-file-trigger'));
+      dynamic art() => tester.widget<CustomPaint>(find.descendant(of: trigger, matching: find.byType(CustomPaint)).first).painter;
+      BoxDecoration chassis() =>
+          tester.widgetList<DecoratedBox>(find.descendant(of: trigger, matching: find.byType(DecoratedBox))).first.decoration as BoxDecoration;
+      expect([art().spring, art().glow], [0.0, 0.0]);
 
       final mouse = await _mouse(tester);
       await mouse.moveTo(tester.getCenter(trigger));
       await tester.pump();
-      // The spring overshoots: the sheets rise past their final height first.
-      var highest = restUsd.dy;
-      for (var i = 0; i < 30; i++) {
+      // The spring overshoots: the arrow rises past its final height first.
+      var peak = 0.0;
+      for (var i = 0; i < 40; i++) {
         await tester.pump(const Duration(milliseconds: 16));
-        highest = math.min(highest, tester.getTopLeft(usd).dy);
+        peak = math.max(peak, art().spring as double);
       }
       await _pumpFor(tester, const Duration(milliseconds: 400));
-      final openUsd = tester.getTopLeft(usd);
-      final openExr = tester.getTopLeft(exr);
-      expect(openUsd.dy, lessThan(restUsd.dy - 4), reason: 'USD sheet rises');
-      expect(openExr.dy, lessThan(restExr.dy - 4), reason: 'EXR sheet rises');
-      expect(openUsd.dx, lessThan(restUsd.dx), reason: 'USD fans left');
-      expect(openExr.dx, greaterThan(restExr.dx), reason: 'EXR fans right');
-      expect(highest, lessThan(openUsd.dy), reason: 'easeOutBack overshoots before settling');
-
-      // The flap is tilted 14 degrees about X, in perspective.
-      final flap = tester.widgetList<Transform>(find.descendant(of: trigger, matching: find.byType(Transform))).where((t) => t.transform.entry(3, 2) != 0).single;
-      expect(flap.transform.entry(1, 2).abs(), closeTo(math.sin(14 * math.pi / 180), 0.01));
+      expect(art().spring, closeTo(1, 1e-6), reason: 'settles at the full 3.5px lift');
+      expect(peak, greaterThan(1.02), reason: 'easeOutBack overshoots before settling');
+      expect(art().glow, closeTo(1, 1e-6));
+      expect((chassis().border! as Border).top.color, PhotonPalette.grading.violet, reason: 'Lusion Electric Blue');
+      expect(chassis().boxShadow, isNotEmpty, reason: 'a soft blue glow');
+      expect(chassis().boxShadow!.single.color.a, greaterThan(0.2));
 
       await mouse.moveTo(const Offset(5, 400));
-      await _pumpFor(tester, const Duration(milliseconds: 600));
-      expect(tester.getTopLeft(usd).dy, closeTo(restUsd.dy, 0.5), reason: 'closes again');
+      await _pumpFor(tester, const Duration(milliseconds: 700));
+      expect([art().spring, art().glow], [0.0, 0.0], reason: 'closes again');
       expect(tester.takeException(), isNull);
       await _teardown(tester, studio);
+    });
+
+    testWidgets('the portal artwork: a wireframe tray, a bold arrow and two orbital nodes', (tester) async {
+      final key = GlobalKey();
+      Future<ByteData> render({required bool dark, bool hover = false}) async {
+        await tester.pumpWidget(
+          MaterialApp(
+            theme: buildPhotonTheme(dark ? PhotonPalette.grading : PhotonPalette.daylight),
+            themeAnimationDuration: Duration.zero,
+            home: Scaffold(
+              body: Center(
+                child: RepaintBoundary(
+                  key: key,
+                  child: IntentFileTrigger(scale: 4, onTap: () {}),
+                ),
+              ),
+            ),
+          ),
+        );
+        if (hover) {
+          final mouse = await _mouse(tester);
+          await mouse.moveTo(tester.getCenter(find.byType(IntentFileTrigger)));
+          await _pumpFor(tester, const Duration(milliseconds: 700));
+        }
+        return _capture(tester, key);
+      }
+
+      // 36x28 at 4x: 144x112. Art coordinates times four.
+      final dark = await render(dark: true);
+      bool near(Color c, int rgb, int tol) =>
+          (_channel(c.r) - ((rgb >> 16) & 0xFF)).abs() <= tol &&
+          (_channel(c.g) - ((rgb >> 8) & 0xFF)).abs() <= tol &&
+          (_channel(c.b) - (rgb & 0xFF)).abs() <= tol;
+      expect(near(_pixel(dark, 144, 72, 40), 0xF0F1FA, 6), isTrue, reason: 'the arrow shaft is off-white in Dark: ${_pixel(dark, 144, 72, 40)}');
+      expect(near(_pixel(dark, 144, 28, 80), 0x1A2FFB, 12), isTrue, reason: 'the USD node is Lusion blue: ${_pixel(dark, 144, 28, 80)}');
+      expect(near(_pixel(dark, 144, 116, 80), 0xFF4C41, 12), isTrue, reason: 'the EXR node is Lusion coral: ${_pixel(dark, 144, 116, 80)}');
+
+      final light = await render(dark: false);
+      expect(near(_pixel(light, 144, 72, 40), 0x14151B, 6), isTrue, reason: 'the arrow shaft is obsidian in Daylight');
+
+      // On hover the arrow has gone up and the nodes have moved out: the shaft
+      // is no longer where it was at the bottom, and the blue node has left.
+      final hovered = await render(dark: true, hover: true);
+      expect(near(_pixel(hovered, 144, 72, 80 - 12), 0xF0F1FA, 6), isFalse, reason: 'the shaft base lifted clear of y=17');
+      expect(near(_pixel(hovered, 144, 28, 80), 0x1A2FFB, 12), isFalse, reason: 'the blue node moved outward');
+      expect(near(_pixel(hovered, 144, 18, 80), 0x1A2FFB, 40), isTrue, reason: 'to about 2.5px further out');
     });
 
     testWidgets('clicking the trigger opens the ingest sheet; Escape and the backdrop close it', (tester) async {
@@ -3581,7 +4096,8 @@ void main() {
   });
 
   group('Shader theme switch', () {
-    Future<Color> trackColor(WidgetTester tester, {required bool dark, required Offset at}) async {
+    /// The icon alone, 28x28, in [dark] or light; the colour at [at].
+    Future<Color> iconColor(WidgetTester tester, {required bool dark, required Offset at}) async {
       tester.view.physicalSize = const Size(200, 100);
       tester.view.devicePixelRatio = 1;
       addTearDown(tester.view.reset);
@@ -3589,6 +4105,7 @@ void main() {
       await tester.pumpWidget(
         MaterialApp(
           theme: buildPhotonTheme(dark ? PhotonPalette.grading : PhotonPalette.daylight),
+          themeAnimationDuration: Duration.zero,
           home: Scaffold(
             body: Center(
               child: RepaintBoundary(
@@ -3599,62 +4116,109 @@ void main() {
           ),
         ),
       );
-      await _pumpFor(tester, const Duration(milliseconds: 700));
-      return _pixel(await _capture(tester, key), 76, at.dx.round(), at.dy.round());
+      await _pumpFor(tester, const Duration(milliseconds: 400));
+      return _pixel(await _capture(tester, key), 28, at.dx.round(), at.dy.round());
     }
+
 
     bool near(Color a, int rgb, [int tolerance = 2]) =>
         (_channel(a.r) - ((rgb >> 16) & 0xFF)).abs() <= tolerance &&
         (_channel(a.g) - ((rgb >> 8) & 0xFF)).abs() <= tolerance &&
         (_channel(a.b) - (rgb & 0xFF)).abs() <= tolerance;
 
-    testWidgets('the track is matte obsidian-violet in Dark and alabaster in Daylight', (tester) async {
-      // The upper middle is clear of the glyphs and the thumb.
-      final night = await trackColor(tester, dark: true, at: const Offset(30, 3));
-      expect(near(night, 0x121215), isTrue, reason: 'Dark track is #121215, got $night');
-      expect(night.r, lessThan(0.25));
-      expect(night.b, greaterThan(night.r), reason: 'violet-tinted, not grey');
-      final nightEdge = await trackColor(tester, dark: true, at: const Offset(74, 14));
-      expect(nightEdge.b, greaterThan(night.b), reason: 'brightens toward #4C1D95 on the right');
-      expect(nightEdge.r, lessThan(0.25));
+    testWidgets('it is one 28px circular icon: no slider, no track, no labels', (tester) async {
+      final studio = await _pumpStudio(tester, const Size(1280, 800));
+      expect(tester.getSize(find.byKey(const Key('shader-theme-switch'))), const Size(28, 28));
+      expect(find.text('DAYLIGHT'), findsNothing);
+      expect(find.text('DARK GRADING'), findsNothing);
+      expect(find.byKey(const ValueKey('shader-theme-thumb')), findsNothing, reason: 'nothing slides');
+      expect(ShaderThemeSwitch.width, 28);
+      expect(ShaderThemeSwitch.height, 28);
+      await _teardown(tester, studio);
 
-      final day = await trackColor(tester, dark: false, at: const Offset(50, 3));
-      expect(near(day, 0xEAEAEF), isTrue, reason: 'Daylight track is #EAEAEF, got $day');
-      expect(day.r, greaterThan(0.85));
-      expect(day.g, greaterThan(0.85));
-      expect(day.b, greaterThan(0.8));
+      // A circle: the corners are clear, the rim is the 1px edge, the face a disc.
+      final corner = await iconColor(tester, dark: true, at: const Offset(1, 1));
+      expect(corner.a, 0, reason: 'a circle, not a capsule or a square');
+      expect(near(await iconColor(tester, dark: true, at: const Offset(0, 14)), 0x262936, 12), isTrue, reason: '1px edge in Dark');
+      expect(near(await iconColor(tester, dark: false, at: const Offset(0, 14)), 0xD8DAE8, 12), isTrue, reason: '1px edge in Daylight');
+      expect(near(await iconColor(tester, dark: true, at: const Offset(4, 14)), 0x14151B, 4), isTrue, reason: 'obsidian disc');
+      expect(near(await iconColor(tester, dark: false, at: const Offset(4, 14)), 0xFFFFFF, 4), isTrue, reason: 'white disc');
     });
 
-    testWidgets('the track has a 1px border and etched glyphs, and no starfield', (tester) async {
-      // Border: the capsule's left tip, one pixel in.
-      expect(near(await trackColor(tester, dark: true, at: const Offset(0, 14)), 0x2A2B30, 6), isTrue);
-      expect(near(await trackColor(tester, dark: false, at: const Offset(0, 14)), 0xD4D4DC, 6), isTrue);
-      // Dark: the thumb is on the right, so the aperture ring shows on the left.
-      final ring = await trackColor(tester, dark: true, at: const Offset(14, 14 - 5));
-      expect(near(ring, 0x4A4B55, 40), isTrue, reason: 'the 1px aperture ring, got $ring');
-      // Daylight: the thumb is on the left, so the eclipse slit shows on the right.
-      final slit = await trackColor(tester, dark: false, at: const Offset(62, 14 - 4));
-      expect(near(slit, 0xA5A5AE, 40), isTrue, reason: 'the 1px slit, got $slit');
+    testWidgets('Dark Grading shows a crescent Moon, hollow in the middle', (tester) async {
+      expect(near(await iconColor(tester, dark: true, at: const Offset(10, 14)), 0xF0F1FA, 10), isTrue, reason: 'the lunar limb');
+      expect(near(await iconColor(tester, dark: true, at: const Offset(14, 14)), 0x14151B, 6), isTrue, reason: 'the bite out of it');
     });
 
-    testWidgets('the thumb is a precision disc: violet ring on obsidian, carbon ring on alabaster', (tester) async {
-      // Dark: thumb on the right, centred at x=62.
-      expect(near(await trackColor(tester, dark: true, at: const Offset(62, 14)), 0xB57BFF, 8), isTrue, reason: 'violet centre pip');
-      expect(near(await trackColor(tester, dark: true, at: const Offset(68, 14)), 0x1E1F24, 4), isTrue, reason: 'obsidian disc');
-      expect(near(await trackColor(tester, dark: true, at: const Offset(62, 3)), 0x8A2BE2, 60), isTrue, reason: 'spectral violet ring');
-      // Light: thumb on the left, centred at x=14.
-      expect(near(await trackColor(tester, dark: false, at: const Offset(14, 14)), 0x0E0E10, 8), isTrue, reason: 'carbon centre pip');
-      expect(near(await trackColor(tester, dark: false, at: const Offset(20, 14)), 0xFFFFFF, 4), isTrue, reason: 'alabaster disc');
-      expect(near(await trackColor(tester, dark: false, at: const Offset(14, 3)), 0x0E0E10, 70), isTrue, reason: 'carbon ring');
+    testWidgets('Daylight Lab shows a Sun: a disc and eight beams, in Lusion blue', (tester) async {
+      expect(near(await iconColor(tester, dark: false, at: const Offset(14, 14)), 0x1A2FFB, 10), isTrue, reason: 'the solar disc');
+      // The four straight beams (each is a 1px line on a pixel boundary, so look at both pixels).
+      for (final beam in [
+        [const Offset(13, 8), const Offset(14, 8)],
+        [const Offset(13, 20), const Offset(14, 20)],
+        [const Offset(8, 13), const Offset(8, 14)],
+        [const Offset(20, 13), const Offset(20, 14)],
+      ]) {
+        var darkest = 255;
+        for (final p in beam) {
+          darkest = math.min(darkest, _channel((await iconColor(tester, dark: false, at: p)).r));
+        }
+        expect(darkest, lessThan(200), reason: 'a beam at ${beam.first}');
+      }
+      // The four diagonal beams: eight in all.
+      for (final c in const [Offset(18, 10), Offset(18, 18), Offset(10, 10), Offset(10, 18)]) {
+        var darkest = 255;
+        for (var dy = -1; dy <= 1; dy++) {
+          for (var dx = -1; dx <= 1; dx++) {
+            darkest = math.min(darkest, _channel((await iconColor(tester, dark: false, at: c + Offset(dx.toDouble(), dy.toDouble()))).r));
+          }
+        }
+        expect(darkest, lessThan(215), reason: 'a diagonal beam near $c');
+      }
     });
 
-    testWidgets('the switch has no idle ticker: at rest it schedules no frames', (tester) async {
-      await trackColor(tester, dark: true, at: Offset.zero);
+    testWidgets('the Moon and Sun turn and cross-fade on a tap', (tester) async {
+      final studio = await _pumpStudio(tester, const Size(1280, 800));
+      final icon = find.byKey(const ValueKey('shader-theme-icon'));
+      double mix() => ((tester.widget<CustomPaint>(icon).painter! as dynamic).toggle.value as num).toDouble();
+      expect(mix(), 0, reason: 'Dark: the Moon');
+      studio.setDarkGrading(false);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 110));
+      expect(mix(), inExclusiveRange(0.1, 0.9), reason: 'part way: both glyphs partly shown, mid-turn');
+      await _pumpFor(tester, const Duration(milliseconds: 500));
+      expect(mix(), 1, reason: 'Daylight: the Sun');
+      studio.setDarkGrading(true);
+      await _pumpFor(tester, const Duration(milliseconds: 500));
+      expect(mix(), 0);
+      expect(tester.takeException(), isNull);
+      await _teardown(tester, studio);
+    });
+
+    testWidgets('the icon has no idle ticker: at rest it schedules no frames', (tester) async {
+      await iconColor(tester, dark: true, at: Offset.zero);
       await tester.pump(const Duration(milliseconds: 300));
       expect(tester.binding.hasScheduledFrame, isFalse);
     });
 
-    testWidgets('the switch is 76x28 and a tap on it toggles; the top bar and dock follow', (tester) async {
+    testWidgets('a tap always asks for the other mode, and says which in its tooltip', (tester) async {
+      final asked = <bool>[];
+      Future<void> pump({required bool dark}) => tester.pumpWidget(
+        MaterialApp(
+          theme: buildPhotonTheme(PhotonPalette.grading),
+          home: Scaffold(body: Center(child: ShaderThemeSwitch(dark: dark, onChanged: asked.add))),
+        ),
+      );
+      await pump(dark: true);
+      expect(tester.widget<Tooltip>(find.byType(Tooltip)).message, 'Switch to Daylight Lab');
+      await tester.tap(find.byType(ShaderThemeSwitch));
+      await pump(dark: false);
+      expect(tester.widget<Tooltip>(find.byType(Tooltip)).message, 'Switch to Dark Grading');
+      await tester.tap(find.byType(ShaderThemeSwitch));
+      expect(asked, [false, true], reason: 'dark -> asks for light; light -> asks for dark');
+    });
+
+    testWidgets('a tap on the icon toggles; the top bar, the dock and the window frame follow', (tester) async {
       final calls = <MethodCall>[];
       const channel = MethodChannel('photon/window');
       tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(channel, (call) async {
@@ -3665,7 +4229,7 @@ void main() {
 
       final studio = await _pumpStudio(tester, const Size(1280, 800));
       final toggle = find.byKey(const Key('shader-theme-switch'));
-      expect(tester.getSize(toggle), const Size(76, 28));
+      expect(tester.getSize(toggle), const Size(28, 28));
       Color? barColor() => (tester.widget<AnimatedContainer>(find.byKey(const ValueKey('top-bar'))).decoration as BoxDecoration).color;
       Color? dockColor() => (tester.widget<Container>(find.byKey(const ValueKey('dock-surface'))).decoration as BoxDecoration).color;
       expect(barColor(), PhotonPalette.grading.substrate);
@@ -3677,8 +4241,8 @@ void main() {
       expect(studio.darkGrading, isFalse);
       expect(barColor(), PhotonPalette.daylight.surface);
       expect(dockColor(), const Color(0xFFFFFFFF));
-      expect(calls.single.method, 'setDarkTheme');
-      expect(calls.single.arguments, false, reason: 'the native caption goes light too');
+      expect(calls.last.method, 'setFrameColors');
+      expect(calls.last.arguments, NativeFrame.daylight.toArguments(), reason: 'the native frame goes light too');
 
       await _tapKey(tester, const Key('shader-theme-switch'));
       await tester.pump();
@@ -3686,47 +4250,20 @@ void main() {
       expect(studio.darkGrading, isTrue);
       expect(barColor(), PhotonPalette.grading.substrate);
       expect(dockColor(), PhotonPalette.grading.dock);
-      expect(calls.last.arguments, true);
+      expect(calls.last.arguments, NativeFrame.grading.toArguments());
       expect(tester.takeException(), isNull);
       await _teardown(tester, studio);
     });
 
-    testWidgets('the DAYLIGHT and DARK GRADING labels set their mode, never toggle', (tester) async {
+    testWidgets('every tap switches, however many times: it never sets a mode by itself', (tester) async {
       final studio = await _pumpStudio(tester, const Size(1280, 800));
-      await _tapText(tester, 'DAYLIGHT');
-      await _pumpFor(tester, const Duration(milliseconds: 700));
-      expect(studio.darkGrading, isFalse);
-      await _tapText(tester, 'DAYLIGHT');
-      await _pumpFor(tester, const Duration(milliseconds: 700));
-      expect(studio.darkGrading, isFalse, reason: 'already Daylight');
-      await _tapText(tester, 'DARK GRADING');
-      await _pumpFor(tester, const Duration(milliseconds: 700));
-      expect(studio.darkGrading, isTrue);
-      await _tapText(tester, 'DARK GRADING');
-      await _pumpFor(tester, const Duration(milliseconds: 700));
-      expect(studio.darkGrading, isTrue);
-      expect(tester.takeException(), isNull);
-      await _teardown(tester, studio);
-    });
-
-    testWidgets('the thumb glides across on an overshoot spring', (tester) async {
-      final studio = await _pumpStudio(tester, const Size(1280, 800));
-      final toggle = find.byKey(const Key('shader-theme-switch'));
-      final thumb = find.byKey(const ValueKey('shader-theme-thumb'));
-      final left = tester.getTopLeft(toggle).dx;
-      double thumbX() => tester.getTopLeft(thumb).dx - left;
-
-      expect(thumbX(), closeTo(76 - 22 - 3, 0.5), reason: 'Dark: the crescent sits on the right');
-      studio.setDarkGrading(false);
-      await tester.pump();
-      var minX = thumbX();
-      for (var i = 0; i < 40; i++) {
-        await tester.pump(const Duration(milliseconds: 16));
-        minX = math.min(minX, thumbX());
+      for (var i = 0; i < 4; i++) {
+        final before = studio.darkGrading;
+        await _tapKey(tester, const Key('shader-theme-switch'));
+        await _pumpFor(tester, const Duration(milliseconds: 400));
+        expect(studio.darkGrading, !before, reason: 'tap ${i + 1}');
       }
-      await _pumpFor(tester, const Duration(milliseconds: 300));
-      expect(thumbX(), closeTo(3, 0.5), reason: 'Daylight: the sun sits on the left');
-      expect(minX, lessThan(2.5), reason: 'easeOutBack overshoots past the end stop');
+      expect(studio.darkGrading, isTrue);
       expect(tester.takeException(), isNull);
       await _teardown(tester, studio);
     });
@@ -4211,26 +4748,32 @@ void main() {
       }
       expect(inDeck('KERR_PHOTON_RING'), findsNothing, reason: 'the fifth print is not in the visible four');
 
-      // Tilts -3.5, +2.8, -1.8 degrees; offsets 8, 16, 24; scales .95, .90, .85.
-      List<Matrix4> poseOf(String name) {
+      // A 3D fan, one perspective transform per print: Z tilts -4.2, +3.2,
+      // -2.2 degrees; offsets 14, 28, 40 px; scales .93, .86, .79; and a pitch
+      // that leans the pile back, growing with depth.
+      Matrix4 poseOf(String name) {
         final slot = find.byKey(ValueKey('deck-slot-${name.toLowerCase()}'));
-        return tester.widgetList<Transform>(find.descendant(of: slot, matching: find.byType(Transform))).map((t) => t.transform).take(3).toList();
+        return tester.widgetList<Transform>(find.descendant(of: slot, matching: find.byType(Transform))).first.transform;
       }
 
       final expected = {
-        'gold_atelier_bsdf': (-3.5, 8.0, 0.95),
-        'volumetric_prism': (2.8, 16.0, 0.90),
-        'acrylic_lens_array': (-1.8, 24.0, 0.85),
+        'gold_atelier_bsdf': (-4.2, 14.0, 0.93, 0.05),
+        'volumetric_prism': (3.2, 28.0, 0.86, 0.08),
+        'acrylic_lens_array': (-2.2, 40.0, 0.79, 0.11),
       };
       for (final entry in expected.entries) {
-        final slot = find.byKey(ValueKey('deck-slot-${entry.key}'));
-        final transforms = tester.widgetList<Transform>(find.descendant(of: slot, matching: find.byType(Transform))).take(3).map((t) => t.transform).toList();
-        // Outermost first: translate (dy), rotate, scale.
-        expect(transforms[0].getTranslation().y, closeTo(entry.value.$2, 0.01), reason: entry.key);
-        expect(math.atan2(transforms[1].entry(1, 0), transforms[1].entry(0, 0)) * 180 / math.pi, closeTo(entry.value.$1, 0.01), reason: entry.key);
-        expect(transforms[2].entry(0, 0), closeTo(entry.value.$3, 0.001), reason: entry.key);
+        final m = poseOf(entry.key);
+        final (tilt, dy, scale, pitch) = entry.value;
+        expect(m.entry(3, 2), closeTo(0.0015, 1e-5), reason: '${entry.key}: real perspective (0.0015, a hair less once pitched)');
+        expect(m.getTranslation().y, closeTo(dy, 0.01), reason: entry.key);
+        // The upper-left 2x2 holds rotateX(pitch) * rotateZ(tilt) * scale.
+        final e10 = m.entry(1, 0) / math.cos(pitch);
+        expect(math.atan2(e10, m.entry(0, 0)) * 180 / math.pi, closeTo(tilt, 0.01), reason: entry.key);
+        expect(math.sqrt(m.entry(0, 0) * m.entry(0, 0) + e10 * e10), closeTo(scale, 0.001), reason: entry.key);
+        expect(m.entry(2, 0), closeTo(math.sin(pitch) * math.sin(tilt * math.pi / 180) * scale, 1e-6), reason: '${entry.key}: pitched about X');
       }
-      expect(poseOf('caustic_study_04').first.getTranslation().y, 0);
+      expect(poseOf('caustic_study_04').getTranslation().y, 0);
+      expect(poseOf('caustic_study_04').entry(0, 0), closeTo(1, 1e-9));
       expect(studio.activeProjectId, 'caustic_study_04');
       expect(tester.takeException(), isNull);
       await _teardown(tester, studio);
@@ -4287,17 +4830,21 @@ void main() {
       await gesture.moveBy(const Offset(10, 0));
       await _pumpFor(tester, const Duration(milliseconds: 400));
 
-      final transforms = tester.widgetList<Transform>(find.ancestor(of: top, matching: find.byType(Transform))).take(2).toList();
-      final angle = math.atan2(transforms[0].transform.entry(1, 0), transforms[0].transform.entry(0, 0));
-      final dx = transforms[1].transform.getTranslation().x;
+      // One perspective transform carries the whole drag: translate, then
+      // bank (Z), yaw (Y) and pitch (X) with the motion.
+      final m = tester.widgetList<Transform>(find.ancestor(of: top, matching: find.byType(Transform))).first.transform;
+      final dx = m.getTranslation().x;
       expect(dx, greaterThan(20));
-      expect(angle, closeTo(dx * 0.0015, 1e-4), reason: 'tilt follows horizontal motion');
+      expect(m.entry(3, 2), closeTo(0.0015, 1e-5), reason: 'in perspective');
+      expect(math.asin(m.entry(1, 0)), closeTo(dx * 0.0018, 1e-4), reason: 'bank follows horizontal motion: rotateZ(dx * 0.0018)');
+      expect(math.asin(m.entry(0, 2)), closeTo(dx * 0.0014, 1e-4), reason: 'yaw follows it too: rotateY(dx * 0.0014)');
+      expect(m.getTranslation().y.abs(), lessThan(1e-9));
 
       await gesture.up();
       await _pumpFor(tester, const Duration(milliseconds: 800));
       expect(studio.activeProjectId, 'caustic_study_04', reason: 'under the throw threshold');
-      final settled = tester.widgetList<Transform>(find.ancestor(of: top, matching: find.byType(Transform))).take(2).toList();
-      expect(settled[1].transform.getTranslation().x.abs(), lessThan(0.5), reason: 'sprung back');
+      final settled = tester.widgetList<Transform>(find.ancestor(of: top, matching: find.byType(Transform))).first.transform;
+      expect(settled.getTranslation().x.abs(), lessThan(0.5), reason: 'sprung back');
       expect(tester.takeException(), isNull);
       await _teardown(tester, studio);
     });
@@ -4348,13 +4895,104 @@ void main() {
       await _teardown(tester, studio);
     });
 
-    testWidgets('a tap on the top card loads it, and a press-and-hold drag drops it on the viewport', (tester) async {
+    testWidgets('a tap on the top card opens that project full screen', (tester) async {
       final studio = await openDeck(tester);
+      expect(studio.deckView, isTrue);
+      expect(studio.maximizedPanel, isNull);
       studio.toast.value = null;
       await tester.tap(top);
-      await _pumpFor(tester, const Duration(milliseconds: 400));
+      await _pumpFor(tester, const Duration(milliseconds: 500));
+      expect(studio.activeProjectId, 'caustic_study_04');
       expect(studio.toast.value, 'PROJECT LOADED · CAUSTIC_STUDY_04');
+      expect(studio.deckView, isFalse, reason: 'the deck closes');
+      expect(studio.maximizedPanel, 'viewport', reason: 'and the viewport takes the whole window');
+      expect(top, findsNothing);
+      expect(find.text('SCENE_VIEWPORT.rt'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+      await _teardown(tester, studio);
+    });
 
+    testWidgets('the top print says how to use it, and only the top one', (tester) async {
+      final studio = await openDeck(tester);
+      final hint = find.byKey(const Key('deck-open-hint'));
+      expect(hint, findsOneWidget);
+      expect(find.text('TAP TO OPEN FULLSCREEN · SWIPE TO CYCLE'), findsOneWidget);
+      expect(tester.getRect(hint).overlaps(tester.getRect(top)), isTrue, reason: 'on the print itself');
+      expect(tester.takeException(), isNull);
+      await _teardown(tester, studio);
+    });
+
+    testWidgets('swiping throws the top print in an arc and the next surfaces with a spring pop', (tester) async {
+      final studio = await openDeck(tester);
+      final gold = find.byKey(const ValueKey('deck-slot-gold_atelier_bsdf'));
+      double goldScale() =>
+          tester.widgetList<Transform>(find.descendant(of: gold, matching: find.byType(Transform))).first.transform.entry(0, 0).abs();
+      expect(goldScale(), closeTo(0.93, 0.01), reason: 'waiting at depth 1');
+
+      // While it is dragged the print below climbs toward the front: lift = drag / 110.
+      final gesture = await tester.startGesture(tester.getCenter(top));
+      // The first stretch is the pan slop; the drag counts from where it wins.
+      await gesture.moveBy(const Offset(40, 0));
+      await tester.pump(const Duration(milliseconds: 60));
+      await gesture.moveBy(const Offset(40, 0));
+      await gesture.moveBy(const Offset(40, 0));
+      await _pumpFor(tester, const Duration(milliseconds: 250));
+      expect(goldScale(), greaterThan(0.95), reason: 'rising toward scale 1.0 with the drag');
+      expect(goldScale(), lessThan(1.0));
+      await gesture.up();
+      await _pumpFor(tester, const Duration(milliseconds: 900));
+      expect(studio.activeProjectId, 'caustic_study_04', reason: 'under the throw threshold: it springs home');
+      expect(goldScale(), closeTo(0.93, 0.01), reason: 'and the print below drops back');
+
+      // NEXT throws it with nothing dragged first, so the next project has
+      // the whole climb to make: it surfaces to the front with an overshoot.
+      await _tapKey(tester, const Key('deck-next-btn'));
+      await tester.pump();
+      expect(studio.activeProjectId, 'gold_atelier_bsdf');
+      var peak = 0.0;
+      for (var i = 0; i < 30; i++) {
+        await tester.pump(const Duration(milliseconds: 16));
+        peak = math.max(peak, goldScale());
+      }
+      expect(peak, greaterThan(1.001), reason: 'easeOutBack pops past full size');
+      await _pumpFor(tester, const Duration(milliseconds: 800));
+      expect(goldScale(), closeTo(1, 0.001), reason: 'and settles on top');
+      final arrived = tester.widgetList<Transform>(find.ancestor(of: top, matching: find.byType(Transform))).first.transform;
+      expect(arrived.getTranslation().x.abs(), lessThan(0.5), reason: 'in the pile, not where the last print was let go');
+      expect(arrived.getTranslation().y.abs(), lessThan(0.5));
+      expect(counter(tester), '02 / 05');
+      expect(tester.takeException(), isNull);
+      await _teardown(tester, studio);
+    });
+
+    testWidgets('a thrown print flies on a lifted, yawing arc and tucks behind the pile', (tester) async {
+      final studio = await openDeck(tester);
+      await tester.fling(top, const Offset(320, 0), 2200);
+      await tester.pump();
+      final flier = find.byKey(const ValueKey('deck-flier'));
+      var highest = 0.0, yaw = 0.0, farthest = 0.0, perspective = 0.0;
+      for (var i = 0; i < 40 && flier.evaluate().isNotEmpty; i++) {
+        await tester.pump(const Duration(milliseconds: 16));
+        if (flier.evaluate().isEmpty) break;
+        final m = tester.widgetList<Transform>(find.descendant(of: flier, matching: find.byType(Transform))).first.transform;
+        highest = math.min(highest, m.getTranslation().y);
+        yaw = math.max(yaw, m.entry(0, 2).abs());
+        farthest = math.max(farthest, m.getTranslation().x);
+        perspective = math.max(perspective, m.entry(3, 2));
+      }
+      expect(perspective, greaterThan(0.001), reason: '3D: a perspective divide');
+      expect(farthest, greaterThan(100), reason: 'off to the right');
+      expect(highest, lessThan(-5), reason: 'lifted on the arc');
+      expect(yaw, greaterThan(0.05), reason: 'yawing away: rotateY');
+      await _pumpFor(tester, const Duration(milliseconds: 900));
+      expect(flier, findsNothing, reason: 'tucked back');
+      expect(counter(tester), '02 / 05');
+      expect(tester.takeException(), isNull);
+      await _teardown(tester, studio);
+    });
+
+    testWidgets('a press-and-hold drag still drops a print on the viewport', (tester) async {
+      final studio = await openDeck(tester);
       studio.toast.value = null;
       final gesture = await tester.startGesture(tester.getCenter(top));
       await _pumpFor(tester, const Duration(milliseconds: 700));
@@ -4384,9 +5022,9 @@ void main() {
       final studio = await openDeck(tester);
       // Only the lower edge of the second print shows below the top one.
       final peek = find.byKey(const ValueKey('deck-peek-gold_atelier_bsdf'));
-      // (The slot is scaled to 0.95 about its centre, so its bottom edge is
-      // 0.475 of its height below the centre.)
-      final edge = tester.getCenter(peek) + Offset(0, tester.getSize(peek).height * 0.475 - 1.5);
+      // (The slot is a pitched, tilted 3D pose, so ask for where its bottom
+      // corners really are on screen and tap just above their midpoint.)
+      final edge = Offset.lerp(tester.getBottomLeft(peek), tester.getBottomRight(peek), 0.5)! - const Offset(0, 1);
       await tester.tapAt(edge);
       await _pumpFor(tester, const Duration(milliseconds: 500));
       expect(studio.activeProjectId, 'gold_atelier_bsdf');
@@ -4403,7 +5041,7 @@ void main() {
       await tester.pump(const Duration(milliseconds: 300));
       double dx() => tester
           .widgetList<Transform>(find.ancestor(of: top, matching: find.byType(Transform)))
-          .elementAt(1)
+          .first
           .transform
           .getTranslation()
           .x;
@@ -4498,6 +5136,8 @@ void main() {
     testWidgets('the live scene stops its clock under a modal and resumes after it', (tester) async {
       final studio = StudioController(autoConnect: false);
       await _pumpStudio(tester, const Size(1280, 800), controller: studio);
+      studio.setProbeVisible(true); // the ring only exists, and turns, while the probe is on
+      await tester.pump();
       ValueListenable<double> clock() => tester
           .widgetList<CustomPaint>(find.byType(CustomPaint))
           .map((p) => p.painter)
@@ -4649,7 +5289,7 @@ void main() {
 
     testWidgets('the theme switch animates only while it moves, in 220ms', (tester) async {
       expect(ShaderThemeSwitch.duration, const Duration(milliseconds: 220));
-      expect([ShaderThemeSwitch.width, ShaderThemeSwitch.height, ShaderThemeSwitch.thumb], [76, 28, 22]);
+      expect([ShaderThemeSwitch.width, ShaderThemeSwitch.height], [28, 28]);
       // On its own: the rest of the studio has pips that legitimately pulse.
       final dark = ValueNotifier<bool>(true);
       addTearDown(dark.dispose);
@@ -4683,18 +5323,22 @@ void main() {
       expect(tester.binding.hasScheduledFrame, isFalse);
     });
 
-    test('the app opens on the viewport and the list, not the deck', () {
+    test('the app opens with the project stack deck up; a bare controller still starts on the list', () {
       final source = File('lib/main.dart').readAsStringSync();
-      expect(source.contains('startInDeckView: true'), isFalse);
+      expect(source, contains('startInDeckView: true'));
       expect(source, contains('themeAnimationDuration: Duration.zero'));
       final studio = StudioController(autoConnect: false, animateShader: false);
       addTearDown(studio.dispose);
-      expect(studio.deckView, isFalse);
+      expect(studio.deckView, isFalse, reason: 'tests and embedders choose their own');
+      final app = StudioController(autoConnect: false, animateShader: false, startInDeckView: true);
+      addTearDown(app.dispose);
+      expect(app.deckView, isTrue);
     });
+
   });
 
   group('Photon mark', () {
-    Future<ByteData> render(WidgetTester tester, {required bool dark, double size = 200}) async {
+    Future<ByteData> render(WidgetTester tester, {double size = 200}) async {
       final key = GlobalKey();
       await tester.pumpWidget(
         Directionality(
@@ -4702,7 +5346,7 @@ void main() {
           child: Center(
             child: RepaintBoundary(
               key: key,
-              child: SizedBox.square(dimension: size, child: PhotonLogoMark(size: size, isDark: dark)),
+              child: SizedBox.square(dimension: size, child: PhotonLogoMark(size: size)),
             ),
           ),
         ),
@@ -4710,94 +5354,159 @@ void main() {
       return _capture(tester, key);
     }
 
-    testWidgets('draws at both studio sizes in both themes without fuss', (tester) async {
-      for (final size in [22.0, 40.0]) {
-        for (final dark in [true, false]) {
-          await render(tester, dark: dark, size: size);
-          expect(tester.takeException(), isNull, reason: '$size dark=$dark');
-        }
+    testWidgets('draws at the studio sizes and the icon sizes without fuss', (tester) async {
+      for (final size in [16.0, 22.0, 24.0, 40.0, 256.0]) {
+        await render(tester, size: size);
+        expect(tester.takeException(), isNull, reason: '$size');
       }
     });
 
-    testWidgets('the squircle chassis: Matte Carbon with obsidian depth, or alabaster in a bezel', (tester) async {
-      final dark = await render(tester, dark: true, size: 40);
-      final light = await render(tester, dark: false, size: 40);
-      expect(_channel(_pixel(dark, 40, 4, 20).r), lessThan(40), reason: 'dark tile at (4,20)');
-      expect(_channel(_pixel(light, 40, 4, 20).r), greaterThan(230), reason: 'light tile at (4,20)');
-      expect(_pixel(dark, 40, 0, 0).a, 0, reason: 'the corner is outside the squircle');
-      // Obsidian depth: just inside the tile, behind the mark, it is a touch
-      // lighter than the flat Matte Carbon at the rim.
-      expect(_channel(_pixel(dark, 40, 20, 3).r), lessThanOrEqualTo(40));
-      // The daylight bezel: a hairline darker than the alabaster just inside it.
-      final rim = _pixel(light, 40, 1, 20);
-      expect(_channel(rim.r), lessThan(240), reason: 'the 1px bezel');
-    });
-
-    testWidgets('it carries the whole spectrum: ring, prism wedge and starburst', (tester) async {
-      final data = await render(tester, dark: true);
-      var cyan = 0, rose = 0, violet = 0, magenta = 0;
-      for (var y = 0; y < 200; y++) {
-        for (var x = 0; x < 200; x++) {
-          final p = _pixel(data, 200, x, y);
-          final r = _channel(p.r), g = _channel(p.g), b = _channel(p.b);
-          if (g > 150 && b > 170 && r < 120) cyan++;
-          if (r > 200 && g < 110 && b > 60) rose++;
-          if (b > 150 && r > 90 && r < 200 && g < 90) violet++;
-          if (r > 180 && b > 180 && g > 80 && g < 190) magenta++;
-        }
+    test('the mark takes no theme input at all', () {
+      const painter = PhotonLogoPainter();
+      expect(painter.shouldRepaint(const PhotonLogoPainter()), isFalse);
+      final source = File('lib/widgets/photon_primitives.dart').readAsStringSync();
+      final start = source.indexOf('class PhotonLogoMark');
+      final end = source.indexOf('/// Double-tap detection');
+      final logo = source.substring(start, end);
+      for (final themed in ['isDark', 'Theme.of', 'brightness', 'context.photon']) {
+        expect(logo.contains(themed), isFalse, reason: 'the logo reads no $themed');
       }
-      expect(cyan, greaterThan(5), reason: 'cyan');
-      expect(rose, greaterThan(5), reason: 'caustic rose');
-      expect(violet, greaterThan(5), reason: 'spectral violet');
-      expect(magenta, greaterThan(5), reason: 'magenta');
     });
 
-    testWidgets('the ring is razor thin at the upper left and fat on the Doppler-beamed lower right', (tester) async {
-      final data = await render(tester, dark: true);
-      int saturated(int x0, int x1, int y0, int y1) {
-        var n = 0;
-        for (var y = y0; y < y1; y++) {
-          for (var x = x0; x < x1; x++) {
-            final p = _pixel(data, 200, x, y);
-            final hi = math.max(_channel(p.r), math.max(_channel(p.g), _channel(p.b)));
-            final lo = math.min(_channel(p.r), math.min(_channel(p.g), _channel(p.b)));
-            if (hi - lo > 90) n++;
+    testWidgets('the squircle tile is always the Lusion void with a corner clear', (tester) async {
+      final d = await render(tester, size: 40);
+      expect(_channel(_pixel(d, 40, 4, 20).r), lessThan(40), reason: 'tile at (4,20)');
+      expect(_pixel(d, 40, 0, 0).a, 0, reason: 'the corner is outside the squircle');
+      final rim = _pixel(d, 40, 4, 20);
+      expect([_channel(rim.r), _channel(rim.g), _channel(rim.b)], everyElement(lessThan(40)));
+      expect(_channel(rim.b), greaterThanOrEqualTo(_channel(rim.r)), reason: 'a cool blue-black, not grey');
+    });
+
+    bool near(Color c, int rgb, int tol) =>
+        (_channel(c.r) - ((rgb >> 16) & 0xFF)).abs() <= tol &&
+        (_channel(c.g) - ((rgb >> 8) & 0xFF)).abs() <= tol &&
+        (_channel(c.b) - (rgb & 0xFF)).abs() <= tol;
+
+    testWidgets('light through a prism: a white beam in, a glass-blue triangle, cyan, lime and coral out', (tester) async {
+      final d = await render(tester);
+      Color at(int x, int y) => _pixel(d, 200, x, y);
+      // The beam entering from the left, in off-white (a 12px stroke).
+      expect(near(at(47, 112), 0xF0F1FA, 8), isTrue, reason: 'the beam: ${at(47, 112)}');
+      // The prism: a thick off-white edge along its base, glass blue inside.
+      expect(near(at(100, 140), 0xF0F1FA, 8), isTrue, reason: 'the prism\'s base edge: ${at(100, 140)}');
+      final glass = at(100, 115);
+      expect(_channel(glass.b), greaterThan(150), reason: 'glass blue: $glass');
+      expect(_channel(glass.b), greaterThan(_channel(glass.r) + 60));
+      // The spectrum leaving the right face, one bold ray each.
+      expect(near(at(153, 88), 0x22D3EE, 14), isTrue, reason: 'cyan: ${at(153, 88)}');
+      expect(near(at(155, 106), 0xC1FF00, 14), isTrue, reason: 'lime: ${at(155, 106)}');
+      expect(near(at(153, 124), 0xFF4C41, 14), isTrue, reason: 'coral: ${at(153, 124)}');
+      // And the old P is gone: inside the prism there is glass, not an off-white stem.
+      expect(_channel(at(95, 100).r), lessThan(220));
+    });
+
+    testWidgets('no hairlines: the prism and a ray are solid at 16, 22, 40 and 256px', (tester) async {
+      for (final size in [16, 22, 40, 256]) {
+        final d = await render(tester, size: size.toDouble());
+        final x = (0.5 * size).round();
+        final base = (0.70 * size).floor();
+        var edge = 0;
+        for (var y = base - 1; y <= base + 1; y++) {
+          edge = math.max(edge, _channel(_pixel(d, size, x, y).r));
+        }
+        expect(edge, greaterThan(150), reason: '$size px: the prism\'s base edge is a solid row');
+        // The coral ray: some pixel in its area is clearly coral.
+        var coral = false;
+        for (var yy = (0.58 * size).floor(); yy <= (0.76 * size).ceil() && !coral; yy++) {
+          for (var xx = (0.70 * size).floor(); xx <= (0.95 * size).ceil(); xx++) {
+            final p = _pixel(d, size, xx, yy);
+            if (_channel(p.r) > 170 && _channel(p.g) < 120 && _channel(p.b) < 110) {
+              coral = true;
+              break;
+            }
           }
         }
-        return n;
+        expect(coral, isTrue, reason: '$size px: the coral ray');
+        expect(tester.takeException(), isNull);
       }
-
-      final upperLeft = saturated(20, 100, 20, 100);
-      final lowerRight = saturated(100, 180, 100, 180);
-      expect(upperLeft, greaterThan(0), reason: 'the thin side is still drawn');
-      expect(lowerRight, greaterThan(upperLeft * 1.8), reason: 'thicker, and the spectral wedge leaves that way');
     });
 
-    testWidgets('a four-point starburst marks the nexus, longer across than up', (tester) async {
-      // Bright run outward along an axis, starting clear of the 5.6px carbon
-      // dot at the heart of the star (which sits at the tile's centre).
-      int run(ByteData data, Offset dir) {
-        var n = 0;
-        for (var i = 8; i < 60; i++) {
-          final p = _pixel(data, 200, (100 + dir.dx * i).round(), (100 + dir.dy * i).round());
-          if (_channel(p.r) + _channel(p.g) + _channel(p.b) < 3 * 200) break;
-          n++;
-        }
-        return n;
+    test('the old clutter is gone: no P, ring, starburst or wedge in the painter', () {
+      final source = File('lib/widgets/photon_primitives.dart').readAsStringSync();
+      for (final gone in ['_star(', '_hit(', 'wedge', 'fanTop', 'collimated', 'Doppler', '_ringStart', 'bowl', 'final stem']) {
+        expect(source.contains(gone), isFalse, reason: gone);
       }
+    });
 
-      final dark = await render(tester, dark: true);
-      final across = run(dark, const Offset(1, 0));
-      final up = run(dark, const Offset(0, -1));
-      final left = run(dark, const Offset(-1, 0));
-      expect(across, greaterThan(up), reason: 'anisotropic: the horizontal arms are longer');
-      expect(left, greaterThan(up));
-      expect(up, greaterThan(3), reason: 'the vertical arms are there');
+    test('every place the mark appears uses this one widget', () {
+      for (final f in ['launch_hero_portal.dart', 'top_telemetry_bar.dart', 'command_dock.dart']) {
+        expect(File('lib/widgets/$f').readAsStringSync(), contains('PhotonLogoMark('), reason: f);
+      }
+    });
+  });
 
-      // In Daylight the starburst is carbon ink on the alabaster tile.
-      final light = await render(tester, dark: false);
-      final p = _pixel(light, 200, 100, 100 - 12);
-      expect(_channel(p.r), lessThan(90), reason: 'carbon star on alabaster');
+  group('app icon', () {
+    final file = File('windows/runner/resources/app_icon.ico');
+
+    test('is a PNG-compressed ICO with 16, 32, 48 and 256px frames', () {
+      final bytes = file.readAsBytesSync();
+      final h = ByteData.sublistView(bytes);
+      expect([h.getUint16(0, Endian.little), h.getUint16(2, Endian.little)], [0, 1], reason: 'reserved, type = icon');
+      final count = h.getUint16(4, Endian.little);
+      expect(count, 4);
+      final sizes = <int>[];
+      for (var i = 0; i < count; i++) {
+        final e = 6 + 16 * i;
+        final w = bytes[e] == 0 ? 256 : bytes[e];
+        final ht = bytes[e + 1] == 0 ? 256 : bytes[e + 1];
+        expect(w, ht);
+        sizes.add(w);
+        expect(h.getUint16(e + 6, Endian.little), 32, reason: '32 bits per pixel');
+        final length = h.getUint32(e + 8, Endian.little), offset = h.getUint32(e + 12, Endian.little);
+        expect(offset + length, lessThanOrEqualTo(bytes.length));
+        expect(bytes.sublist(offset, offset + 8), [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A], reason: 'a PNG at $w');
+        final png = ByteData.sublistView(bytes, offset);
+        expect([png.getUint32(16), png.getUint32(20)], [w, w], reason: 'the PNG is $w x $w');
+      }
+      expect(sizes, [16, 32, 48, 256]);
+    });
+
+    testWidgets('its 256px frame is exactly the in-app PhotonLogoMark drawing', (tester) async {
+      final bytes = file.readAsBytesSync();
+      final h = ByteData.sublistView(bytes);
+      final e = 6 + 16 * 3;
+      final png = Uint8List.sublistView(bytes, h.getUint32(e + 12, Endian.little), h.getUint32(e + 12, Endian.little) + h.getUint32(e + 8, Endian.little));
+      final result = await tester.runAsync(() async {
+        final codec = await ui.instantiateImageCodec(png);
+        final decoded = (await codec.getNextFrame()).image;
+        final fromIcon = (await decoded.toByteData(format: ui.ImageByteFormat.rawRgba))!;
+        final recorder = ui.PictureRecorder();
+        const PhotonLogoPainter().paint(Canvas(recorder), const Size.square(256));
+        final drawn = await recorder.endRecording().toImage(256, 256);
+        final fromPainter = (await drawn.toByteData(format: ui.ImageByteFormat.rawRgba))!;
+        return (fromIcon.buffer.asUint8List(), fromPainter.buffer.asUint8List());
+      });
+      final (icon, painter) = result!;
+      expect(icon.length, painter.length);
+      var differing = 0;
+      for (var i = 0; i < icon.length; i++) {
+        if ((icon[i] - painter[i]).abs() > 2) differing++;
+      }
+      expect(differing, lessThan(icon.length ~/ 200), reason: 'the icon is the app mark, rasterised');
+      // And it is the new mark: the transparent corner, the white beam, the cyan
+      // ray leaving the prism (the same points as the 200px drawing, times 1.28).
+      int px(int x, int y, int channel) => icon[(y * 256 + x) * 4 + channel];
+      expect(px(0, 0, 3), 0, reason: 'a squircle with transparent corners');
+      expect(px(60, 143, 0), greaterThan(220), reason: 'the off-white beam');
+      expect(px(196, 113, 0), lessThan(120), reason: 'the cyan ray');
+      expect(px(196, 113, 1), greaterThan(180));
+      expect(px(196, 113, 2), greaterThan(200));
+      // Not the old P: glass, not an off-white stem, inside the prism.
+      expect(px(122, 128, 0), lessThan(220));
+    });
+
+    test('the generator that writes it lives in tool/', () {
+      expect(File('tool/gen_app_icon_test.dart').readAsStringSync(), contains('PhotonLogoPainter'));
     });
   });
 
@@ -5239,7 +5948,7 @@ void main() {
       expect([lite.defaultSpp, lite.defaultBounces, lite.defaultIntegrator], [64, 4, IntegratorMode.unidirectional]);
       expect([quick.defaultSpp, quick.defaultBounces, quick.defaultIntegrator], [256, 12, IntegratorMode.restir]);
       expect([pro.defaultSpp, pro.defaultBounces, pro.defaultIntegrator], [1024, 24, IntegratorMode.sppm]);
-      expect([lite.accent, quick.accent, pro.accent], [const Color(0xFF22D3EE), const Color(0xFF8A2BE2), const Color(0xFFFF2D78)]);
+      expect([lite.accent, quick.accent, pro.accent], [const Color(0xFF22D3EE), const Color(0xFF1A2FFB), const Color(0xFFFF4C41)]);
       expect([lite.id, quick.id, pro.id], ['lite', 'quick', 'pro'], reason: 'the stable id the enum name shadows');
       expect(PhotonModelTier.modelId, 'photon_lumen_1');
     });
@@ -5420,9 +6129,11 @@ void main() {
   group('optical probe', () {
     final pill = find.byKey(const Key('hud-wavelength-pill'));
 
-    test('the probe is shown until it is hidden', () {
+    test('the probe is off by default, and on only when asked for', () {
       final s = StudioController(autoConnect: false, animateShader: false);
       addTearDown(s.dispose);
+      expect(s.probeVisible, isFalse);
+      s.setProbeVisible(true);
       expect(s.probeVisible, isTrue);
       s.setProbeVisible(false);
       expect(s.probeVisible, isFalse);
@@ -5434,10 +6145,17 @@ void main() {
       expect(heard, 0, reason: 'no change, no notification');
     });
 
-    testWidgets('the PROBE toggle sits with the other tools and hides the green circle', (tester) async {
+    testWidgets('a fresh studio draws no probe: no ring, no readout, nothing spinning for it', (tester) async {
       final studio = await _pumpStudio(tester, const Size(1280, 800));
-      expect(pill, findsOneWidget);
-      expect(_probeRing, findsOneWidget, reason: 'the ring');
+      expect(studio.probeVisible, isFalse);
+      expect(pill, findsNothing);
+      expect(_probeRing, findsNothing);
+      expect(find.text('PROBE'), findsOneWidget, reason: 'the tool to turn it on is there');
+      await _teardown(tester, studio);
+    });
+
+    testWidgets('the PROBE toggle sits with the other tools and shows, then hides, the green circle', (tester) async {
+      final studio = await _pumpStudio(tester, const Size(1280, 800));
       for (final label in ['A/B WIPE', 'LOUPE', 'FALSE COLOR', 'LIVE SHADER', 'BVH / RAYS', 'PROBE']) {
         expect(find.text(label), findsOneWidget, reason: label);
       }
@@ -5448,20 +6166,23 @@ void main() {
 
       await _tapKey(tester, const Key('toggle-focus-probe'));
       await tester.pump();
-      expect(studio.probeVisible, isFalse);
-      expect(pill, findsNothing);
-      expect(_probeRing, findsNothing);
+      expect(studio.probeVisible, isTrue);
+      expect(pill, findsOneWidget);
+      expect(_probeRing, findsOneWidget, reason: 'the ring');
 
       await _tapKey(tester, const Key('toggle-focus-probe'));
       await tester.pump();
-      expect(studio.probeVisible, isTrue);
-      expect(pill, findsOneWidget);
+      expect(studio.probeVisible, isFalse);
+      expect(pill, findsNothing);
+      expect(_probeRing, findsNothing);
       expect(tester.takeException(), isNull);
       await _teardown(tester, studio);
     });
 
     testWidgets('the × on the readout removes it at once, with a toast', (tester) async {
       final studio = await _pumpStudio(tester, const Size(1280, 800));
+      studio.setProbeVisible(true);
+      await tester.pump();
       expect(find.descendant(of: pill, matching: find.byKey(const Key('dismiss-probe-crosshair'))), findsOneWidget);
       await tester.tap(find.byKey(const Key('dismiss-probe-crosshair')));
       await tester.pump();
@@ -5474,6 +6195,8 @@ void main() {
 
     testWidgets('tapping the readout still steps the wavelength; the × does not', (tester) async {
       final studio = await _pumpStudio(tester, const Size(1280, 800));
+      studio.setProbeVisible(true);
+      await tester.pump();
       final nm = studio.wavelengthNm;
       await tester.tapAt(tester.getTopLeft(pill) + const Offset(10, 8));
       await tester.pump();
@@ -5490,13 +6213,16 @@ void main() {
       expect(find.text('Toggle Optical Focus Probe'), findsOneWidget);
       await _tapKey(tester, const Key('palette-action-probe'));
       await tester.pump();
-      expect(studio.probeVisible, isFalse);
+      expect(studio.probeVisible, isTrue);
       await _teardown(tester, studio);
     });
 
     testWidgets('a hidden probe does not spin: the ring stops with it', (tester) async {
       final studio = StudioController(autoConnect: false);
       await _pumpStudio(tester, const Size(1280, 800), controller: studio);
+      expect(_probeRing, findsNothing, reason: 'off by default: nothing is turning');
+      studio.setProbeVisible(true);
+      await tester.pump();
       double turns() => tester.widget<RotationTransition>(_probeRing).turns.value;
       final t0 = turns();
       await _pumpFor(tester, const Duration(milliseconds: 600));
@@ -5833,6 +6559,8 @@ void main() {
     testWidgets('every overlay holds the live scene and the probe ring still, and releases them on close', (tester) async {
       final studio = StudioController(autoConnect: false);
       await _pumpStudio(tester, const Size(1280, 800), controller: studio);
+      studio.setProbeVisible(true); // the ring only exists, and turns, while the probe is on
+      await tester.pump();
       ValueListenable<double> clock() => tester
           .widgetList<CustomPaint>(find.byType(CustomPaint))
           .map((p) => p.painter)
@@ -5932,6 +6660,252 @@ void main() {
         expect(tester.takeException(), isNull, reason: '$size');
         await _teardown(tester, studio);
       }
+    });
+  });
+
+  group('new project popup', () {
+    final modal = find.byKey(const Key('new-project-modal'));
+    final name = find.byKey(const Key('new-project-name'));
+    final details = find.byKey(const Key('new-project-details'));
+    final image = find.byKey(const Key('new-project-image'));
+    final note = find.byKey(const Key('new-project-note'));
+
+    Future<StudioController> openSheet(WidgetTester tester, {Size size = const Size(1280, 800)}) async {
+      final studio = await _pumpStudio(tester, size);
+      studio.setNewProjectSheetOpen(true);
+      await tester.pump();
+      return studio;
+    }
+
+    File tempImage(String fileName) {
+      final dir = Directory.systemTemp.createTempSync('photon_new_');
+      addTearDown(() => dir.deleteSync(recursive: true));
+      return File('${dir.path}${Platform.pathSeparator}$fileName')..writeAsBytesSync(_tinyPng);
+    }
+
+    String noteText(WidgetTester tester) => tester.widget<Text>(note).data!;
+
+    testWidgets('it asks for a name, details and an optional image, and starts empty', (tester) async {
+      final studio = await openSheet(tester);
+      expect(modal, findsOneWidget);
+      expect(find.text('NEW PROJECT'), findsOneWidget);
+      for (final label in ['PROJECT NAME', 'DETAILS (OPTIONAL)', 'IMAGE (OPTIONAL)', 'CREATE PROJECT', 'CANCEL', 'BROWSE...']) {
+        expect(find.text(label), findsOneWidget, reason: label);
+      }
+      for (final field in [name, details, image]) {
+        expect(tester.widget<TextField>(field).controller!.text, isEmpty, reason: 'nothing pre-filled');
+      }
+      expect(tester.widget<TextField>(name).focusNode!.hasFocus, isTrue, reason: 'ready to type the name');
+      expect(noteText(tester), contains('NO IMAGE IS ADDED UNLESS YOU CHOOSE ONE'));
+      // No picture of any kind inside the popup.
+      expect(find.descendant(of: modal, matching: find.byType(Image)), findsNothing);
+      expect(tester.getSize(modal).width, lessThanOrEqualTo(460));
+      expect(tester.takeException(), isNull);
+      await _teardown(tester, studio);
+    });
+
+    testWidgets('a project needs a name: without one nothing is created', (tester) async {
+      final studio = await openSheet(tester);
+      await tester.enterText(details, 'Just some details');
+      await _tapKey(tester, const Key('new-project-create'));
+      await tester.pump();
+      expect(noteText(tester), 'NAME YOUR PROJECT');
+      expect(studio.projects, hasLength(5));
+      expect(modal, findsOneWidget);
+
+      await tester.enterText(name, '   ');
+      await _tapKey(tester, const Key('new-project-create'));
+      await tester.pump();
+      expect(noteText(tester), 'NAME YOUR PROJECT', reason: 'spaces are not a name');
+      expect(studio.projects, hasLength(5));
+
+      await tester.enterText(name, 'A');
+      await tester.pump();
+      expect(noteText(tester), contains('STARTS BLANK'), reason: 'typing clears the complaint');
+      await _teardown(tester, studio);
+    });
+
+    testWidgets('name and details alone make a blank project: no image in the list, the viewport or the deck', (tester) async {
+      final studio = await openSheet(tester);
+      await tester.enterText(name, 'Chronos Watch');
+      await tester.enterText(details, 'A steel watch under a softbox.');
+      await _tapKey(tester, const Key('new-project-create'));
+      await tester.pump();
+
+      final p = studio.activeProject!;
+      expect(p.name, 'Chronos Watch');
+      expect(p.description, 'A steel watch under a softbox.');
+      expect(p.hasImage, isFalse);
+      expect(studio.projects.first.id, p.id);
+      expect(modal, findsNothing, reason: 'the popup closes');
+
+      // The list card: a placeholder, not somebody else's picture.
+      final card = find.byKey(ValueKey('project-${p.id}'));
+      expect(card, findsOneWidget);
+      expect(find.descendant(of: card, matching: find.byType(Image)), findsNothing);
+      expect(find.descendant(of: card, matching: find.byIcon(Icons.add_photo_alternate_outlined)), findsOneWidget);
+      expect(find.descendant(of: card, matching: find.text('A steel watch under a softbox.')), findsOneWidget);
+
+      // The viewport says so, and offers to fix it.
+      await _pumpFor(tester, const Duration(milliseconds: 300));
+      // (The A/B wipe draws the stage twice, so there are two of each.)
+      expect(find.byKey(const Key('blank-project-stage')), findsWidgets);
+      expect(find.text('NO IMAGE YET'), findsWidgets);
+      expect(tester.widget<Text>(find.byKey(const Key('blank-project-about')).first).data, 'A steel watch under a softbox.');
+      expect(find.byKey(const Key('blank-project-add-image')), findsWidgets);
+      expect(find.byType(ProceduralSceneCanvas), findsNothing, reason: 'no simulation either');
+
+      // And the deck.
+      studio.setDeckView(true);
+      await _pumpFor(tester, const Duration(milliseconds: 400));
+      final top = find.byKey(const Key('deck-top-card'));
+      expect(find.descendant(of: top, matching: find.byIcon(Icons.add_photo_alternate_outlined)), findsOneWidget);
+      expect(find.descendant(of: top, matching: find.byType(Image)), findsNothing);
+      expect(tester.takeException(), isNull);
+      await _teardown(tester, studio);
+    });
+
+    testWidgets('the image the user picks is the only image: BROWSE fills the field, CREATE loads the file', (tester) async {
+      final file = tempImage('hero shot.png');
+      final studio = await openSheet(tester);
+      studio.filePickerOverride = () async => file.path;
+      await tester.enterText(name, 'Hero');
+      await _tapKey(tester, const Key('new-project-browse'));
+      await tester.pump();
+      await tester.pump();
+      expect(tester.widget<TextField>(image).controller!.text, file.path);
+
+      await _tapKey(tester, const Key('new-project-create'));
+      await tester.pump();
+      final p = studio.activeProject!;
+      expect(p.hasImage, isTrue);
+      expect(p.localFilePath, file.path);
+      expect(p.customBytes, _tinyPng, reason: 'read from the chosen file');
+      expect(p.previewAsset, kNoPreview);
+      expect(p.sceneType, 'Local Image');
+      await _pumpFor(tester, const Duration(milliseconds: 300));
+      expect(find.byKey(const Key('blank-project-stage')), findsNothing);
+      expect(find.byWidgetPredicate((w) => w is Image && w.image is MemoryImage && identical((w.image as MemoryImage).bytes, p.customBytes)), findsWidgets);
+      expect(tester.takeException(), isNull);
+      await _teardown(tester, studio);
+    });
+
+    testWidgets('a cancelled dialog changes nothing and leaves the field to type in', (tester) async {
+      final studio = await openSheet(tester);
+      studio.filePickerOverride = () async => null;
+      await _tapKey(tester, const Key('new-project-browse'));
+      await tester.pump();
+      await tester.pump();
+      expect(noteText(tester), 'NO FILE CHOSEN \u00b7 TYPE OR PASTE A PATH OR LINK');
+      expect(tester.widget<TextField>(image).controller!.text, isEmpty);
+      expect(tester.widget<TextField>(image).focusNode!.hasFocus, isTrue);
+      await _teardown(tester, studio);
+    });
+
+    testWidgets('a typed path (quoted or not) or a link works; a bad one is reported and nothing is created', (tester) async {
+      final file = tempImage('typed.PNG');
+      final studio = await openSheet(tester);
+      await tester.enterText(name, 'Typed');
+
+      await tester.enterText(image, r'C:\nowhere\ghost.png');
+      await _tapKey(tester, const Key('new-project-create'));
+      await tester.pump();
+      expect(noteText(tester), 'IMAGE NOT FOUND \u00b7 CHECK THE PATH OR LINK');
+      expect(studio.projects, hasLength(5));
+
+      final scene = tempImage('watch.usd');
+      await tester.enterText(image, scene.path);
+      await _tapKey(tester, const Key('new-project-create'));
+      await tester.pump();
+      expect(noteText(tester), 'NOT AN IMAGE \u00b7 USE .PNG .JPG .WEBP .BMP OR .GIF');
+      expect(studio.projects, hasLength(5));
+
+      await tester.enterText(image, '"${file.path}"');
+      await tester.testTextInput.receiveAction(TextInputAction.done);
+      await tester.pump();
+      expect(studio.projects, hasLength(6), reason: 'Enter in the image field creates too');
+      expect(studio.activeProject!.localFilePath, file.path, reason: 'without the quotes');
+      expect(studio.activeProject!.customBytes, _tinyPng);
+
+      studio.setNewProjectSheetOpen(true);
+      await tester.pump();
+      await tester.enterText(name, 'Linked');
+      await tester.enterText(image, '  https://cdn.example.com/shots/one.jpg  ');
+      await _tapKey(tester, const Key('new-project-create'));
+      await tester.pump();
+      expect(studio.activeProject!.externalUrl, 'https://cdn.example.com/shots/one.jpg');
+      expect(studio.activeProject!.customBytes, isNull);
+      expect(studio.activeProject!.sceneType, 'Remote Image');
+      await _teardown(tester, studio);
+    });
+
+    testWidgets('CANCEL, the close button, Escape and a click outside all leave without creating', (tester) async {
+      final studio = await openSheet(tester);
+      await tester.enterText(name, 'Never made');
+      for (final close in [
+        () => _tapKey(tester, const Key('new-project-cancel')),
+        () => _tapKey(tester, const Key('new-project-close')),
+        () => tester.sendKeyEvent(LogicalKeyboardKey.escape),
+        () => tester.tapAt(const Offset(10, 400)),
+      ]) {
+        expect(modal, findsOneWidget);
+        await close();
+        await tester.pump();
+        expect(modal, findsNothing);
+        expect(studio.projects, hasLength(5));
+        studio.setNewProjectSheetOpen(true);
+        await tester.pump();
+      }
+      expect(tester.widget<TextField>(name).controller!.text, isEmpty, reason: 'a fresh form each time');
+      await _teardown(tester, studio);
+    });
+
+    testWidgets('CHOOSE IMAGE on the empty viewport gives that project its picture', (tester) async {
+      final file = tempImage('later.png');
+      final studio = await openSheet(tester);
+      await tester.enterText(name, 'Later');
+      await _tapKey(tester, const Key('new-project-create'));
+      await _pumpFor(tester, const Duration(milliseconds: 300));
+      expect(find.byKey(const Key('blank-project-stage')), findsWidgets);
+
+      studio.filePickerOverride = () async => file.path;
+      // (The A/B wipe's curtain and HUD sit over the stage, so press the button
+      // by its own handler rather than by pointer.)
+      tester.widget<GestureDetector>(find.byKey(const Key('blank-project-add-image')).last).onTap!();
+      for (var i = 0; i < 20 && !studio.activeProject!.hasImage; i++) {
+        await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 25)));
+      }
+      await tester.pump();
+      expect(studio.activeProject!.hasImage, isTrue);
+      expect(studio.activeProject!.customBytes, _tinyPng);
+      expect(studio.toast.value, 'IMAGE ADDED \u00b7 Later');
+      await _pumpFor(tester, const Duration(milliseconds: 300));
+      expect(find.byKey(const Key('blank-project-stage')), findsNothing);
+
+      // A file that is not an image is refused, with a reason.
+      studio.createNewProject('Second');
+      await _pumpFor(tester, const Duration(milliseconds: 300));
+      final scene = tempImage('watch.usd');
+      studio.filePickerOverride = () async => scene.path;
+      expect(await tester.runAsync(studio.chooseImageForActiveProject), isFalse);
+      expect(studio.toast.value, 'CHOOSE AN IMAGE (.PNG, .JPG, .WEBP, .BMP, .GIF)');
+      expect(studio.activeProject!.hasImage, isFalse);
+      studio.filePickerOverride = () async => null;
+      expect(await tester.runAsync(studio.chooseImageForActiveProject), isFalse);
+      expect(tester.takeException(), isNull);
+      await _teardown(tester, studio);
+    });
+
+    testWidgets('the popup fits a narrow window and a short one', (tester) async {
+      var studio = await openSheet(tester, size: const Size(390, 844));
+      expect(tester.takeException(), isNull);
+      expect(tester.getSize(modal).width, lessThanOrEqualTo(390));
+      await _teardown(tester, studio);
+      studio = await openSheet(tester, size: const Size(1000, 460));
+      expect(tester.takeException(), isNull);
+      expect(tester.getSize(modal).height, lessThanOrEqualTo(460));
+      await tester.ensureVisible(find.byKey(const Key('new-project-create')));
+      await _teardown(tester, studio);
     });
   });
 }

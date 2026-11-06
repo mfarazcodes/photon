@@ -182,7 +182,7 @@ enum PhotonModelTier {
     256,
     12,
     IntegratorMode.restir,
-    Color(0xFF8A2BE2),
+    Color(0xFF1A2FFB),
   ),
   pro(
     'PHOTON LUMEN · PRO',
@@ -193,7 +193,7 @@ enum PhotonModelTier {
     1024,
     24,
     IntegratorMode.sppm,
-    Color(0xFFFF2D78),
+    Color(0xFFFF4C41),
   );
 
   const PhotonModelTier(
@@ -234,6 +234,59 @@ enum PhotonModelTier {
   String get id => EnumName(this).name;
 }
 
+/// The colours of the native window frame (title bar and border). On Windows
+/// the runner paints them with DWM; elsewhere they are ignored.
+@immutable
+class NativeFrame {
+  const NativeFrame({required this.dark, required this.caption, required this.text, required this.border});
+
+  /// Whether the OS should draw its caption buttons for a dark title bar.
+  final bool dark;
+  final Color caption;
+  final Color text;
+  final Color border;
+
+  /// The launch film: the landing page's near-black, with the violet of the
+  /// film's prism light as a hairline.
+  static const film = NativeFrame(
+    dark: true,
+    caption: Color(0xFF0E0E10),
+    text: Color(0xFFF0F1FA),
+    border: Color(0xFF5B4A9A),
+  );
+
+  /// Dark Grading, Lusion dark.
+  static const grading = NativeFrame(
+    dark: true,
+    caption: Color(0xFF08090D),
+    text: Color(0xFFF0F1FA),
+    border: Color(0xFF262936),
+  );
+
+  /// Daylight Lab, Lusion light.
+  static const daylight = NativeFrame(
+    dark: false,
+    caption: Color(0xFFF0F1FA),
+    text: Color(0xFF14151B),
+    border: Color(0xFFD8DAE8),
+  );
+
+  /// The method-channel payload: `0xRRGGBB` integers.
+  Map<String, Object> toArguments() => {
+    'dark': dark,
+    'caption': caption.toARGB32() & 0xFFFFFF,
+    'text': text.toARGB32() & 0xFFFFFF,
+    'border': border.toARGB32() & 0xFFFFFF,
+  };
+
+  @override
+  bool operator ==(Object other) =>
+      other is NativeFrame && other.dark == dark && other.caption == caption && other.text == text && other.border == border;
+
+  @override
+  int get hashCode => Object.hash(dark, caption, text, border);
+}
+
 /// Single source of truth for the studio workspace.
 ///
 /// Low-frequency state (theme, parameters, selection) notifies as a whole.
@@ -268,6 +321,8 @@ class StudioController extends ChangeNotifier {
     }
     // Launch inside the first project, silently (no toast, no socket traffic).
     _applyProject(kDefaultProjects.first);
+    // The window frame wears the launch film's colours from the first frame.
+    _syncNativeFrame();
     this.socket.link.addListener(_onLinkChanged);
     _messageSub = this.socket.messages.listen(handleMessage);
     _ensureTicking();
@@ -310,16 +365,27 @@ class StudioController extends ChangeNotifier {
   void setDarkGrading(bool value) {
     if (_darkGrading == value) return;
     _darkGrading = value;
-    _syncNativeTheme(value);
+    _syncNativeFrame();
     notifyListeners();
   }
 
-  /// Repaints the native window caption to match the studio theme. Only the
+  /// The colours the native window frame should wear right now: the launch
+  /// film's while the landing page plays, the studio theme's once it is open.
+  NativeFrame get nativeFrame => _showLaunchPortal
+      ? NativeFrame.film
+      : (_darkGrading ? NativeFrame.grading : NativeFrame.daylight);
+
+  NativeFrame? _sentFrame;
+
+  /// Repaints the native window caption and border to [nativeFrame]. Only the
   /// Windows runner implements this; anywhere else (and in tests) the call
-  /// simply has no listener, which is fine.
-  void _syncNativeTheme(bool dark) {
+  /// simply has no listener, which is fine. Sent only when it changes.
+  void _syncNativeFrame() {
+    final frame = nativeFrame;
+    if (frame == _sentFrame) return;
+    _sentFrame = frame;
     try {
-      _windowChannel.invokeMethod<void>('setDarkTheme', dark).catchError((_) {});
+      _windowChannel.invokeMethod<void>('setFrameColors', frame.toArguments()).catchError((_) {});
     } catch (_) {
       // No platform channel available.
     }
@@ -781,30 +847,100 @@ class StudioController extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Snapshots the current studio parameters into a new draft and selects it.
-  void createNewProject([String? name]) {
+  bool _newProjectSheetOpen = false;
+
+  /// The popup that asks for a new project's name, details and (optional)
+  /// image.
+  bool get newProjectSheetOpen => _newProjectSheetOpen;
+
+  void setNewProjectSheetOpen(bool open) {
+    if (_newProjectSheetOpen == open) return;
+    if (open) _closeOverlays();
+    _newProjectSheetOpen = open;
+    notifyListeners();
+  }
+
+  /// Creates a project from the studio's current optics and selects it.
+  ///
+  /// It starts blank: nothing is borrowed from the project you were in. A
+  /// picture is there only if the user chose one: [imageBytes] (an uploaded
+  /// image), [imagePath] (a file on disk) or [imageUrl] (a direct link).
+  /// [description] is what the project is about.
+  void createNewProject([
+    String? name,
+    String description = '',
+    Uint8List? imageBytes,
+    String? imagePath,
+    String? imageUrl,
+  ]) {
     _projectSeq++;
     final trimmed = name?.trim() ?? '';
     final title = trimmed.isEmpty ? 'UNTITLED_${_projectSeq.toString().padLeft(2, '0')}' : trimmed;
     final slug = title.toLowerCase().replaceAll(RegExp(r'[^a-z0-9]+'), '_');
+    final about = description.trim();
+    final hasPicture = imageBytes != null || imagePath != null || imageUrl != null;
     final project = StudioProject(
       id: '${slug}_$_projectSeq',
       name: title,
       code: 'PRJ-${_projectSeq.toString().padLeft(2, '0')}',
-      sceneType: 'Custom Scene',
-      subtitle: '.pht · ${_integrator.solverCaption}',
+      sceneType: !hasPicture ? 'Blank Project' : (imageUrl != null ? 'Remote Image' : 'Local Image'),
+      subtitle: about.isEmpty ? '.pht · ${_integrator.solverCaption}' : about.split('\n').first,
+      description: about,
       updatedAt: 'just now',
       status: ProjectStatus.draft,
-      previewAsset: activeProject?.previewAsset ?? 'assets/images/caustic_wave.jpg',
+      previewAsset: kNoPreview,
       params: Map<String, double>.of(_params),
       integrator: _integrator,
       sceneKind: activeProject?.sceneKind ?? ProceduralSceneKind.causticWave,
-      isDynamic: _liveShaderEnabled,
+      // A new project shows what the user gave it, not a simulation they did
+      // not ask for. The LIVE SHADER pill is still there to turn one on.
+      isDynamic: false,
+      customBytes: imageBytes,
+      localFilePath: imagePath,
+      externalUrl: imageUrl,
     );
     _projects.insert(0, project);
     _activeProjectId = project.id;
+    _liveShaderEnabled = false;
+    _newProjectSheetOpen = false;
     showToast('PROJECT CREATED · $title');
     notifyListeners();
+  }
+
+  /// Gives the active project a picture: uploaded [bytes], a file at [path] or
+  /// a [url]. Used from the empty viewport of a blank project.
+  void setProjectImage({Uint8List? bytes, String? path, String? url}) {
+    final i = _projects.indexWhere((p) => p.id == _activeProjectId);
+    if (i < 0 || (bytes == null && path == null && url == null)) return;
+    _projects[i] = _projects[i].copyWith(
+      customBytes: bytes,
+      localFilePath: path,
+      externalUrl: url,
+      updatedAt: 'just now',
+    );
+    showToast('IMAGE ADDED · ${_projects[i].name}');
+    notifyListeners();
+  }
+
+  /// Asks for an image file and gives it to the active project. Returns whether
+  /// one was added.
+  Future<bool> chooseImageForActiveProject() async {
+    final path = await pickLocalFile();
+    if (path == null) return false;
+    final dot = path.lastIndexOf('.');
+    final ext = dot > 0 ? path.substring(dot + 1).toLowerCase() : '';
+    if (!imageExtensions.contains(ext)) {
+      showToast('CHOOSE AN IMAGE (.PNG, .JPG, .WEBP, .BMP, .GIF)');
+      return false;
+    }
+    try {
+      final file = File(path);
+      setProjectImage(bytes: await file.readAsBytes(), path: path);
+      return true;
+    } catch (_) {
+      showToast('COULD NOT READ · $path');
+      return false;
+    }
   }
 
   void duplicateProject(String id) {
@@ -1186,6 +1322,7 @@ class StudioController extends ChangeNotifier {
     _showLaunchPortal = true;
     _inStudioWorkspace = false;
     _closeOverlays();
+    _syncNativeFrame();
     notifyListeners();
   }
 
@@ -1195,6 +1332,7 @@ class StudioController extends ChangeNotifier {
     if (_inStudioWorkspace && !_showLaunchPortal) return;
     _showLaunchPortal = false;
     _inStudioWorkspace = true;
+    _syncNativeFrame();
     notifyListeners();
   }
 
@@ -1209,6 +1347,7 @@ class StudioController extends ChangeNotifier {
       _commandPaletteOpen ||
       _ingestSheetOpen ||
       _exportModalOpen ||
+      _newProjectSheetOpen ||
       _modelPopoverOpen;
 
   /// Opening any overlay closes the others: one at a time.
@@ -1217,6 +1356,7 @@ class StudioController extends ChangeNotifier {
     _commandPaletteOpen = false;
     _ingestSheetOpen = false;
     _exportModalOpen = false;
+    _newProjectSheetOpen = false;
     _modelPopoverOpen = false;
   }
 
@@ -1278,7 +1418,7 @@ class StudioController extends ChangeNotifier {
   void startFileUpload(String fileName, {double sizeMb = 48.5}) => _beginUpload(fileName, sizeMb);
 
   /// Image types the viewport can show as a still.
-  static const Set<String> imageExtensions = {'png', 'jpg', 'jpeg', 'webp', 'bmp', 'gif'};
+  static const Set<String> imageExtensions = kImageExtensions;
 
   // What the transfer in flight will attach to the project it creates.
   String? _pendingLocalPath;
@@ -1512,10 +1652,11 @@ class StudioController extends ChangeNotifier {
 
   // --- Optical probe ---------------------------------------------------
 
-  bool _probeVisible = true;
+  bool _probeVisible = false;
 
   /// Whether the focus probe (the ring and the wavelength readout) is drawn on
-  /// the stage.
+  /// the stage. It is off until the PROBE tool (or the palette) turns it on.
+  /// The wavelength itself is a studio setting either way.
   bool get probeVisible => _probeVisible;
 
   void setProbeVisible(bool value) {
@@ -1641,7 +1782,10 @@ class StudioController extends ChangeNotifier {
     } else if (project?.localFilePath != null && File(project!.localFilePath!).existsSync()) {
       source = await File(project.localFilePath!).readAsBytes();
     } else {
-      final data = await rootBundle.load(project?.previewAsset ?? 'assets/images/caustic_wave.jpg');
+      if (project != null && project.previewAsset.isEmpty) {
+      throw StateError('${project.name} has no image yet');
+    }
+    final data = await rootBundle.load(project?.previewAsset ?? 'assets/images/caustic_wave.jpg');
       source = data.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes);
     }
     final codec = await ui.instantiateImageCodec(source);

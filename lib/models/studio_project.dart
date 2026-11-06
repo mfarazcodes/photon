@@ -38,6 +38,12 @@ enum ProceduralSceneKind {
   soapFilmIridescence,
 }
 
+/// File extensions the viewport can show as a picture.
+const Set<String> kImageExtensions = {'png', 'jpg', 'jpeg', 'webp', 'bmp', 'gif'};
+
+/// A project with no bundled reference render: it starts blank.
+const String kNoPreview = '';
+
 /// A saved scene: optical parameters plus the integrator that renders them.
 @immutable
 class StudioProject {
@@ -57,6 +63,7 @@ class StudioProject {
     this.localFilePath,
     this.externalUrl,
     this.customBytes,
+    this.description = '',
   });
 
   /// Stable identifier; also the payload of a dragged project card.
@@ -74,8 +81,12 @@ class StudioProject {
   final String updatedAt;
   final ProjectStatus status;
 
-  /// The static reference render.
+  /// The static reference render bundled with the app, or [kNoPreview] for a
+  /// project the user started blank.
   final String previewAsset;
+
+  /// What the project is about, in the user's words (the new-project form).
+  final String description;
 
   /// Optical parameters by `OpticsParam.id`.
   final Map<String, double> params;
@@ -99,6 +110,16 @@ class StudioProject {
   /// disk again. Takes priority over [localFilePath] and [externalUrl].
   final Uint8List? customBytes;
 
+  /// Whether there is any picture to show: a bundled render, uploaded bytes, an
+  /// image file on disk or an embedded URL. A blank project has none.
+  bool get hasImage {
+    if (previewAsset.isNotEmpty || customBytes != null || externalUrl != null) return true;
+    final path = localFilePath;
+    if (path == null) return false;
+    final dot = path.lastIndexOf('.');
+    return dot > 0 && kImageExtensions.contains(path.substring(dot + 1).toLowerCase());
+  }
+
   double get ior => params['ior'] ?? 1.0;
   int get spp => (params['samples_per_pixel'] ?? 0).round();
 
@@ -118,6 +139,7 @@ class StudioProject {
     String? localFilePath,
     String? externalUrl,
     Uint8List? customBytes,
+    String? description,
   }) => StudioProject(
     id: id ?? this.id,
     name: name ?? this.name,
@@ -134,6 +156,7 @@ class StudioProject {
     localFilePath: localFilePath ?? this.localFilePath,
     externalUrl: externalUrl ?? this.externalUrl,
     customBytes: customBytes ?? this.customBytes,
+    description: description ?? this.description,
   );
 }
 

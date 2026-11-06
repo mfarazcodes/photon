@@ -8,6 +8,19 @@ import '../state/studio_controller.dart';
 import '../theme/photon_theme.dart';
 import 'photon_primitives.dart';
 
+/// Theme-derived colours for the account console: the ink follows the studio
+/// theme (off-white in Dark Grading, obsidian in Daylight) and the accent is
+/// Lusion Electric Blue (lifted in Dark Grading so it reads on the void).
+extension _ConsoleInk on BuildContext {
+  Color get ink => photon.colors.carbon;
+  Color get accent => photon.colors.violetInk;
+
+  /// A sunken well: black in the dark, a pale cool tint in the light.
+  Color sunk(double alpha) => photon.colors.isDark
+      ? Colors.black.withValues(alpha: alpha)
+      : photon.colors.surface.withValues(alpha: (alpha * 3).clamp(0.0, 1.0));
+}
+
 /// The drawer tabs under the card.
 enum ProfileTab {
   identity('IDENTITY', 'profile-tab-identity'),
@@ -20,9 +33,12 @@ enum ProfileTab {
   final String keyName;
 }
 
-/// The account console: one electric-blue architectural card that holds the
-/// whole account. An aurora light field follows the cursor (and tilts the card
-/// toward it in 3D), a conic ring turns around the avatar, and a glass curtain
+/// The account console: one architectural card that holds the whole account,
+/// in the Lusion palette of whichever studio theme is active (a void with a
+/// blue-accented hairline in Dark Grading, white-to-lavender in Daylight Lab).
+/// A soft blue aurora drifts behind it while the pointer is over the card (which
+/// tilts toward the pointer in 3D; nothing is drawn around the cursor), a conic
+/// ring turns around the avatar, and a glass curtain
 /// drawer opens under the tabs: identity, plan and quota, auth and keys with
 /// the active sessions.
 ///
@@ -36,11 +52,6 @@ class AnimatedBlueProfileCard extends StatefulWidget {
   /// Shows the close button when set.
   final VoidCallback? onClose;
 
-  static const Color navy = Color(0xFF0A192F);
-  static const Color cobalt = Color(0xFF1E3A8A);
-  static const Color electric = Color(0xFF2563EB);
-  static const Color cyan = Color(0xFF06B6D4);
-
   @override
   State<AnimatedBlueProfileCard> createState() => _AnimatedBlueProfileCardState();
 }
@@ -49,6 +60,23 @@ class _AnimatedBlueProfileCardState extends State<AnimatedBlueProfileCard> with 
   /// Pointer over the card, 0..1 in both axes; null when it is elsewhere.
   final ValueNotifier<Offset?> _pointer = ValueNotifier(null);
   late final AnimationController _aurora = AnimationController(vsync: this, duration: const Duration(seconds: 14), value: 0.25);
+
+  /// What the aurora paints from: the drift, in steps. The drift takes 14s a
+  /// lap, so drawing it 60 times a second would redraw three card-sized
+  /// gradients for no visible gain; 20 steps a second is as smooth to the eye.
+  final ValueNotifier<double> _drift = ValueNotifier(0.25);
+  static const int _driftSteps = 280;
+
+  void _onAurora() {
+    final stepped = (_aurora.value * _driftSteps).floor() / _driftSteps;
+    if (stepped != _drift.value) _drift.value = stepped;
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _aurora.addListener(_onAurora);
+  }
 
   ProfileTab _tab = ProfileTab.identity;
   bool _folded = false;
@@ -67,7 +95,9 @@ class _AnimatedBlueProfileCardState extends State<AnimatedBlueProfileCard> with 
   @override
   void dispose() {
     _pointer.dispose();
+    _aurora.removeListener(_onAurora);
     _aurora.dispose();
+    _drift.dispose();
     _name.dispose();
     _org.dispose();
     super.dispose();
@@ -107,6 +137,7 @@ class _AnimatedBlueProfileCardState extends State<AnimatedBlueProfileCard> with 
   @override
   Widget build(BuildContext context) {
     final studio = StudioScope.of(context);
+    final c = context.photon.colors;
     final a = studio.account;
     final open = !_folded || _hovering;
 
@@ -181,22 +212,30 @@ class _AnimatedBlueProfileCardState extends State<AnimatedBlueProfileCard> with 
           final box = context.findRenderObject();
           if (box is! RenderBox || !box.hasSize || box.size.isEmpty) return;
           final local = box.globalToLocal(e.position);
-          _pointer.value = Offset(
-            (local.dx / box.size.width).clamp(0.0, 1.0),
-            (local.dy / box.size.height).clamp(0.0, 1.0),
+          // Whole percents: a finer pointer would only restart the tilt for
+          // changes of a hundredth of a degree.
+          final next = Offset(
+            ((local.dx / box.size.width).clamp(0.0, 1.0) * 100).round() / 100,
+            ((local.dy / box.size.height).clamp(0.0, 1.0) * 100).round() / 100,
           );
+          if (next != _pointer.value) _pointer.value = next;
         },
         child: ValueListenableBuilder<Offset?>(
           valueListenable: _pointer,
-          // The card body is built once per state change, not per pointer move.
-          child: Container(
+          // The card body is built once per state change, not per pointer move,
+          // and sits on its own layer: tilting it re-composites a cached texture
+          // instead of re-rasterising the 40px shadow, the gradient and the text
+          // on every frame.
+          child: RepaintBoundary(
+            child: Container(
+            key: const Key('profile-card-surface'),
             decoration: BoxDecoration(
               borderRadius: BorderRadius.circular(18),
-              border: Border.all(color: AnimatedBlueProfileCard.cyan.withValues(alpha: 0.45)),
+              // A 1px hairline; Dark Grading adds the Lusion blue to it.
+              border: Border.all(color: c.isDark ? Color.alphaBlend(c.violet.withValues(alpha: 0.45), c.border) : c.border),
               boxShadow: [
-                BoxShadow(color: AnimatedBlueProfileCard.cyan.withValues(alpha: 0.22), blurRadius: 26, spreadRadius: -4),
                 BoxShadow(
-                  color: AnimatedBlueProfileCard.electric.withValues(alpha: 0.3),
+                  color: c.violet.withValues(alpha: c.isDark ? 0.22 : 0.10),
                   blurRadius: 40,
                   spreadRadius: -10,
                   offset: const Offset(0, 14),
@@ -207,32 +246,37 @@ class _AnimatedBlueProfileCardState extends State<AnimatedBlueProfileCard> with 
               borderRadius: BorderRadius.circular(17),
               child: Stack(
                 children: [
-                  // Deep cobalt-to-cyan backdrop.
-                  const Positioned.fill(
+                  // Lusion architectural surface: deep void in Dark Grading, high-key
+                  // white-to-lavender in Daylight.
+                  Positioned.fill(
                     child: DecoratedBox(
                       decoration: BoxDecoration(
                         gradient: LinearGradient(
                           begin: Alignment.topLeft,
                           end: Alignment.bottomRight,
-                          colors: [
-                            AnimatedBlueProfileCard.navy,
-                            AnimatedBlueProfileCard.cobalt,
-                            AnimatedBlueProfileCard.electric,
-                            AnimatedBlueProfileCard.cyan,
-                          ],
-                          stops: [0.0, 0.42, 0.78, 1.0],
+                          colors: c.isDark
+                              ? const [Color(0xFF0B0C10), Color(0xFF12141C), Color(0xFF171A28)]
+                              : const [Color(0xFFFFFFFF), Color(0xFFF0F1FA), Color(0xFFE4E6EF)],
                         ),
                       ),
                     ),
                   ),
                   Positioned.fill(
                     child: RepaintBoundary(
-                      child: CustomPaint(painter: _AuroraPainter(pointer: _pointer, aurora: _aurora)),
+                      child: CustomPaint(
+                        painter: _AuroraPainter(
+                          aurora: _drift,
+                          isDark: c.isDark,
+                          blue: c.violet,
+                          cyan: const Color(0xFF22D3EE),
+                        ),
+                      ),
                     ),
                   ),
                   Padding(padding: const EdgeInsets.all(PhotonSpace.md), child: content),
                 ],
               ),
+            ),
             ),
           ),
           builder: (context, p, child) {
@@ -278,9 +322,9 @@ class _StatusRow extends StatelessWidget {
           child: Container(
             padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
             decoration: BoxDecoration(
-              color: AnimatedBlueProfileCard.cyan.withValues(alpha: 0.18),
+              color: context.accent.withValues(alpha: 0.18),
               borderRadius: BorderRadius.circular(PhotonRadius.pill),
-              border: Border.all(color: AnimatedBlueProfileCard.cyan.withValues(alpha: 0.6)),
+              border: Border.all(color: context.accent.withValues(alpha: 0.6)),
             ),
             child: Row(
               mainAxisSize: MainAxisSize.min,
@@ -292,7 +336,7 @@ class _StatusRow extends StatelessWidget {
                     'VERIFIED LEAD ARCHITECT',
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
-                    style: t.text.labelCaps.copyWith(fontSize: 8, color: const Color(0xFFCFFAFE), fontWeight: FontWeight.w700),
+                    style: t.text.labelCaps.copyWith(fontSize: 8, color: context.ink, fontWeight: FontWeight.w700),
                   ),
                 ),
               ],
@@ -302,7 +346,7 @@ class _StatusRow extends StatelessWidget {
         const Spacer(),
         Text(
           account.workspaceId,
-          style: t.text.mono(size: 9.5, weight: FontWeight.w600, height: 1.2, color: Colors.white.withValues(alpha: 0.8)),
+          style: t.text.mono(size: 9.5, weight: FontWeight.w600, height: 1.2, color: context.ink.withValues(alpha: 0.8)),
         ),
         if (onClose != null) ...[
           const SizedBox(width: PhotonSpace.sm),
@@ -323,10 +367,10 @@ class _StatusRow extends StatelessWidget {
                     height: 24,
                     decoration: BoxDecoration(
                       shape: BoxShape.circle,
-                      color: Colors.white.withValues(alpha: hovered ? 0.22 : 0.1),
-                      border: Border.all(color: Colors.white.withValues(alpha: hovered ? 0.7 : 0.3)),
+                      color: context.ink.withValues(alpha: hovered ? 0.22 : 0.1),
+                      border: Border.all(color: context.ink.withValues(alpha: hovered ? 0.7 : 0.3)),
                     ),
-                    child: const Icon(Icons.close, size: 13, color: Colors.white),
+                    child: Icon(Icons.close, size: 13, color: context.ink),
                   ),
                 ),
               ),
@@ -352,15 +396,15 @@ class _StatusStrip extends StatelessWidget {
       height: 24,
       padding: const EdgeInsets.symmetric(horizontal: PhotonSpace.sm + 2),
       decoration: BoxDecoration(
-        color: Colors.black.withValues(alpha: 0.24),
+        color: context.sunk(0.24),
         borderRadius: BorderRadius.circular(PhotonRadius.pill),
-        border: Border.all(color: Colors.white.withValues(alpha: 0.1)),
+        border: Border.all(color: context.ink.withValues(alpha: 0.1)),
       ),
       child: ValueListenableBuilder<String?>(
         valueListenable: studio.toast,
         builder: (context, message, _) => Row(
           children: [
-            Pip(color: message == null ? Colors.white.withValues(alpha: 0.35) : const Color(0xFF67E8F9), size: 5),
+            Pip(color: message == null ? context.ink.withValues(alpha: 0.35) : context.accent, size: 5),
             const SizedBox(width: PhotonSpace.sm),
             Expanded(
               child: Text(
@@ -369,7 +413,7 @@ class _StatusStrip extends StatelessWidget {
                 overflow: TextOverflow.ellipsis,
                 style: t.text.labelCaps.copyWith(
                   fontSize: 8.5,
-                  color: message == null ? Colors.white.withValues(alpha: 0.5) : const Color(0xFFCFFAFE),
+                  color: message == null ? context.ink.withValues(alpha: 0.5) : context.ink,
                 ),
               ),
             ),
@@ -390,7 +434,8 @@ class _Hero extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final t = context.photon;
-    const white = Colors.white;
+    final c = t.colors;
+    final white = c.carbon;
     return Row(
       crossAxisAlignment: CrossAxisAlignment.center,
       children: [
@@ -406,16 +451,16 @@ class _Hero extends StatelessWidget {
                 child: Container(
                   width: 72,
                   height: 72,
-                  decoration: const BoxDecoration(
+                  decoration: BoxDecoration(
                     shape: BoxShape.circle,
                     gradient: SweepGradient(
                       colors: [
-                        AnimatedBlueProfileCard.cyan,
-                        AnimatedBlueProfileCard.electric,
-                        Color(0x1006B6D4),
-                        AnimatedBlueProfileCard.cyan,
+                        c.violetInk,
+                        c.violet,
+                        c.violet.withValues(alpha: 0.06),
+                        c.violetInk,
                       ],
-                      stops: [0.0, 0.35, 0.7, 1.0],
+                      stops: const [0.0, 0.35, 0.7, 1.0],
                     ),
                   ),
                 ),
@@ -426,8 +471,8 @@ class _Hero extends StatelessWidget {
                 height: 64,
                 decoration: BoxDecoration(
                   shape: BoxShape.circle,
-                  color: AnimatedBlueProfileCard.navy,
-                  border: Border.all(color: white.withValues(alpha: 0.18), width: 1.5),
+                  color: c.substrate,
+                  border: Border.all(color: c.border, width: 1.5),
                 ),
                 alignment: Alignment.center,
                 child: Text(
@@ -454,7 +499,7 @@ class _Hero extends StatelessWidget {
                 account.handle,
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
-                style: t.text.mono(size: 11, weight: FontWeight.w500, height: 1.4, color: const Color(0xFF67E8F9)),
+                style: t.text.mono(size: 11, weight: FontWeight.w500, height: 1.4, color: context.accent),
               ),
               const SizedBox(height: 3),
               Text(
@@ -490,9 +535,9 @@ class _TabBar extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.all(3),
       decoration: BoxDecoration(
-        color: Colors.black.withValues(alpha: 0.24),
+        color: context.sunk(0.24),
         borderRadius: BorderRadius.circular(PhotonRadius.pill),
-        border: Border.all(color: Colors.white.withValues(alpha: 0.12)),
+        border: Border.all(color: context.ink.withValues(alpha: 0.12)),
       ),
       child: Row(
         children: [
@@ -515,8 +560,8 @@ class _TabBar extends StatelessWidget {
                       padding: const EdgeInsets.symmetric(horizontal: 6),
                       decoration: BoxDecoration(
                         color: selected == tab
-                            ? Colors.white.withValues(alpha: 0.2)
-                            : (hovered ? Colors.white.withValues(alpha: 0.1) : Colors.transparent),
+                            ? context.ink.withValues(alpha: 0.2)
+                            : (hovered ? context.ink.withValues(alpha: 0.1) : Colors.transparent),
                         borderRadius: BorderRadius.circular(PhotonRadius.pill),
                       ),
                       child: FittedBox(
@@ -526,7 +571,7 @@ class _TabBar extends StatelessWidget {
                           maxLines: 1,
                           style: t.text.labelCaps.copyWith(
                             fontSize: 8.5,
-                            color: Colors.white.withValues(alpha: selected == tab || hovered ? 1 : 0.7),
+                            color: context.ink.withValues(alpha: selected == tab || hovered ? 1 : 0.7),
                             fontWeight: FontWeight.w700,
                           ),
                         ),
@@ -569,10 +614,13 @@ class _Drawer extends StatelessWidget {
         gradient: LinearGradient(
           begin: Alignment.topCenter,
           end: Alignment.bottomCenter,
-          colors: [Colors.white.withValues(alpha: 0.14), Colors.white.withValues(alpha: 0.06)],
+          // Dark: a frosted wash of ink; Daylight: white cards on lavender.
+          colors: context.photon.colors.isDark
+              ? [context.ink.withValues(alpha: 0.08), context.ink.withValues(alpha: 0.03)]
+              : [context.photon.colors.substrate, context.photon.colors.surface],
         ),
         borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: Colors.white.withValues(alpha: 0.16)),
+        border: Border.all(color: context.photon.colors.border),
       ),
       child: switch (tab) {
         ProfileTab.identity => _IdentityPane(
@@ -609,14 +657,14 @@ class _KeyValue extends StatelessWidget {
         children: [
           SizedBox(
             width: 56,
-            child: Text(label, style: t.text.labelCaps.copyWith(fontSize: 7.5, color: Colors.white.withValues(alpha: 0.55))),
+            child: Text(label, style: t.text.labelCaps.copyWith(fontSize: 7.5, color: context.ink.withValues(alpha: 0.55))),
           ),
           Expanded(
             child: Text(
               value,
               maxLines: 2,
               overflow: TextOverflow.ellipsis,
-              style: t.text.mono(size: 10, height: 1.4, color: Colors.white.withValues(alpha: 0.92)),
+              style: t.text.mono(size: 10, height: 1.4, color: context.ink.withValues(alpha: 0.92)),
             ),
           ),
         ],
@@ -638,7 +686,7 @@ class _SectionLabel extends StatelessWidget {
     return Row(
       children: [
         Expanded(
-          child: Text(text, style: t.text.labelCaps.copyWith(fontSize: 7.5, color: Colors.white.withValues(alpha: 0.55))),
+          child: Text(text, style: t.text.labelCaps.copyWith(fontSize: 7.5, color: context.ink.withValues(alpha: 0.55))),
         ),
         ?trailing,
       ],
@@ -661,7 +709,7 @@ class _GlassButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final t = context.photon;
-    final accent = danger ? const Color(0xFFFF7AA2) : Colors.white;
+    final accent = danger ? t.colors.rose : t.colors.carbon;
     final button = Semantics(
       button: true,
       label: tooltip ?? label,
@@ -675,7 +723,7 @@ class _GlassButton extends StatelessWidget {
             height: 24,
             padding: EdgeInsets.symmetric(horizontal: label.isEmpty ? 6 : PhotonSpace.sm + 2),
             decoration: BoxDecoration(
-              color: Colors.white.withValues(alpha: filled ? 0.26 : (hovered ? 0.18 : 0.08)),
+              color: context.ink.withValues(alpha: filled ? 0.26 : (hovered ? 0.18 : 0.08)),
               borderRadius: BorderRadius.circular(PhotonRadius.control),
               border: Border.all(color: accent.withValues(alpha: hovered || filled ? 0.8 : 0.3)),
             ),
@@ -771,7 +819,7 @@ class _ProfileField extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text(label, style: t.text.labelCaps.copyWith(fontSize: 7.5, color: Colors.white.withValues(alpha: 0.6))),
+        Text(label, style: t.text.labelCaps.copyWith(fontSize: 7.5, color: context.ink.withValues(alpha: 0.6))),
         const SizedBox(height: 3),
         SizedBox(
           height: 30,
@@ -780,16 +828,16 @@ class _ProfileField extends StatelessWidget {
             controller: controller,
             onChanged: onChanged,
             maxLines: 1,
-            cursorColor: AnimatedBlueProfileCard.cyan,
-            style: t.text.telemetryMd.copyWith(color: Colors.white),
+            cursorColor: context.accent,
+            style: t.text.telemetryMd.copyWith(color: context.ink),
             decoration: InputDecoration(
               isDense: true,
               filled: true,
-              fillColor: Colors.black.withValues(alpha: 0.28),
+              fillColor: context.sunk(0.28),
               contentPadding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
-              border: border(Colors.white.withValues(alpha: 0.25)),
-              enabledBorder: border(Colors.white.withValues(alpha: 0.25)),
-              focusedBorder: border(AnimatedBlueProfileCard.cyan),
+              border: border(context.ink.withValues(alpha: 0.25)),
+              enabledBorder: border(context.ink.withValues(alpha: 0.25)),
+              focusedBorder: border(context.accent),
             ),
           ),
         ),
@@ -839,14 +887,14 @@ class _PlanPane extends StatelessWidget {
                 key: const Key('profile-plan-summary'),
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
-                style: t.text.ui(size: 13, weight: FontWeight.w600, color: Colors.white),
+                style: t.text.ui(size: 13, weight: FontWeight.w600, color: context.ink),
               ),
             ),
             const SizedBox(width: PhotonSpace.sm),
-            Text(a.tier.price, style: t.text.mono(size: 10, height: 1.3, color: Colors.white.withValues(alpha: 0.65))),
+            Text(a.tier.price, style: t.text.mono(size: 10, height: 1.3, color: context.ink.withValues(alpha: 0.65))),
           ],
         ),
-        Text(a.tier.quota, style: t.text.mono(size: 9.5, height: 1.4, color: Colors.white.withValues(alpha: 0.6))),
+        Text(a.tier.quota, style: t.text.mono(size: 9.5, height: 1.4, color: context.ink.withValues(alpha: 0.6))),
         const SizedBox(height: PhotonSpace.sm),
         Wrap(
           spacing: PhotonSpace.xs + 2,
@@ -907,9 +955,9 @@ class _TierChip extends StatelessWidget {
             duration: const Duration(milliseconds: 140),
             padding: const EdgeInsets.symmetric(horizontal: PhotonSpace.md - 2, vertical: 5),
             decoration: BoxDecoration(
-              color: selected ? Colors.white.withValues(alpha: 0.9) : Colors.white.withValues(alpha: hovered ? 0.16 : 0.06),
+              color: selected ? context.ink.withValues(alpha: 0.9) : context.ink.withValues(alpha: hovered ? 0.16 : 0.06),
               borderRadius: BorderRadius.circular(PhotonRadius.pill),
-              border: Border.all(color: Colors.white.withValues(alpha: selected ? 1 : 0.3)),
+              border: Border.all(color: context.ink.withValues(alpha: selected ? 1 : 0.3)),
             ),
             child: Text(
               label,
@@ -917,7 +965,7 @@ class _TierChip extends StatelessWidget {
               style: t.text.labelCaps.copyWith(
                 fontSize: 8.5,
                 fontWeight: FontWeight.w700,
-                color: selected ? AnimatedBlueProfileCard.navy : Colors.white,
+                color: selected ? t.colors.onCarbon : context.ink,
               ),
             ),
           ),
@@ -928,7 +976,7 @@ class _TierChip extends StatelessWidget {
 }
 
 /// A quota: a title, the headline figure, a detail line, and an animated bar
-/// that is cyan, and rose when over.
+/// that is Lusion blue, and rose when over.
 class _QuotaBar extends StatelessWidget {
   const _QuotaBar({required this.title, required this.primary, required this.detail, required this.fraction});
 
@@ -948,13 +996,13 @@ class _QuotaBar extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Text(title, maxLines: 1, overflow: TextOverflow.ellipsis, style: t.text.labelCaps.copyWith(fontSize: 7.5, color: Colors.white.withValues(alpha: 0.55))),
+          Text(title, maxLines: 1, overflow: TextOverflow.ellipsis, style: t.text.labelCaps.copyWith(fontSize: 7.5, color: context.ink.withValues(alpha: 0.55))),
           const SizedBox(height: 2),
           Align(
             alignment: Alignment.centerLeft,
             child: FittedBox(
               fit: BoxFit.scaleDown,
-              child: Text(primary, maxLines: 1, style: t.text.mono(size: 11, weight: FontWeight.w600, height: 1.3, color: Colors.white)),
+              child: Text(primary, maxLines: 1, style: t.text.mono(size: 11, weight: FontWeight.w600, height: 1.3, color: context.ink)),
             ),
           ),
           Align(
@@ -964,7 +1012,7 @@ class _QuotaBar extends StatelessWidget {
               child: Text(
                 detail,
                 maxLines: 1,
-                style: t.text.mono(size: 9, height: 1.4, color: over ? const Color(0xFFFFA3BE) : Colors.white.withValues(alpha: 0.6)),
+                style: t.text.mono(size: 9, height: 1.4, color: over ? t.colors.rose : context.ink.withValues(alpha: 0.6)),
               ),
             ),
           ),
@@ -979,15 +1027,15 @@ class _QuotaBar extends StatelessWidget {
                 curve: Curves.easeOutCubic,
                 builder: (context, v, _) => Stack(
                   children: [
-                    Positioned.fill(child: ColoredBox(color: Colors.white.withValues(alpha: 0.14))),
+                    Positioned.fill(child: ColoredBox(color: context.ink.withValues(alpha: 0.14))),
                     FractionallySizedBox(
                       widthFactor: v,
                       child: DecoratedBox(
                         decoration: BoxDecoration(
                           gradient: LinearGradient(
                             colors: hot
-                                ? const [Color(0xFFF59E0B), Color(0xFFFF2D78)]
-                                : const [AnimatedBlueProfileCard.cyan, Color(0xFF67E8F9)],
+                                ? [const Color(0xFFF59E0B), t.colors.rose]
+                                : [t.colors.violet, t.colors.violetInk],
                           ),
                         ),
                       ),
@@ -1033,13 +1081,13 @@ class _AuthPaneState extends State<_AuthPane> {
     final system = a.authMethod == AuthMethod.passkey
         ? 'WebAuthn Hardware Passkey + Ed25519 JWT'
         : '${a.authMethod.label} + Ed25519 JWT';
-    final muted = Colors.white.withValues(alpha: 0.6);
+    final muted = context.ink.withValues(alpha: 0.6);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         const _SectionLabel('ACTIVE AUTHENTICATION'),
         const SizedBox(height: 2),
-        Text(system, key: const Key('profile-auth-system'), style: t.text.mono(size: 10.5, weight: FontWeight.w600, height: 1.4, color: Colors.white)),
+        Text(system, key: const Key('profile-auth-system'), style: t.text.mono(size: 10.5, weight: FontWeight.w600, height: 1.4, color: context.ink)),
         Text(a.authMethod.label, style: t.text.mono(size: 9.5, height: 1.4, color: muted)),
         const SizedBox(height: 3),
         Row(
@@ -1121,7 +1169,7 @@ class _AuthPaneState extends State<_AuthPane> {
         ),
         const SizedBox(height: PhotonSpace.sm - 2),
         for (var i = 0; i < a.sessions.length; i++) ...[
-          if (i > 0) Divider(height: PhotonSpace.md, thickness: 1, color: Colors.white.withValues(alpha: 0.12)),
+          if (i > 0) Divider(height: PhotonSpace.md, thickness: 1, color: context.ink.withValues(alpha: 0.12)),
           _SessionRow(studio: studio, session: a.sessions[i]),
         ],
       ],
@@ -1158,12 +1206,12 @@ class _SwitchRow extends StatelessWidget {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text(label, maxLines: 1, overflow: TextOverflow.ellipsis, style: t.text.labelCaps.copyWith(fontSize: 8.5, color: Colors.white, fontWeight: FontWeight.w700)),
-                      Text(caption, maxLines: 1, overflow: TextOverflow.ellipsis, style: t.text.mono(size: 9, height: 1.4, color: Colors.white.withValues(alpha: 0.6))),
+                      Text(label, maxLines: 1, overflow: TextOverflow.ellipsis, style: t.text.labelCaps.copyWith(fontSize: 8.5, color: context.ink, fontWeight: FontWeight.w700)),
+                      Text(caption, maxLines: 1, overflow: TextOverflow.ellipsis, style: t.text.mono(size: 9, height: 1.4, color: context.ink.withValues(alpha: 0.6))),
                     ],
                   ),
                 ),
-                Text(state, style: t.text.labelCaps.copyWith(fontSize: 8, color: value ? const Color(0xFF67E8F9) : Colors.white.withValues(alpha: 0.6))),
+                Text(state, style: t.text.labelCaps.copyWith(fontSize: 8, color: value ? context.accent : context.ink.withValues(alpha: 0.6))),
                 const SizedBox(width: PhotonSpace.sm),
                 AnimatedContainer(
                   duration: const Duration(milliseconds: 160),
@@ -1172,9 +1220,9 @@ class _SwitchRow extends StatelessWidget {
                   padding: const EdgeInsets.all(2),
                   alignment: value ? Alignment.centerRight : Alignment.centerLeft,
                   decoration: BoxDecoration(
-                    color: value ? AnimatedBlueProfileCard.cyan : Colors.white.withValues(alpha: 0.16),
+                    color: value ? t.colors.violet : context.ink.withValues(alpha: 0.16),
                     borderRadius: BorderRadius.circular(PhotonRadius.pill),
-                    border: Border.all(color: Colors.white.withValues(alpha: hovered ? 0.8 : 0.35)),
+                    border: Border.all(color: context.ink.withValues(alpha: hovered ? 0.8 : 0.35)),
                   ),
                   child: Container(
                     width: 11,
@@ -1217,9 +1265,9 @@ class _KeyRow extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.all(PhotonSpace.sm),
       decoration: BoxDecoration(
-        color: Colors.black.withValues(alpha: 0.2),
+        color: context.sunk(0.2),
         borderRadius: BorderRadius.circular(PhotonRadius.control + 2),
-        border: Border.all(color: Colors.white.withValues(alpha: 0.12)),
+        border: Border.all(color: context.ink.withValues(alpha: 0.12)),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -1231,7 +1279,7 @@ class _KeyRow extends StatelessWidget {
                   record.label,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
-                  style: t.text.ui(size: 12, weight: FontWeight.w500, height: 1.3, color: Colors.white),
+                  style: t.text.ui(size: 12, weight: FontWeight.w500, height: 1.3, color: context.ink),
                 ),
               ),
               _GlassButton(
@@ -1269,7 +1317,7 @@ class _KeyRow extends StatelessWidget {
                 revealed ? record.secret : record.masked,
                 key: primary ? const Key('profile-key-masked') : null,
                 maxLines: 1,
-                style: t.text.mono(size: 10.5, height: 1.4, color: revealed ? const Color(0xFF67E8F9) : Colors.white),
+                style: t.text.mono(size: 10.5, height: 1.4, color: revealed ? context.accent : context.ink),
               ),
             ),
           ),
@@ -1278,7 +1326,7 @@ class _KeyRow extends StatelessWidget {
             'created ${record.created} · used ${record.lastUsed} · ${record.scopes.join(', ')}',
             maxLines: 2,
             overflow: TextOverflow.ellipsis,
-            style: t.text.mono(size: 9, height: 1.4, color: Colors.white.withValues(alpha: 0.55)),
+            style: t.text.mono(size: 9, height: 1.4, color: context.ink.withValues(alpha: 0.55)),
           ),
         ],
       ),
@@ -1300,7 +1348,7 @@ class _SessionRow extends StatelessWidget {
       children: [
         Padding(
           padding: const EdgeInsets.only(top: 4, right: PhotonSpace.sm),
-          child: Pip(color: session.isCurrent ? const Color(0xFF22C55E) : const Color(0xFF67E8F9), size: 6),
+          child: Pip(color: session.isCurrent ? const Color(0xFF22C55E) : context.accent, size: 6),
         ),
         Expanded(
           child: Column(
@@ -1310,19 +1358,19 @@ class _SessionRow extends StatelessWidget {
                 session.device,
                 maxLines: 2,
                 overflow: TextOverflow.ellipsis,
-                style: t.text.ui(size: 12, weight: FontWeight.w500, height: 1.3, color: Colors.white),
+                style: t.text.ui(size: 12, weight: FontWeight.w500, height: 1.3, color: context.ink),
               ),
               Text(
                 '${session.location} · ${session.ip}',
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
-                style: t.text.mono(size: 9.5, height: 1.4, color: Colors.white.withValues(alpha: 0.7)),
+                style: t.text.mono(size: 9.5, height: 1.4, color: context.ink.withValues(alpha: 0.7)),
               ),
               Text(
                 '${session.protocol} · ${session.lastActive}',
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
-                style: t.text.mono(size: 9, height: 1.4, color: Colors.white.withValues(alpha: 0.5)),
+                style: t.text.mono(size: 9, height: 1.4, color: context.ink.withValues(alpha: 0.5)),
               ),
             ],
           ),
@@ -1335,7 +1383,14 @@ class _SessionRow extends StatelessWidget {
               color: const Color(0xFF22C55E).withValues(alpha: 0.2),
               borderRadius: BorderRadius.circular(PhotonRadius.control - 1),
             ),
-            child: Text('THIS DEVICE', style: t.text.labelCaps.copyWith(fontSize: 7.5, color: const Color(0xFF86EFAC))),
+            // Light green on the void; a deep green on Daylight's lavender.
+            child: Text(
+              'THIS DEVICE',
+              style: t.text.labelCaps.copyWith(
+                fontSize: 7.5,
+                color: t.colors.isDark ? const Color(0xFF86EFAC) : const Color(0xFF15803D),
+              ),
+            ),
           )
         else
           _GlassButton(
@@ -1349,12 +1404,17 @@ class _SessionRow extends StatelessWidget {
   }
 }
 
-/// The aurora: three drifting colour blooms plus a spotlight under the cursor.
+/// The aurora: three drifting Lusion-blue blooms. Nothing follows the cursor:
+/// no ring and no spotlight (the card's own tilt is the pointer response).
 class _AuroraPainter extends CustomPainter {
-  _AuroraPainter({required this.pointer, required this.aurora}) : super(repaint: Listenable.merge([pointer, aurora]));
+  _AuroraPainter({required this.aurora, required this.isDark, required this.blue, required this.cyan}) : super(repaint: aurora);
 
-  final ValueListenable<Offset?> pointer;
-  final Animation<double> aurora;
+  final ValueListenable<double> aurora;
+  final bool isDark;
+
+  /// Lusion Electric Blue, and the lifted blue for the second bloom.
+  final Color blue;
+  final Color cyan;
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -1370,25 +1430,13 @@ class _AuroraPainter extends CustomPainter {
       );
     }
 
-    bloom(Offset(0.22 + 0.12 * math.sin(a), 0.2 + 0.1 * math.cos(a * 1.3)), 0.55, AnimatedBlueProfileCard.cyan.withValues(alpha: 0.34));
-    bloom(Offset(0.8 + 0.1 * math.cos(a * 0.8), 0.45 + 0.12 * math.sin(a * 1.1)), 0.5, const Color(0xFF60A5FA).withValues(alpha: 0.3));
-    bloom(Offset(0.5 + 0.18 * math.sin(a * 0.6 + 2), 0.9 + 0.06 * math.cos(a)), 0.6, const Color(0xFF22D3EE).withValues(alpha: 0.22));
-
-    final p = pointer.value;
-    if (p != null) {
-      final center = Offset(p.dx * size.width, p.dy * size.height);
-      bloom(Offset(p.dx, p.dy), 0.34, Colors.white.withValues(alpha: 0.2));
-      canvas.drawCircle(
-        center,
-        28,
-        Paint()
-          ..style = PaintingStyle.stroke
-          ..strokeWidth = 1
-          ..color = AnimatedBlueProfileCard.cyan.withValues(alpha: 0.5),
-      );
-    }
+    // Lusion Electric Blue at 0.18 (Dark) / 0.08 (Daylight).
+    final k = isDark ? 0.18 : 0.08;
+    bloom(Offset(0.22 + 0.12 * math.sin(a), 0.2 + 0.1 * math.cos(a * 1.3)), 0.55, blue.withValues(alpha: k));
+    bloom(Offset(0.8 + 0.1 * math.cos(a * 0.8), 0.45 + 0.12 * math.sin(a * 1.1)), 0.5, blue.withValues(alpha: k * 0.8));
+    bloom(Offset(0.5 + 0.18 * math.sin(a * 0.6 + 2), 0.9 + 0.06 * math.cos(a)), 0.6, cyan.withValues(alpha: k * 0.5));
   }
 
   @override
-  bool shouldRepaint(_AuroraPainter old) => false;
+  bool shouldRepaint(_AuroraPainter old) => old.isDark != isDark || old.blue != blue || old.cyan != cyan;
 }

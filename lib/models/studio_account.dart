@@ -3,15 +3,15 @@ import 'package:flutter/painting.dart';
 
 /// Subscription tier and its GPU quota.
 enum PlanTier {
-  indie('INDIE LAB', 'INDIE', '\$0 / mo', '64 GPU-hrs', 64, Color(0xFF9A9AA4)),
-  pro('STUDIO PRO', 'PRO', '\$49 / mo', '1,000 GPU-hrs', 1000, Color(0xFF8A2BE2)),
+  indie('INDIE LAB', 'INDIE', '\$0 / mo', '64 GPU-hrs', 64, Color(0xFF22D3EE)),
+  pro('STUDIO PRO', 'PRO', '\$49 / mo', '1,000 GPU-hrs', 1000, Color(0xFF1A2FFB)),
   enterprise(
     'ENTERPRISE CLUSTER',
     'ENT',
     '\$299 / mo',
     'Unlimited Dedicated Nodes',
     10000,
-    Color(0xFFFF2D78),
+    Color(0xFFFF4C41),
   );
 
   const PlanTier(this.label, this.tag, this.price, this.quota, this.gpuHours, this.color);

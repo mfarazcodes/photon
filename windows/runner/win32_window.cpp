@@ -33,6 +33,13 @@ constexpr const wchar_t kWindowClassName[] = L"FLUTTER_RUNNER_WIN32_WINDOW";
 // The theme last applied to the window frame; Photon launches in Dark Studio.
 bool g_dark_theme = true;
 
+// The exact frame colours last applied (COLORREF, 0x00BBGGRR), so a system
+// colorization change puts back the same ones.
+bool g_frame_set = false;
+COLORREF g_caption_color = 0;
+COLORREF g_text_color = 0;
+COLORREF g_border_color = 0;
+
 // The number of Win32Window objects that currently exist.
 static int g_active_window_count = 0;
 
@@ -171,7 +178,12 @@ bool Win32Window::Create(const std::wstring& title,
                 reinterpret_cast<LPARAM>(small_icon));
   }
 
-  UpdateTheme(window);
+  // The app opens on the launch film, so the frame starts in its palette (no
+  // flash of another colour before Dart takes over).
+  UpdateFrame(window, true,
+              0x00100E0E,   // caption  #0E0E10 the landing page's near-black
+              0x00FAF1F0,   // text     #F0F1FA
+              0x009A4A5B);  // border   #5B4A9A the film's prism violet
 
   return OnCreate();
 }
@@ -242,7 +254,7 @@ Win32Window::MessageHandler(HWND hwnd,
       return 0;
 
     case WM_DWMCOLORIZATIONCOLORCHANGED:
-      UpdateTheme(hwnd, g_dark_theme);
+      ReapplyFrame(hwnd);
       return 0;
   }
 
@@ -301,24 +313,33 @@ void Win32Window::OnDestroy() {
 }
 
 void Win32Window::UpdateTheme(HWND const window, bool dark_mode) {
+  // The studio themes. COLORREF is 0x00BBGGRR.
+  if (dark_mode) {
+    UpdateFrame(window, true,
+                0x000D0908,   // caption  #08090D Lusion dock void
+                0x00FAF1F0,   // text     #F0F1FA Lusion off-white
+                0x00362926);  // border   #262936 Lusion slate hairline
+  } else {
+    UpdateFrame(window, false,
+                0x00FAF1F0,   // caption  #F0F1FA Lusion lavender off-white
+                0x001B1514,   // text     #14151B Lusion obsidian ink
+                0x00E8DAD8);  // border   #D8DAE8 Lusion cool hairline
+  }
+}
+
+void Win32Window::UpdateFrame(HWND const window, bool dark_mode,
+                              COLORREF caption_color, COLORREF text_color,
+                              COLORREF border_color) {
   g_dark_theme = dark_mode;
+  g_caption_color = caption_color;
+  g_text_color = text_color;
+  g_border_color = border_color;
+  g_frame_set = true;
 
   // The caption is painted explicitly, so neither the OS accent color nor the
-  // system light/dark setting ever tints the titlebar: it always follows the
-  // studio theme. COLORREF is 0x00BBGGRR.
+  // system light/dark setting ever tints the titlebar: it always wears the
+  // colours the studio asked for (the launch film's, then the theme's).
   BOOL enable_dark_mode = dark_mode ? TRUE : FALSE;
-  COLORREF caption_color;
-  COLORREF text_color;
-  COLORREF border_color;
-  if (dark_mode) {
-    caption_color = 0x00121010;  // #101012 Matte Carbon
-    text_color = 0x00F5F3F3;     // #F3F3F5
-    border_color = 0x00302B2A;   // #2A2B30
-  } else {
-    caption_color = 0x00FBF9F9;  // #F9F9FB Daylight surface
-    text_color = 0x00100E0E;     // #0E0E10 Matte Carbon
-    border_color = 0x00E6E2E2;   // #E2E2E6 Structural border
-  }
   DwmSetWindowAttribute(window, DWMWA_USE_IMMERSIVE_DARK_MODE,
                         &enable_dark_mode, sizeof(enable_dark_mode));
   DwmSetWindowAttribute(window, DWMWA_CAPTION_COLOR, &caption_color,
@@ -327,4 +348,13 @@ void Win32Window::UpdateTheme(HWND const window, bool dark_mode) {
                         sizeof(text_color));
   DwmSetWindowAttribute(window, DWMWA_BORDER_COLOR, &border_color,
                         sizeof(border_color));
+}
+
+void Win32Window::ReapplyFrame(HWND const window) {
+  if (g_frame_set) {
+    UpdateFrame(window, g_dark_theme, g_caption_color, g_text_color,
+                g_border_color);
+  } else {
+    UpdateTheme(window, g_dark_theme);
+  }
 }

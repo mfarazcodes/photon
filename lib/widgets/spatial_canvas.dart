@@ -15,6 +15,7 @@ import 'export_sheet.dart';
 import 'intent_file_trigger.dart';
 import 'launch_hero_portal.dart';
 import 'mac_window_viewport.dart';
+import 'new_project_sheet.dart';
 import 'optics_inspector_deck.dart';
 import 'photon_model_popover.dart';
 import 'progressive_flux_loader.dart';
@@ -69,7 +70,7 @@ class _SpatialCanvasState extends State<SpatialCanvas> {
   /// shows it (viewport, sidebar thumbnail, deck print), so switching projects
   /// or flicking the deck never waits on a disk decode.
   void _precacheImages(StudioController studio) {
-    final assets = <String>{for (final p in studio.projects) p.previewAsset};
+    final assets = <String>{for (final p in studio.projects) if (p.previewAsset.isNotEmpty) p.previewAsset};
     for (final asset in assets) {
       final provider = AssetImage(asset);
       for (final image in <ImageProvider>[
@@ -143,9 +144,9 @@ class _SpatialCanvasState extends State<SpatialCanvas> {
                     children: [
                       RepaintBoundary(
                         child: DotMatrixSubstrate(
-                          color: c.isDark ? const Color(0xFF2E3036) : const Color(0xFFD0D0D8),
-                          highlight: c.isDark ? Colors.white : const Color(0xFF0E0E10),
-                          tint: c.isDark ? const Color(0xFFB57BFF) : c.violet,
+                          color: c.isDark ? const Color(0xFF262936) : const Color(0xFFD0D3E2),
+                          highlight: c.isDark ? const Color(0xFFF0F1FA) : const Color(0xFF14151B),
+                          tint: c.violetInk,
                           pointerPos: _pointerPos,
                         ),
                       ),
@@ -170,6 +171,8 @@ class _SpatialCanvasState extends State<SpatialCanvas> {
                 const Positioned.fill(key: ValueKey('overlay-model'), child: PhotonModelPopover()),
               if (studio.exportModalOpen)
                 const Positioned.fill(key: ValueKey('overlay-export'), child: ExportProjectModal()),
+        if (studio.newProjectSheetOpen)
+          const Positioned.fill(key: ValueKey('overlay-new-project'), child: NewProjectSheet()),
               if (studio.accountModalOpen)
                 const Positioned.fill(key: ValueKey('overlay-account'), child: AccountInspectorModal(key: Key('account-modal'))),
               if (studio.commandPaletteOpen) const Positioned.fill(key: ValueKey('overlay-palette'), child: CommandPalette()),
