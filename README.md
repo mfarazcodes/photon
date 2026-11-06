@@ -16,12 +16,32 @@ Photon is a high-performance graphics, rendering, and path-tracing engine built 
 
 ## 🏗️ System Architecture
 System Architecture
-| System Module | Core Components |
-| :--- | :--- |
-| **Scene Graph** | • Cameras <br> • Geometry / Meshes <br> • Light Sources |
-| **Material System** | • BSDF Models <br> • Diffuse / Specular <br> • Anisotropic |
-| **Core Engine** | • Ray Intersections <br> • Vector Math <br> • Photon Mapping |
-| **Renderer Layer** | • Flutter Pipeline <br> • CustomPainter <br> • Fragment Shaders |
+
+<pre>
+┌─────────────────────────┐       ┌─────────────────────────┐
+│       Scene Graph       │       │     Material System     │
+│ • Cameras               │       │ • BSDF Models           │
+│ • Geometry / Meshes     │       │ • Diffuse / Specular    │
+│ • Light Sources         │       │ • Anisotropic           │
+└────────────┬────────────┘       └────────────┬────────────┘
+             │                                 │
+             └───────────────┐ ┌───────────────┘
+                             ▼ ▼
+                  ┌───────────────────────┐
+                  │      Core Engine      │
+                  │ • Ray Intersections   │
+                  │ • Vector Math         │
+                  │ • Photon Mapping      │
+                  └──────────┬────────────┘
+                             │
+                             ▼
+                  ┌───────────────────────┐
+                  │    Renderer Layer     │
+                  │ • Flutter Pipeline    │
+                  │ • CustomPainter       │
+                  │ • Fragment Shaders    │
+                  └───────────────────────┘
+</pre>
 ## 🖼️ Gallery
 
 Explore the capabilities of the Photon engine:
