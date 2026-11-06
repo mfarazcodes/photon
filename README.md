@@ -53,7 +53,6 @@ Built with an interface inspired by the **Lusion.co** design system, PHOTON pair
 
 ## ✦ Repository Architecture
 
-
 ================================================================================
                     PHOTON® SPATIAL STUDIO — ARCHITECTURE BLUEPRINT
 ================================================================================
