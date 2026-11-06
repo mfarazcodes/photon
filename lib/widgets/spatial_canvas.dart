@@ -8,12 +8,15 @@ import 'package:flutter/services.dart';
 import '../state/studio_controller.dart';
 import '../theme/photon_theme.dart';
 import 'account_sheet.dart';
+import 'card_deck_carousel.dart';
 import 'command_dock.dart';
 import 'command_palette.dart';
+import 'export_sheet.dart';
 import 'intent_file_trigger.dart';
 import 'launch_hero_portal.dart';
 import 'mac_window_viewport.dart';
 import 'optics_inspector_deck.dart';
+import 'photon_model_popover.dart';
 import 'progressive_flux_loader.dart';
 import 'projects_sidebar.dart';
 import 'roller_prompt_result.dart';
@@ -72,7 +75,7 @@ class _SpatialCanvasState extends State<SpatialCanvas> {
       for (final image in <ImageProvider>[
         provider,
         ResizeImage(provider, width: 96),
-        ResizeImage(provider, width: 400),
+        ResizeImage(provider, width: CardDeckCarousel.imageWidth),
       ]) {
         precacheImage(image, context, onError: (_, _) {});
       }
@@ -163,6 +166,10 @@ class _SpatialCanvasState extends State<SpatialCanvas> {
               // Keyed so one overlay appearing never resets another's state.
               if (studio.ingestSheetOpen)
                 const Positioned.fill(key: ValueKey('overlay-ingest'), child: FileIngestSheet()),
+              if (studio.modelPopoverOpen)
+                const Positioned.fill(key: ValueKey('overlay-model'), child: PhotonModelPopover()),
+              if (studio.exportModalOpen)
+                const Positioned.fill(key: ValueKey('overlay-export'), child: ExportProjectModal()),
               if (studio.accountModalOpen)
                 const Positioned.fill(key: ValueKey('overlay-account'), child: AccountInspectorModal(key: Key('account-modal'))),
               if (studio.commandPaletteOpen) const Positioned.fill(key: ValueKey('overlay-palette'), child: CommandPalette()),
@@ -243,8 +250,6 @@ class _SpatialCanvasState extends State<SpatialCanvas> {
   /// Viewport and optics windows, honoring collapse and maximize state.
   List<Widget> _panels(StudioController studio) {
     final maximized = studio.maximizedPanel;
-    // The account console takes the whole column when it is the workspace.
-    if (maximized == 'account') return const [Expanded(child: AccountSheet(embedded: true))];
     final showViewport = maximized != 'optics';
     final showOptics = maximized != 'viewport';
     // Each window repaints on its own layer.
@@ -325,13 +330,9 @@ class _SpatialCanvasState extends State<SpatialCanvas> {
                   children: [
                     const RepaintBoundary(child: ProjectsSidebar(axis: Axis.horizontal)),
                     const SizedBox(height: PhotonSpace.lg),
-                    if (maximized == 'account')
-                      const AccountSheet(embedded: false)
-                    else ...[
-                      if (maximized != 'optics') const RepaintBoundary(child: MacWindowViewport(stageAspectRatio: 16 / 10)),
-                      if (maximized == null) const SizedBox(height: PhotonSpace.lg),
-                      if (maximized != 'viewport') const RepaintBoundary(child: OpticsInspectorDeck()),
-                    ],
+                    if (maximized != 'optics') const RepaintBoundary(child: MacWindowViewport(stageAspectRatio: 16 / 10)),
+                    if (maximized == null) const SizedBox(height: PhotonSpace.lg),
+                    if (maximized != 'viewport') const RepaintBoundary(child: OpticsInspectorDeck()),
                   ],
                 ),
               ),

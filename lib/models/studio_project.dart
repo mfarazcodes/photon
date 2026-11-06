@@ -54,6 +54,9 @@ class StudioProject {
     this.integrator = IntegratorMode.unidirectional,
     this.sceneKind = ProceduralSceneKind.causticWave,
     this.isDynamic = false,
+    this.localFilePath,
+    this.externalUrl,
+    this.customBytes,
   });
 
   /// Stable identifier; also the payload of a dragged project card.
@@ -85,6 +88,17 @@ class StudioProject {
   /// Every project can still be switched either way from the viewport.
   final bool isDynamic;
 
+  /// A file the user brought in from disk. When it is an image the viewport
+  /// shows it.
+  final String? localFilePath;
+
+  /// A direct URL the user embedded. The viewport loads it when it is an image.
+  final String? externalUrl;
+
+  /// The bytes of an uploaded image, held so it shows without touching the
+  /// disk again. Takes priority over [localFilePath] and [externalUrl].
+  final Uint8List? customBytes;
+
   double get ior => params['ior'] ?? 1.0;
   int get spp => (params['samples_per_pixel'] ?? 0).round();
 
@@ -101,6 +115,9 @@ class StudioProject {
     IntegratorMode? integrator,
     ProceduralSceneKind? sceneKind,
     bool? isDynamic,
+    String? localFilePath,
+    String? externalUrl,
+    Uint8List? customBytes,
   }) => StudioProject(
     id: id ?? this.id,
     name: name ?? this.name,
@@ -114,13 +131,15 @@ class StudioProject {
     integrator: integrator ?? this.integrator,
     sceneKind: sceneKind ?? this.sceneKind,
     isDynamic: isDynamic ?? this.isDynamic,
+    localFilePath: localFilePath ?? this.localFilePath,
+    externalUrl: externalUrl ?? this.externalUrl,
+    customBytes: customBytes ?? this.customBytes,
   );
 }
 
 const String _wave = 'assets/images/caustic_wave.jpg';
 const String _gold = 'assets/images/gold_bsdf_sphere.jpg';
 const String _prism = 'assets/images/volumetric_prism.png';
-const String _chrome = 'assets/images/chrome_anisotropic.png';
 const String _emerald = 'assets/images/emerald_subsurface.png';
 const String _kerr = 'assets/images/blackhole_lensing.png';
 
@@ -190,30 +209,9 @@ const List<StudioProject> kDefaultProjects = [
     },
   ),
   StudioProject(
-    id: 'chrome_caustics',
-    name: 'CHROME_CAUSTICS',
-    code: 'PRJ-04',
-    sceneType: 'Anisotropic Chrome',
-    subtitle: '.pht · BiDir Solver',
-    updatedAt: 'Yesterday',
-    status: ProjectStatus.draft,
-    previewAsset: _chrome,
-    integrator: IntegratorMode.bidirectional,
-    sceneKind: ProceduralSceneKind.liquidChrome,
-    isDynamic: true,
-    params: {
-      'aperture': 5.6,
-      'focal_distance': 3.1,
-      'ior': 2.65,
-      'max_bounces': 24,
-      'samples_per_pixel': 256,
-      'caustics_energy': 1.1,
-    },
-  ),
-  StudioProject(
     id: 'acrylic_lens_array',
     name: 'ACRYLIC_LENS_ARRAY',
-    code: 'PRJ-05',
+    code: 'PRJ-04',
     sceneType: 'Liquid Mercury',
     subtitle: '.pht · DoF f/1.2',
     updatedAt: '2d ago',
@@ -234,7 +232,7 @@ const List<StudioProject> kDefaultProjects = [
   StudioProject(
     id: 'kerr_photon_ring',
     name: 'KERR_PHOTON_RING',
-    code: 'PRJ-06',
+    code: 'PRJ-05',
     sceneType: 'Relativistic Lensing',
     subtitle: '.pht · GR Ray Marcher',
     updatedAt: '5h ago',
@@ -250,27 +248,6 @@ const List<StudioProject> kDefaultProjects = [
       'max_bounces': 24,
       'samples_per_pixel': 512,
       'caustics_energy': 1.6,
-    },
-  ),
-  StudioProject(
-    id: 'thin_film_iris',
-    name: 'THIN_FILM_IRIS',
-    code: 'PRJ-07',
-    sceneType: 'Thin-Film Interference',
-    subtitle: '.pht · Airy Interference',
-    updatedAt: '3d ago',
-    status: ProjectStatus.draft,
-    previewAsset: _wave,
-    integrator: IntegratorMode.bidirectional,
-    sceneKind: ProceduralSceneKind.soapFilmIridescence,
-    isDynamic: true,
-    params: {
-      'aperture': 3.2,
-      'focal_distance': 1.6,
-      'ior': 1.33,
-      'max_bounces': 6,
-      'samples_per_pixel': 128,
-      'caustics_energy': 0.9,
     },
   ),
 ];

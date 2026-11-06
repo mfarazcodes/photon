@@ -1,4 +1,5 @@
 import 'dart:math' as math;
+import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 
@@ -357,16 +358,17 @@ class _WindowPip extends StatelessWidget {
   }
 }
 
-/// Minimal Photon mark: a Matte Carbon tile, a violet hexagonal aperture ring,
-/// an incoming white photon ray from the top-left, and a refracted rose and
-/// violet dispersion exiting from a glowing focal point.
+/// The Photon mark: a relativistic prism and caustic aperture.
 ///
-/// The geometry matches `windows/runner/resources/app_icon.ico`.
+/// On a squircle tile, a tilted photon ring (violet, magenta, rose, cyan; razor
+/// thin at the upper left, fattest on the Doppler-beamed lower right) holds a
+/// diamond prism. Collimated light enters it from the upper left and leaves as
+/// a fanned spectral wedge, and a four-point specular starburst marks the focal
+/// nexus.
 ///
 /// It follows the studio theme: in Dark Studio the tile is Matte Carbon with a
-/// white ray; in Daylight Lab the tile inverts to alabaster inside a hairline
-/// bezel, with a carbon aperture ring and ray, and saturated violet and rose
-/// dispersion. Pass [isDark] to force one.
+/// soft obsidian depth; in Daylight Lab it is alabaster inside a hairline
+/// bezel, with carbon ink. Pass [isDark] to force one.
 class PhotonLogoMark extends StatelessWidget {
   const PhotonLogoMark({super.key, this.size = 22, this.semanticLabel, this.isDark});
 
@@ -392,11 +394,40 @@ class _PhotonLogoPainter extends CustomPainter {
   final bool isDark;
 
   static const _carbon = Color(0xFF0E0E10);
+  static const _obsidian = Color(0xFF1B1C24);
   static const _violet = Color(0xFF8A2BE2);
-  static const _beamViolet = Color(0xFFB57BFF);
+  static const _magenta = Color(0xFFE879F9);
   static const _rose = Color(0xFFFF2D78);
+  static const _cyan = Color(0xFF22D3EE);
   static const _alabaster = Color(0xFFF9F9FB);
   static const _bezel = Color(0xFFE2E2E6);
+
+  /// The photon ring is tilted this far (radians): a relativistic disk seen
+  /// from a little above the plane.
+  static const double _tilt = -25 * math.pi / 180;
+
+  /// The intersection of the ray `origin + t * dir` with the segment `a`-`b`,
+  /// or null when they do not meet.
+  static Offset? _hit(Offset origin, Offset dir, Offset a, Offset b) {
+    final e = b - a;
+    final denom = dir.dx * e.dy - dir.dy * e.dx;
+    if (denom.abs() < 1e-9) return null;
+    final w = a - origin;
+    final t = (w.dx * e.dy - w.dy * e.dx) / denom;
+    final u = (w.dx * dir.dy - w.dy * dir.dx) / denom;
+    if (t < 0 || u < 0 || u > 1) return null;
+    return origin + dir * t;
+  }
+
+  /// A four-point anisotropic starburst: long horizontal arms, shorter vertical
+  /// ones, concave sides, and tips that taper to a razor point.
+  static Path _star(Offset c, double rx, double ry, double waist) => Path()
+    ..moveTo(c.dx, c.dy - ry)
+    ..quadraticBezierTo(c.dx + waist, c.dy - waist, c.dx + rx, c.dy)
+    ..quadraticBezierTo(c.dx + waist, c.dy + waist, c.dx, c.dy + ry)
+    ..quadraticBezierTo(c.dx - waist, c.dy + waist, c.dx - rx, c.dy)
+    ..quadraticBezierTo(c.dx - waist, c.dy - waist, c.dx, c.dy - ry)
+    ..close();
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -409,47 +440,124 @@ class _PhotonLogoPainter extends CustomPainter {
       ..strokeCap = StrokeCap.round
       ..strokeJoin = StrokeJoin.round
       ..isAntiAlias = true;
+    final hair = math.max(1.0, s * 0.03);
+    final ink = isDark ? Colors.white : _carbon;
 
-    // Tile; in daylight it is framed by a 1px bezel.
+    // Squircle chassis. Dark: Matte Carbon with a soft obsidian depth behind
+    // the mark. Daylight: alabaster inside a 1px bezel.
     final tile = RRect.fromRectAndRadius(
       Rect.fromLTRB(0.03 * s, 0.03 * s, 0.97 * s, 0.97 * s),
       Radius.circular(0.22 * s),
     );
     canvas.drawRRect(tile, Paint()..color = isDark ? _carbon : _alabaster);
-    if (!isDark) {
+    if (isDark) {
+      canvas.drawRRect(
+        tile,
+        Paint()
+          ..shader = RadialGradient(
+            center: const Alignment(0, -0.1),
+            radius: 0.8,
+            colors: [_obsidian.withValues(alpha: 0.95), _carbon.withValues(alpha: 0)],
+          ).createShader(tile.outerRect),
+      );
+    } else {
       canvas.drawRRect(tile.deflate(0.5), stroke(_bezel, 1));
     }
 
-    // Ink for the ring, the incoming ray and the focal core.
-    final ink = isDark ? Colors.white : _carbon;
-
-    // Hexagonal aperture ring (flat-top), 1.5px at the default size.
-    final ring = Path();
-    for (var i = 0; i < 6; i++) {
-      final a = i * math.pi / 3;
-      final pt = p(0.5 + 0.30 * math.cos(a), 0.5 + 0.30 * math.sin(a));
-      i == 0 ? ring.moveTo(pt.dx, pt.dy) : ring.lineTo(pt.dx, pt.dy);
-    }
-    ring.close();
-    canvas.drawPath(ring, stroke(isDark ? _violet : _carbon, math.max(1.5, s * 0.06)));
-
     final focal = p(0.5, 0.5);
-    final beam = math.max(1.0, s * 0.035);
-    canvas.drawLine(focal, p(0.87, 0.82), stroke((isDark ? _beamViolet : _violet).withValues(alpha: 0.95), beam));
-    canvas.drawLine(focal, p(0.93, 0.58), stroke(_rose.withValues(alpha: 0.95), beam));
-    canvas.drawLine(p(0.12, 0.16), focal, stroke(ink, math.max(1.0, s * 0.04)));
 
-    // Focal glow and core.
+    // The photon ring: a tilted annulus whose inner edge is pushed toward the
+    // upper left, so it is a razor-thin line there and fattest on the
+    // Doppler-beamed lower-right crescent. A sweep gradient takes it through
+    // violet, magenta, rose and cyan.
+    canvas.save();
+    canvas.translate(focal.dx, focal.dy);
+    canvas.rotate(_tilt);
+    final outer = Path()..addOval(Rect.fromCenter(center: Offset.zero, width: 0.70 * s, height: 0.46 * s));
+    final inner = Path()
+      ..addOval(Rect.fromCenter(center: Offset(-0.048 * s, -0.030 * s), width: 0.56 * s, height: 0.368 * s));
+    canvas.drawPath(
+      Path.combine(PathOperation.difference, outer, inner),
+      Paint()
+        ..isAntiAlias = true
+        ..shader = SweepGradient(
+          // Rose sits at about 65 degrees in the ring's own frame: lower right.
+          transform: const GradientRotation(65 * math.pi / 180),
+          colors: const [_rose, _cyan, _violet, _magenta, _rose],
+        ).createShader(Rect.fromCircle(center: Offset.zero, radius: 0.35 * s)),
+    );
+    canvas.restore();
+
+    // The prism: a diamond facet core.
+    final top = p(0.50, 0.385);
+    final right = p(0.585, 0.50);
+    final bottom = p(0.50, 0.615);
+    final left = p(0.415, 0.50);
+    final prism = Path()
+      ..moveTo(top.dx, top.dy)
+      ..lineTo(right.dx, right.dy)
+      ..lineTo(bottom.dx, bottom.dy)
+      ..lineTo(left.dx, left.dy)
+      ..close();
+
+    // Incoming collimated light: three parallel rays meeting the left faces.
+    const dir = Offset(1, 0.42);
+    for (var k = -1; k <= 1; k++) {
+      final start = p(0.05, 0.27 + k * 0.05);
+      final hit = _hit(start, dir, top, left) ?? _hit(start, dir, left, bottom);
+      if (hit == null) continue;
+      canvas.drawLine(start, hit, stroke(ink.withValues(alpha: k == 0 ? 0.95 : 0.4), k == 0 ? hair * 1.2 : hair * 0.8));
+    }
+
+    canvas.drawPath(prism, Paint()..color = (isDark ? Colors.white : _violet).withValues(alpha: isDark ? 0.1 : 0.08));
+    canvas.drawPath(prism, stroke(ink.withValues(alpha: 0.92), hair));
+    // Facets: a lit upper-left face and the table line across the middle.
+    canvas.drawPath(
+      Path()
+        ..moveTo(top.dx, top.dy)
+        ..lineTo(left.dx, left.dy)
+        ..lineTo(focal.dx, focal.dy)
+        ..close(),
+      Paint()..color = (isDark ? Colors.white : _violet).withValues(alpha: isDark ? 0.22 : 0.16),
+    );
+    canvas.drawLine(left, right, stroke(ink.withValues(alpha: 0.5), hair * 0.7));
+
+    // The beam leaves the right face as a fanned spectral wedge.
+    final exit = Offset.lerp(top, right, 0.5)!;
+    final fanTop = p(0.91, 0.36);
+    final fanBottom = p(0.93, 0.76);
+    final wedge = Path()
+      ..moveTo(exit.dx, exit.dy)
+      ..lineTo(fanTop.dx, fanTop.dy)
+      ..lineTo(fanBottom.dx, fanBottom.dy)
+      ..close();
+    canvas.drawPath(
+      wedge,
+      Paint()
+        ..shader = ui.Gradient.linear(
+          fanTop,
+          fanBottom,
+          [_rose, _magenta, _violet, _cyan].map((c) => c.withValues(alpha: 0.9)).toList(),
+          const [0.0, 0.34, 0.68, 1.0],
+        ),
+    );
+    for (var i = 0; i < 4; i++) {
+      final end = Offset.lerp(fanTop, fanBottom, (i + 0.5) / 4)!;
+      canvas.drawLine(exit, end, stroke(Colors.white.withValues(alpha: isDark ? 0.55 : 0.7), hair * 0.5));
+    }
+
+    // The focal nexus: a glow, and a crisp 4-point specular starburst.
     final glow = isDark ? const Color(0xFFD9A6FF) : _violet;
     canvas.drawCircle(
       focal,
-      0.15 * s,
+      0.17 * s,
       Paint()
         ..shader = RadialGradient(
-          colors: [glow.withValues(alpha: isDark ? 0.7 : 0.45), glow.withValues(alpha: 0)],
-        ).createShader(Rect.fromCircle(center: focal, radius: 0.15 * s)),
+          colors: [glow.withValues(alpha: isDark ? 0.65 : 0.4), glow.withValues(alpha: 0)],
+        ).createShader(Rect.fromCircle(center: focal, radius: 0.17 * s)),
     );
-    canvas.drawCircle(focal, math.max(1.0, 0.04 * s), Paint()..color = ink);
+    canvas.drawPath(_star(focal, 0.21 * s, 0.15 * s, 0.022 * s), Paint()..color = ink..isAntiAlias = true);
+    canvas.drawCircle(focal, math.max(0.8, 0.028 * s), Paint()..color = isDark ? _carbon : Colors.white);
   }
 
   @override

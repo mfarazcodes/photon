@@ -99,6 +99,13 @@ class _CommandDockState extends State<CommandDock> {
     Widget swell(Widget child, String id) =>
         _ProximityScale(key: ValueKey('proximity-$id'), hoverX: _hoverX, child: child);
 
+    Widget modelButton(StudioController s) => _LinkButton(
+      link: s.link,
+      tier: s.modelTier,
+      open: s.modelPopoverOpen,
+      onTap: () => s.setModelPopoverOpen(!s.modelPopoverOpen),
+    );
+
     final pills = [
       swell(_QuickPill(emoji: '⚡', label: 'RENDER PROMPT', onTap: _send), 'render'),
       swell(_QuickPill(emoji: '🎛️', label: 'BSDF SHADERS', onTap: () => _applyPreset('bsdf')), 'bsdf'),
@@ -138,7 +145,7 @@ class _CommandDockState extends State<CommandDock> {
                 // No spacers: each pill carries its own padding as hit area.
                 ...pills,
                 const SizedBox(width: PhotonSpace.sm),
-                swell(_LinkButton(link: studio.link), 'link'),
+                swell(modelButton(studio), 'link'),
                 // The two 40px buttons swell toward each other; 16px keeps them
                 // apart at the worst case.
                 const SizedBox(width: PhotonSpace.lg),
@@ -157,7 +164,9 @@ class _CommandDockState extends State<CommandDock> {
               hoverX: _hoverX,
               child: SingleChildScrollView(
                 scrollDirection: Axis.horizontal,
-                child: Row(children: pills),
+                // The model chip rides at the end of the strip when the pills
+                // are on their own row.
+                child: Row(children: [...pills, swell(modelButton(studio), 'link')]),
               ),
             ),
             const SizedBox(height: PhotonSpace.sm),
@@ -519,45 +528,81 @@ class _QuickPill extends StatelessWidget {
   }
 }
 
-/// Engine link indicator (the "memory" chip): cyan ping when live.
+/// The processor chip: the PHOTON LUMEN-1 model and tier selector. It shows the
+/// live engine link as a pip (top right) and the tier as a badge (bottom), and
+/// opens the model popover when clicked.
 class _LinkButton extends StatelessWidget {
-  const _LinkButton({required this.link});
+  const _LinkButton({required this.link, required this.tier, required this.open, required this.onTap});
 
   final RenderLink link;
+  final PhotonModelTier tier;
+  final bool open;
+  final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
     final t = context.photon;
     final c = t.colors;
     final live = link == RenderLink.live;
+    final linkNote = switch (link) {
+      RenderLink.live => 'engine connected',
+      RenderLink.connecting => 'connecting to engine',
+      RenderLink.offline => 'engine offline',
+    };
     return Tooltip(
-      message: switch (link) {
-        RenderLink.live => 'Render engine connected · ws://127.0.0.1:8765',
-        RenderLink.connecting => 'Connecting to render engine…',
-        RenderLink.offline => 'Render engine offline · retrying',
-      },
-      child: Container(
-        width: 40,
-        height: 40,
-        decoration: BoxDecoration(
-          color: c.isDark ? Colors.white.withValues(alpha: 0.12) : c.hoverFill,
-          borderRadius: BorderRadius.circular(10),
-          border: Border.all(color: c.isDark ? Colors.transparent : c.border),
-        ),
-        child: Stack(
-          alignment: Alignment.center,
-          children: [
-            Icon(Icons.memory, size: 19, color: c.onDock),
-            Positioned(
-              top: 8,
-              right: 8,
-              child: FlashingPip(
-                color: live ? const Color(0xFF22D3EE) : c.ghost,
-                size: 6,
-                flash: live,
+      message: '${tier.name} · $linkNote · click to choose a model',
+      child: Semantics(
+        button: true,
+        label: 'Photon model: ${tier.name}',
+        child: HoverBuilder(
+          cursor: SystemMouseCursors.click,
+          builder: (context, hovered) => GestureDetector(
+            key: const Key('photon-model-btn'),
+            behavior: HitTestBehavior.opaque,
+            onTap: onTap,
+            child: Container(
+              width: 40,
+              height: 40,
+              decoration: BoxDecoration(
+                color: open || hovered
+                    ? tier.accent.withValues(alpha: 0.18)
+                    : (c.isDark ? Colors.white.withValues(alpha: 0.12) : c.hoverFill),
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(
+                  color: open || hovered ? tier.accent.withValues(alpha: 0.8) : (c.isDark ? Colors.transparent : c.border),
+                ),
+              ),
+              child: Stack(
+                alignment: Alignment.center,
+                children: [
+                  Positioned(top: 8, child: Icon(Icons.memory, size: 17, color: c.onDock)),
+                  Positioned(
+                    top: 6,
+                    right: 6,
+                    // Steady: a pulsing pip would keep the whole app drawing
+                    // frames for as long as the engine is connected.
+                    child: Pip(color: live ? const Color(0xFF22D3EE) : c.ghost, size: 6, glow: live),
+                  ),
+                  // The tier, as a micro badge along the bottom edge.
+                  Positioned(
+                    bottom: 3,
+                    child: Container(
+                      key: const Key('model-tier-badge'),
+                      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+                      decoration: BoxDecoration(
+                        color: tier.accent.withValues(alpha: 0.22),
+                        borderRadius: BorderRadius.circular(3),
+                      ),
+                      child: Text(
+                        tier.shortTag,
+                        style: t.text.mono(size: 6.5, weight: FontWeight.w700, height: 1.1, color: tier.accent == const Color(0xFF8A2BE2) ? const Color(0xFFB57BFF) : tier.accent),
+                      ),
+                    ),
+                  ),
+                ],
               ),
             ),
-          ],
+          ),
         ),
       ),
     );

@@ -1,3 +1,4 @@
+import 'dart:io';
 import 'dart:math' as math;
 
 import 'package:flutter/gestures.dart';
@@ -9,6 +10,7 @@ import '../state/studio_controller.dart';
 import '../theme/photon_theme.dart';
 import 'ab_render_wipe.dart';
 import 'bvh_ray_overlay.dart';
+import 'card_deck_carousel.dart';
 import 'photon_primitives.dart';
 import 'pixel_loupe_probe.dart';
 import 'procedural_scene_canvas.dart';
@@ -39,10 +41,25 @@ class MacWindowViewport extends StatefulWidget {
 }
 
 class _MacWindowViewportState extends State<MacWindowViewport> with SingleTickerProviderStateMixin {
+  /// Turns the probe ring. It runs only while the ring can be seen and is worth
+  /// animating: the probe is shown, nothing covers the stage, and animation is
+  /// on. Otherwise it is stopped, so an idle viewport schedules no frames.
   late final AnimationController _spin = AnimationController(
     vsync: this,
     duration: const Duration(seconds: 12),
-  )..repeat();
+  );
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final s = StudioScope.of(context);
+    final run = s.probeVisible && s.animateShader && !s.sceneAnimationPaused && !s.deckView && !s.viewportCollapsed;
+    if (run && !_spin.isAnimating) {
+      _spin.repeat();
+    } else if (!run && _spin.isAnimating) {
+      _spin.stop();
+    }
+  }
 
   @override
   void dispose() {
@@ -137,6 +154,12 @@ class _ViewportTools extends StatelessWidget {
           label: 'BVH / RAYS',
           selected: studio.bvhOverlayEnabled,
           onTap: studio.toggleBvhOverlay,
+        ),
+        _ToolToggle(
+          key: const Key('toggle-focus-probe'),
+          label: 'PROBE',
+          selected: studio.probeVisible,
+          onTap: studio.toggleProbeVisible,
         ),
         _ToolToggle(
           key: const Key('viewport-snapshot-btn'),
@@ -269,7 +292,7 @@ class _LinkChip extends StatelessWidget {
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          FlashingPip(color: color, size: 4, flash: live),
+          Pip(color: color, size: 4, glow: live),
           const SizedBox(width: 4),
           Text(
             live ? 'LIVE' : 'PREVIEW',
@@ -409,10 +432,14 @@ class _StageState extends State<_Stage> {
                       onPointerUp: _doubleTap.up,
                       onPointerCancel: (_) => _doubleTap.cancel(),
                       onPointerSignal: _onStageSignal,
-                      child: _imageLayers(magnified: false, badgeTop: badgeTop),
+                      // The frame the export sheet captures.
+                      child: RepaintBoundary(
+                        key: studio.viewportCaptureKey,
+                        child: _imageLayers(magnified: false, badgeTop: badgeTop),
+                      ),
                     ),
                     if (studio.bvhOverlayEnabled) BvhRayOverlay(studio: studio),
-                    _ProbeCrosshair(studio: studio, spin: widget.spin, stageSize: size),
+                    if (studio.probeVisible) _ProbeCrosshair(studio: studio, spin: widget.spin, stageSize: size),
                     Positioned(left: 10, top: 10, child: IgnorePointer(child: _TopLeftHud(studio: studio))),
                     // Interactive (bounces, integrator, reconnect), so no IgnorePointer.
                     Positioned(
@@ -449,6 +476,8 @@ class _StageState extends State<_Stage> {
                         bottom: narrow ? (studio.falseColorEnabled ? 118 : 74) : (studio.falseColorEnabled ? 54 : 10),
                         child: Center(child: _TakesFilmstrip(studio: studio, maxWidth: size.width - (narrow ? 20 : 340))),
                       ),
+                    // STACK DECK: the project prints, over the whole stage.
+                    if (studio.deckView) Positioned.fill(child: _DeckStage(studio: studio)),
                     if (widget.dropAsset != null) IgnorePointer(child: _DropOverlay(asset: widget.dropAsset!)),
                     if (loupeOn)
                       PixelLoupeOverlay(
@@ -470,12 +499,101 @@ class _StageState extends State<_Stage> {
   }
 }
 
+/// The project stack on the centre stage: a frosted scrim over the render with
+/// the [CardDeckCarousel] in the middle and a way back to the viewport.
+///
+/// The scrim claims pointer drags, so dragging a print never orbits the camera
+/// behind it.
+class _DeckStage extends StatelessWidget {
+  const _DeckStage({required this.studio});
+
+  final StudioController studio;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = context.photon;
+    final c = t.colors;
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        GestureDetector(
+          key: const Key('deck-stage-scrim'),
+          behavior: HitTestBehavior.opaque,
+          dragStartBehavior: DragStartBehavior.down,
+          onPanUpdate: (_) {},
+          onTap: () {},
+          child: ColoredBox(color: c.canvas.withValues(alpha: 0.9)),
+        ),
+        // Laid out for at least [CardDeckCarousel.minDesignHeight]; a stage
+        // shorter than that (a small window) scales the whole deck down to fit
+        // instead of overflowing.
+        LayoutBuilder(
+          builder: (context, box) {
+            const insets = EdgeInsets.fromLTRB(PhotonSpace.lg, 36, PhotonSpace.lg, PhotonSpace.md);
+            final width = math.max(0.0, box.maxWidth - insets.horizontal);
+            final height = math.max(CardDeckCarousel.minDesignHeight, box.maxHeight - insets.vertical);
+            return Padding(
+              padding: insets,
+              child: Center(
+                child: FittedBox(
+                  fit: BoxFit.scaleDown,
+                  child: SizedBox(
+                    width: width,
+                    height: height,
+                    child: const Center(child: CardDeckCarousel(key: Key('card-deck-carousel'))),
+                  ),
+                ),
+              ),
+            );
+          },
+        ),
+        Positioned(
+          top: 10,
+          left: 0,
+          right: 0,
+          child: Center(
+            child: Semantics(
+              button: true,
+              label: 'Back to viewport',
+              child: HoverBuilder(
+                cursor: SystemMouseCursors.click,
+                builder: (context, hovered) => GestureDetector(
+                  key: const Key('deck-close-btn'),
+                  behavior: HitTestBehavior.opaque,
+                  onTap: () => studio.setDeckView(false),
+                  child: AnimatedContainer(
+                    duration: const Duration(milliseconds: 120),
+                    height: 22,
+                    padding: const EdgeInsets.symmetric(horizontal: PhotonSpace.md),
+                    alignment: Alignment.center,
+                    decoration: BoxDecoration(
+                      color: hovered ? c.violet.withValues(alpha: 0.14) : Colors.transparent,
+                      borderRadius: BorderRadius.circular(PhotonRadius.pill),
+                      border: Border.all(color: hovered ? c.violet : c.border),
+                    ),
+                    child: Text('BACK TO VIEWPORT', style: t.text.labelCaps.copyWith(fontSize: 8, color: hovered ? c.violetInk : c.textMuted)),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
 /// What the stage shows, in priority order: a frame from the render engine, the
 /// live procedural simulation when it is switched on, otherwise the active
 /// project's still render.
 ///
 /// Stills are always `BoxFit.cover`, in both studio modes, so toggling the
 /// theme never crops differently or shifts the pixel under the loupe.
+bool _isImagePath(String path) {
+  final dot = path.lastIndexOf('.');
+  return dot > 0 && StudioController.imageExtensions.contains(path.substring(dot + 1).toLowerCase());
+}
+
 class _RenderSurface extends StatelessWidget {
   const _RenderSurface({required this.studio, required this.magnified});
 
@@ -501,16 +619,56 @@ class _RenderSurface extends StatelessWidget {
       child: child,
     );
 
-    Widget still() => moving(
-      Image.asset(
-        asset,
-        key: ValueKey(asset),
-        fit: BoxFit.cover,
-        filterQuality: quality,
-        semanticLabel: project == null ? 'Render' : '${project.name} reference render',
-        errorBuilder: (_, _, _) => const ColoredBox(color: Color(0xFF0E0E10)),
-      ),
+    final label = project == null ? 'Render' : '${project.name} reference render';
+    Widget bundledStill() => Image.asset(
+      asset,
+      key: ValueKey(asset),
+      fit: BoxFit.cover,
+      filterQuality: quality,
+      semanticLabel: label,
+      errorBuilder: (_, _, _) => const ColoredBox(color: Color(0xFF0E0E10)),
     );
+
+    // The project's own picture when it has one (uploaded bytes, a file on
+    // disk, an embedded URL), falling back to its bundled render if that cannot
+    // be shown (deleted, offline, not an image).
+    Widget still() {
+      final bytes = project?.customBytes;
+      final path = project?.localFilePath;
+      final url = project?.externalUrl;
+      final Widget picture;
+      if (bytes != null) {
+        picture = Image.memory(
+          bytes,
+          key: ValueKey('project-bytes-${project!.id}'),
+          fit: BoxFit.cover,
+          filterQuality: quality,
+          semanticLabel: label,
+          errorBuilder: (_, _, _) => bundledStill(),
+        );
+      } else if (path != null && _isImagePath(path) && File(path).existsSync()) {
+        picture = Image.file(
+          File(path),
+          key: ValueKey('project-file-$path'),
+          fit: BoxFit.cover,
+          filterQuality: quality,
+          semanticLabel: label,
+          errorBuilder: (_, _, _) => bundledStill(),
+        );
+      } else if (url != null) {
+        picture = Image.network(
+          url,
+          key: ValueKey('project-url-$url'),
+          fit: BoxFit.cover,
+          filterQuality: quality,
+          semanticLabel: label,
+          errorBuilder: (_, _, _) => bundledStill(),
+        );
+      } else {
+        picture = bundledStill();
+      }
+      return moving(picture);
+    }
 
     return ValueListenableBuilder<Uint8List?>(
       valueListenable: studio.frame,
@@ -885,6 +1043,27 @@ class _ProbeCrosshair extends StatelessWidget {
                           'λ: ${nm.round()}nm | IOR: ${studio.param('ior').toStringAsFixed(3)}',
                           style: t.text.mono(size: 8, height: 1.2, color: const Color(0xFFEFDBFF)),
                         ),
+                        const SizedBox(width: 4),
+                        // Removes the probe from the stage at once.
+                        Tooltip(
+                          message: 'Hide the optical probe',
+                          child: Semantics(
+                            button: true,
+                            label: 'Hide optical probe',
+                            child: GestureDetector(
+                              key: const Key('dismiss-probe-crosshair'),
+                              behavior: HitTestBehavior.opaque,
+                              onTap: () {
+                                studio.setProbeVisible(false);
+                                studio.showToast('OPTICAL PROBE HIDDEN');
+                              },
+                              child: Padding(
+                                padding: const EdgeInsets.all(2),
+                                child: Icon(Icons.close, size: 9, color: Colors.white.withValues(alpha: 0.7)),
+                              ),
+                            ),
+                          ),
+                        ),
                       ],
                     ),
                   ),
@@ -1046,9 +1225,15 @@ class _ConvergenceGauge extends StatelessWidget {
                 Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
-                    Text(
-                      'CONVERGENCE',
-                      style: t.text.labelCaps.copyWith(fontSize: 8, color: const Color(0xFFC8C6C8)),
+                    // The caption gives way, not the readout: a wide fallback
+                    // font must not push "100%" off the end of the gauge.
+                    Flexible(
+                      child: Text(
+                        'CONVERGENCE',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: t.text.labelCaps.copyWith(fontSize: 8, color: const Color(0xFFC8C6C8)),
+                      ),
                     ),
                     Text(
                       '${(pct * 100).round()}%',

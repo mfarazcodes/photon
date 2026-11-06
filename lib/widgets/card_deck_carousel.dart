@@ -30,6 +30,21 @@ class CardDeckCarousel extends StatefulWidget {
   /// Or how fast, px/s.
   static const double throwVelocity = 700;
 
+  /// Card height over width.
+  static const double _cardAspect = 0.64;
+
+  /// Vertical room the deck needs besides its cards: the pile's fan, and the
+  /// PREV / NEXT and AUTOPLAY rows.
+  static const double _chromeHeight = 116;
+
+  /// The shortest stage the deck is laid out for: the cards at their smallest,
+  /// the pile's fan, and both control rows.
+  static const double minDesignHeight = 208;
+
+  /// Decode width for the prints.
+
+  static const int imageWidth = 640;
+
   static const Duration flyDuration = Duration(milliseconds: 240);
   static const Duration backDuration = Duration(milliseconds: 320);
   static const Duration autoplayInterval = Duration(milliseconds: 3200);
@@ -74,9 +89,25 @@ const List<_Pose> _poses = [
 class _CardDeckCarouselState extends State<CardDeckCarousel> with TickerProviderStateMixin {
   final FocusNode _focus = FocusNode(debugLabel: 'card-deck');
 
-  /// Top print's displacement while it is held or thrown.
-  Offset _drag = Offset.zero;
+  /// Top print's displacement while it is held or thrown. A notifier, not
+  /// state: a drag moves it dozens of times a second, and only the card stage
+  /// listens, so the controls and counter beside it are not rebuilt.
+  final ValueNotifier<Offset> _dragNotifier = ValueNotifier(Offset.zero);
+  Offset get _drag => _dragNotifier.value;
+  set _drag(Offset value) => _dragNotifier.value = value;
   bool _dragging = false;
+
+  /// The cards last built, reused while their project, size and role are
+  /// unchanged: Flutter skips rebuilding a widget it is handed again unchanged.
+  final Map<String, _DeckCard> _cards = {};
+
+  _DeckCard _card(StudioProject p, double width, double height, bool top) {
+    final cached = _cards[p.id];
+    if (cached != null && identical(cached.project, p) && cached.width == width && cached.height == height && cached.top == top) {
+      return cached;
+    }
+    return _cards[p.id] = _DeckCard(project: p, width: width, height: height, top: top);
+  }
 
   /// Springs a released print home: slightly under-damped, so it settles with
   /// one small overshoot. Unbounded, so the overshoot is not clamped away.
@@ -104,9 +135,7 @@ class _CardDeckCarouselState extends State<CardDeckCarousel> with TickerProvider
   @override
   void initState() {
     super.initState();
-    _settle.addListener(() {
-      setState(() => _drag = Offset.lerp(_settleFrom, Offset.zero, _settle.value)!);
-    });
+    _settle.addListener(() => _drag = Offset.lerp(_settleFrom, Offset.zero, _settle.value)!);
     _fly.addStatusListener((s) {
       if (s == AnimationStatus.completed) _beginBack();
     });
@@ -126,6 +155,7 @@ class _CardDeckCarouselState extends State<CardDeckCarousel> with TickerProvider
     _fly.dispose();
     _back.dispose();
     _enter.dispose();
+    _dragNotifier.dispose();
     super.dispose();
   }
 
@@ -225,21 +255,25 @@ class _CardDeckCarouselState extends State<CardDeckCarousel> with TickerProvider
     // The thrown print is drawn by itself; everything else is the pile.
     final pile = [for (final p in order) if (p.id != flier?.id) p];
     final visible = pile.take(4).toList();
-    final lift = (_drag.distance / 140).clamp(0.0, 1.0);
 
     return LayoutBuilder(
       builder: (context, box) {
-        final cardWidth = math.min(box.maxWidth - 20, 190.0);
-        final cardHeight = cardWidth * 0.74;
+        // Generous on the centre stage: over half its width, to 520px. It
+        // also stays inside the box on a short stage or a narrow window.
+        final byWidth = math.min((box.maxWidth * 0.56).clamp(260.0, 520.0), box.maxWidth - 24);
+        final byHeight = box.hasBoundedHeight ? (box.maxHeight - CardDeckCarousel._chromeHeight) / CardDeckCarousel._cardAspect : double.infinity;
+        final cardWidth = math.max(120.0, math.min(byWidth, byHeight));
+        final cardHeight = cardWidth * CardDeckCarousel._cardAspect;
         final stageHeight = cardHeight + _poses[4].dy + 8;
 
         Widget slot(StudioProject p, int depth) {
           final isTop = depth == 0;
           final base = _poses[depth];
           // The print below the top one grows toward full size as it is dragged.
+          final lift = (_drag.distance / 140).clamp(0.0, 1.0);
           final pose = depth == 0 ? base : _Pose.lerp(base, _poses[depth - 1], lift);
           final enter = isTop && p.id == _enteringId ? Curves.easeOutBack.transform(_enter.value) : 1.0;
-          Widget card = _DeckCard(project: p, width: cardWidth, height: cardHeight, top: isTop);
+          Widget card = _card(p, cardWidth, cardHeight, isTop);
           if (!isTop) {
             // A print showing under the top one is one click from the top.
             card = MouseRegion(
@@ -262,7 +296,7 @@ class _CardDeckCarouselState extends State<CardDeckCarousel> with TickerProvider
                 _focus.requestFocus();
                 setState(() => _dragging = true);
               },
-              onPanUpdate: (d) => setState(() => _drag += d),
+              onPanUpdate: (d) => _drag += d,
               onPanEnd: (velocity) {
                 final fast = velocity.distance > CardDeckCarousel.throwVelocity;
                 if (_drag.distance > CardDeckCarousel.throwDistance || fast) {
@@ -322,7 +356,7 @@ class _CardDeckCarouselState extends State<CardDeckCarousel> with TickerProvider
                 angle: angle,
                 child: Transform.scale(
                   scale: scale,
-                  child: _DeckCard(project: flier, width: cardWidth, height: cardHeight, top: false),
+                  child: _card(flier, cardWidth, cardHeight, false),
                 ),
               ),
             ),
@@ -334,12 +368,15 @@ class _CardDeckCarouselState extends State<CardDeckCarousel> with TickerProvider
         return Focus(
           focusNode: _focus,
           onKeyEvent: _onKey,
-          child: Column(
+          // The controls are as wide as the cards, not the whole stage.
+          child: SizedBox(
+            width: cardWidth + 24,
+            child: Column(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               AnimatedBuilder(
-                animation: Listenable.merge([_fly, _back, _enter]),
+                animation: Listenable.merge([_fly, _back, _enter, _dragNotifier]),
                 builder: (context, _) => SizedBox(
                   height: stageHeight,
                   child: Stack(
@@ -379,6 +416,7 @@ class _CardDeckCarouselState extends State<CardDeckCarousel> with TickerProvider
                 expand: true,
               ),
             ],
+            ),
           ),
         );
       },
@@ -447,7 +485,10 @@ class _DeckCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final t = context.photon;
     final c = t.colors;
-    return Container(
+    // Its own layer: dragging or flying the print recomposites a cached
+    // texture and never repaints the image or the caption.
+    return RepaintBoundary(
+      child: Container(
       width: width,
       height: height,
       decoration: BoxDecoration(
@@ -469,7 +510,7 @@ class _DeckCard extends StatelessWidget {
           Image.asset(
             project.previewAsset,
             fit: BoxFit.cover,
-            cacheWidth: 400,
+            cacheWidth: CardDeckCarousel.imageWidth,
             filterQuality: FilterQuality.medium,
             errorBuilder: (_, _, _) => ColoredBox(color: c.hoverFill),
           ),
@@ -522,6 +563,7 @@ class _DeckCard extends StatelessWidget {
             ),
           ),
         ],
+      ),
       ),
     );
   }

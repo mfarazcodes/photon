@@ -142,6 +142,19 @@ class PhotonType {
 
   static const _tabular = <FontFeature>[FontFeature.tabularFigures()];
 
+  // Font resolution (family lookup, file mapping, the load request) is the
+  // costly part of a GoogleFonts style, and these getters run on every build.
+  // The base style for each weight is therefore resolved once, and every call
+  // after that is a cheap `copyWith`. The weight stays in the base: Google
+  // Fonts ships one file per weight, so a weight cannot be swapped afterwards.
+  static final Map<FontWeight, TextStyle> _geistBase = {};
+  static final Map<FontWeight, TextStyle> _monoBase = {};
+
+  static TextStyle _geist(FontWeight w) => _geistBase.putIfAbsent(w, () => GoogleFonts.geist(fontWeight: w));
+
+  static TextStyle _jetBrains(FontWeight w) =>
+      _monoBase.putIfAbsent(w, () => GoogleFonts.jetBrainsMono(fontWeight: w, fontFeatures: _tabular));
+
   /// Geist for studio controls, headers and prose.
   TextStyle ui({
     double size = 12,
@@ -149,9 +162,8 @@ class PhotonType {
     double height = 1.5,
     double tracking = 0,
     Color? color,
-  }) => GoogleFonts.geist(
+  }) => _geist(weight).copyWith(
     fontSize: size,
-    fontWeight: weight,
     height: height,
     letterSpacing: size * tracking,
     color: color ?? colors.carbon,
@@ -165,14 +177,17 @@ class PhotonType {
     double height = 1.4,
     double tracking = 0,
     Color? color,
-  }) => GoogleFonts.jetBrainsMono(
+  }) => _jetBrains(weight).copyWith(
     fontSize: size,
-    fontWeight: weight,
     height: height,
     letterSpacing: size * tracking,
     color: color ?? colors.carbon,
-    fontFeatures: _tabular,
   );
+
+  /// How many base styles have been resolved. For tests: it must stay flat as
+  /// styles are requested again and again.
+  @visibleForTesting
+  static int get resolvedBaseStyles => _geistBase.length + _monoBase.length;
 
   // Geist scale.
   TextStyle get headlineMd => ui(size: 20, weight: FontWeight.w500, height: 26 / 20, tracking: -0.02);

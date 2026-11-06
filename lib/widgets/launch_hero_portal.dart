@@ -27,7 +27,40 @@ class LaunchHeroPortal extends StatefulWidget {
   static const double segmentSeconds = 4;
 
   /// Share of a segment spent cross-fading into the next frame.
-  static const double fadeShare = 0.4;
+  static const double fadeShare = 0.45;
+
+  /// How far a frame pushes in over its whole life, as a scale gain.
+  static const double pushGain = 0.04;
+
+  /// Where a frame's push-in stands when it is handed from incoming to primary.
+  /// It climbs 0 to this while fading in, then this to 1 as the primary, so the
+  /// scale is the same on both sides of the hand-over.
+  static const double handoff = 0.35;
+
+  /// The two film layers at loop time [t] (seconds): which frames, the
+  /// incoming one's opacity, and each layer's scale.
+  ///
+  /// The scale is continuous across every segment boundary and across the
+  /// loop's wrap: a frame's push-in progress runs `0 -> handoff` while it fades
+  /// in and `handoff -> 1` while it is primary, and at the instant it changes
+  /// role the two expressions agree.
+  static ({int primary, int incoming, double mix, double primaryScale, double incomingScale}) layersAt(double t) {
+    final count = kHeroKeyframes.length;
+    final phase = t / segmentSeconds;
+    final primary = phase.floor() % count;
+    final within = phase - phase.floor();
+    final fadeStart = 1 - fadeShare;
+    final fade = within <= fadeStart ? 0.0 : (within - fadeStart) / fadeShare;
+    // Smootherstep: zero velocity at both ends of the fade.
+    final mix = fade * fade * fade * (fade * (fade * 6 - 15) + 10);
+    return (
+      primary: primary,
+      incoming: (primary + 1) % count,
+      mix: mix,
+      primaryScale: 1 + pushGain * (handoff + (1 - handoff) * within),
+      incomingScale: 1 + pushGain * handoff * fade,
+    );
+  }
 
   /// Decode width for the film frames (the window is rarely wider).
   static const int frameWidth = 1600;
@@ -174,40 +207,43 @@ class _FilmBackdrop extends StatelessWidget {
 
   final ValueListenable<double> time;
 
-  static Widget _frame(int i) => RepaintBoundary(
-    child: Image(
-      image: LaunchHeroPortal.frameProviders[i],
-      fit: BoxFit.cover,
-      gaplessPlayback: true,
-      filterQuality: FilterQuality.medium,
-      errorBuilder: (_, _, _) => const ColoredBox(color: Color(0xFF0E0E10)),
-    ),
-  );
+  /// One film layer: its own repaint boundary (the decoded frame stays a warm
+  /// texture), its own scale, its own opacity. Both layers are always in the
+  /// tree, so nothing is inserted or removed mid-loop.
+  static Widget _layer({required int frame, required double scale, required double opacity}) {
+    return KeyedSubtree(
+      key: ValueKey('film-frame-$frame'),
+      child: Opacity(
+        opacity: opacity,
+        child: Transform.scale(
+          scale: scale,
+          child: RepaintBoundary(
+            child: Image(
+              image: LaunchHeroPortal.frameProviders[frame],
+              fit: BoxFit.cover,
+              gaplessPlayback: true,
+              filterQuality: FilterQuality.medium,
+              errorBuilder: (_, _, _) => const ColoredBox(color: Color(0xFF0E0E10)),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
-    final count = kHeroKeyframes.length;
     return ValueListenableBuilder<double>(
       key: const Key('hero-stage'),
       valueListenable: time,
       builder: (context, t, _) {
-        final phase = t / LaunchHeroPortal.segmentSeconds;
-        final i = phase.floor() % count;
-        final within = phase - phase.floor();
-        // Hold, then fade into the next frame over the last share.
-        final fadeStart = 1 - LaunchHeroPortal.fadeShare;
-        final mix = within <= fadeStart ? 0.0 : Curves.easeInOut.transform((within - fadeStart) / LaunchHeroPortal.fadeShare);
-        // A slow push-in, restarting with each frame.
-        final push = 1.0 + 0.035 * within;
-        return Transform.scale(
-          scale: push,
-          child: Stack(
-            fit: StackFit.expand,
-            children: [
-              _frame(i),
-              if (mix > 0.001) Opacity(opacity: mix, child: _frame((i + 1) % count)),
-            ],
-          ),
+        final l = LaunchHeroPortal.layersAt(t);
+        return Stack(
+          fit: StackFit.expand,
+          children: [
+            _layer(frame: l.primary, scale: l.primaryScale, opacity: 1),
+            _layer(frame: l.incoming, scale: l.incomingScale, opacity: l.mix),
+          ],
         );
       },
     );

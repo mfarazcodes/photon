@@ -76,7 +76,9 @@ class _StudioBadge extends StatelessWidget {
   }
 }
 
-/// SPLIT / VIEWPORT / OPTICS / ACCOUNT: which panels the workspace shows.
+/// SPLIT / VIEWPORT / OPTICS pick the panels the workspace shows; DECK opens
+/// the project stack over the centre stage. The account console has one entry
+/// point: the name pill on the right.
 class _WorkspaceSwitch extends StatelessWidget {
   const _WorkspaceSwitch();
 
@@ -109,10 +111,13 @@ class _WorkspaceSwitch extends StatelessWidget {
             onTap: () => studio.setMaximizedPanel('optics'),
             tokens: t,
           ),
+          // The project deck takes over the centre stage; it is a switch of
+          // its own, not one of the three layouts.
           _Segment(
-            label: 'ACCOUNT',
-            selected: focus == 'account',
-            onTap: () => studio.setMaximizedPanel('account'),
+            key: const Key('workspace-deck'),
+            label: 'DECK',
+            selected: studio.deckView,
+            onTap: () => studio.setDeckView(!studio.deckView),
             tokens: t,
           ),
         ],
@@ -140,7 +145,6 @@ class _TelemetryCluster extends StatelessWidget {
           key: const Key('shader-theme-switch'),
           dark: studio.darkGrading,
           onChanged: studio.setDarkGrading,
-          animate: studio.animateShader,
         ),
         const SizedBox(width: PhotonSpace.sm),
         PhotonButton(
@@ -176,13 +180,18 @@ class _GpuPill extends StatelessWidget {
       RenderLink.offline => (_pending, 'Engine offline · showing preview render'),
     };
     return Tooltip(
-      message: hint,
+      message: '$hint · ${studio.modelTier.name}',
       child: PillCapsule(
         shadow: false,
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            FlashingPip(color: color, size: 6, flash: link == RenderLink.live),
+            // Pulses only while a render is converging, so a connected, finished
+            // studio is still.
+            ValueListenableBuilder<int>(
+              valueListenable: studio.samples,
+              builder: (context, _, _) => FlashingPip(color: color, size: 6, flash: link == RenderLink.live && !studio.converged),
+            ),
             const SizedBox(width: PhotonSpace.sm - 2),
             Text(
               'Vulkan RT • ${studio.targetSamples} SPP',
@@ -279,6 +288,7 @@ class _ShowcasePill extends StatelessWidget {
 
 class _Segment extends StatelessWidget {
   const _Segment({
+    super.key,
     required this.label,
     required this.selected,
     required this.onTap,

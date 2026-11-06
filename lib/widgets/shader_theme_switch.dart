@@ -1,74 +1,54 @@
-import 'dart:math' as math;
-
 import 'package:flutter/material.dart';
 
-import '../theme/photon_theme.dart';
 import 'photon_primitives.dart';
 
-/// The studio theme switch: a 76x28 pill whose track is a shader gradient.
+/// The studio theme switch: a minimal, hardware-style 76x28 optical toggle.
 ///
-/// Dark Grading is an obsidian-to-violet night with twinkling photon dots and a
-/// crescent orb on the right. Daylight Cyclorama is a warm sky with caustic
-/// rings and a solar orb on the left. The orb is the thumb; it glides across
-/// with an overshoot spring (`Curves.easeOutBack`) while the track cross-fades.
+/// A matte capsule track with two etched 1px glyphs, an aperture ring on the
+/// left (Daylight) and an eclipse slit on the right (Dark Grading), and a
+/// precision disc for a thumb. The disc slides across in 220ms on an
+/// overshoot curve (`Curves.easeOutBack`) while the track and disc recolour.
+/// Nothing animates while it is at rest: no idle ticker.
 ///
 /// Tapping the switch toggles it. The two invisible `DAYLIGHT` / `DARK GRADING`
 /// labels at either end set that mode directly (and keep the switch addressable
 /// by text, for assistive tech and tests).
 class ShaderThemeSwitch extends StatefulWidget {
-  const ShaderThemeSwitch({super.key, required this.dark, required this.onChanged, this.animate = true});
+  const ShaderThemeSwitch({super.key, required this.dark, required this.onChanged});
 
   /// True for Dark Grading, false for Daylight.
   final bool dark;
   final ValueChanged<bool> onChanged;
-
-  /// False freezes the starfield and caustic shimmer (tests); the toggle
-  /// itself still animates.
-  final bool animate;
 
   static const double width = 76;
   static const double height = 28;
   static const double thumb = 22;
   static const double _inset = 3;
 
+  /// The slide, and the recolour that goes with it.
+  static const Duration duration = Duration(milliseconds: 220);
+
   @override
   State<ShaderThemeSwitch> createState() => _ShaderThemeSwitchState();
 }
 
-class _ShaderThemeSwitchState extends State<ShaderThemeSwitch> with TickerProviderStateMixin {
-  /// 0 is Dark Grading, 1 is Daylight.
+class _ShaderThemeSwitchState extends State<ShaderThemeSwitch> with SingleTickerProviderStateMixin {
+  /// 0 is Dark Grading, 1 is Daylight. Runs only while the switch moves.
   late final AnimationController _toggle = AnimationController(
     vsync: this,
-    duration: const Duration(milliseconds: 520),
+    duration: ShaderThemeSwitch.duration,
     value: widget.dark ? 0 : 1,
   );
-  late final AnimationController _twinkle = AnimationController(
-    vsync: this,
-    duration: const Duration(milliseconds: 4200),
-    value: 0.3,
-  );
-
-  @override
-  void initState() {
-    super.initState();
-    if (widget.animate) _twinkle.repeat();
-  }
 
   @override
   void didUpdateWidget(ShaderThemeSwitch old) {
     super.didUpdateWidget(old);
     if (old.dark != widget.dark) _toggle.animateTo(widget.dark ? 0 : 1);
-    if (widget.animate && !_twinkle.isAnimating) {
-      _twinkle.repeat();
-    } else if (!widget.animate && _twinkle.isAnimating) {
-      _twinkle.stop();
-    }
   }
 
   @override
   void dispose() {
     _toggle.dispose();
-    _twinkle.dispose();
     super.dispose();
   }
 
@@ -104,7 +84,6 @@ class _ShaderThemeSwitchState extends State<ShaderThemeSwitch> with TickerProvid
 
   @override
   Widget build(BuildContext context) {
-    final c = context.photon.colors;
     return Tooltip(
       message: widget.dark ? 'Switch to Daylight Lab' : 'Switch to Dark Grading',
       child: Semantics(
@@ -123,9 +102,7 @@ class _ShaderThemeSwitchState extends State<ShaderThemeSwitch> with TickerProvid
                 children: [
                   Positioned.fill(
                     child: RepaintBoundary(
-                      child: CustomPaint(
-                        painter: _TrackPainter(toggle: _toggle, twinkle: _twinkle, hovered: hovered, edge: c.border),
-                      ),
+                      child: CustomPaint(painter: _TrackPainter(toggle: _toggle, hovered: hovered)),
                     ),
                   ),
                   _zone(left: 2, label: 'DAYLIGHT', dark: false),
@@ -134,32 +111,19 @@ class _ShaderThemeSwitchState extends State<ShaderThemeSwitch> with TickerProvid
                     animation: _toggle,
                     builder: (context, _) {
                       final mix = _toggle.value.clamp(0.0, 1.0);
-                      // The overshoot is the spring: easeOutBack runs past 1
-                      // before settling, and the thumb follows it.
+                      // easeOutBack runs past its end stop before settling:
+                      // that overshoot is the thumb's spring.
                       final travel = ShaderThemeSwitch.width - ShaderThemeSwitch.thumb - ShaderThemeSwitch._inset * 2;
                       final x = ShaderThemeSwitch._inset + travel * (1 - Curves.easeOutBack.transform(mix));
-                      final halo = Color.lerp(const Color(0xFF8A2BE2), const Color(0xFFF59E0B), mix)!;
                       return Positioned(
                         left: x,
                         top: (ShaderThemeSwitch.height - ShaderThemeSwitch.thumb) / 2,
                         width: ShaderThemeSwitch.thumb,
                         height: ShaderThemeSwitch.thumb,
                         child: IgnorePointer(
-                          child: DecoratedBox(
+                          child: RepaintBoundary(
                             key: const ValueKey('shader-theme-thumb'),
-                            decoration: BoxDecoration(
-                              shape: BoxShape.circle,
-                              boxShadow: [
-                                BoxShadow(color: halo.withValues(alpha: hovered ? 0.8 : 0.6), blurRadius: hovered ? 14 : 10),
-                                // Daylight carries a second, violet halo.
-                                BoxShadow(
-                                  color: const Color(0xFF8A2BE2).withValues(alpha: 0.28 * mix),
-                                  blurRadius: 16,
-                                  spreadRadius: 1,
-                                ),
-                              ],
-                            ),
-                            child: CustomPaint(painter: _OrbPainter(mix)),
+                            child: CustomPaint(painter: _ThumbPainter(mix)),
                           ),
                         ),
                       );
@@ -177,152 +141,91 @@ class _ShaderThemeSwitchState extends State<ShaderThemeSwitch> with TickerProvid
 
 Color _mix(Color a, Color b, double t) => Color.lerp(a, b, t)!;
 
+/// The capsule: matte fill, 1px border, and the two etched glyphs.
 class _TrackPainter extends CustomPainter {
-  _TrackPainter({required this.toggle, required this.twinkle, required this.hovered, required this.edge})
-    : super(repaint: Listenable.merge([toggle, twinkle]));
+  _TrackPainter({required this.toggle, required this.hovered}) : super(repaint: toggle);
 
   final Animation<double> toggle;
-  final Animation<double> twinkle;
   final bool hovered;
-  final Color edge;
 
-  static const _night = [Color(0xFF0E0E10), Color(0xFF1E1035), Color(0xFF4C1D95)];
-  static const _day = [Color(0xFFE0F2FE), Color(0xFFF3E8FF), Color(0xFFFEF3C7)];
+  static const _darkFill = Color(0xFF121215);
+  static const _darkEdge = Color(0xFF2A2B30);
+  static const _darkGlyph = Color(0xFF4A4B55);
+  static const _lightFill = Color(0xFFEAEAEF);
+  static const _lightEdge = Color(0xFFD4D4DC);
+  static const _lightGlyph = Color(0xFFA5A5AE);
 
-  // Fixed star positions (fraction of width, fraction of height, phase offset).
-  static const _stars = [
-    (0.10, 0.30, 0.0),
-    (0.19, 0.72, 0.8),
-    (0.27, 0.22, 1.7),
-    (0.34, 0.60, 2.4),
-    (0.43, 0.34, 3.1),
-    (0.50, 0.78, 3.9),
-    (0.57, 0.20, 4.6),
-    (0.14, 0.52, 5.3),
-    (0.38, 0.84, 5.9),
-  ];
+  /// Spectral Violet's deep end: the dark track warms toward it on the right.
+  static const _violetDeep = Color(0xFF4C1D95);
 
   @override
   void paint(Canvas canvas, Size size) {
     final light = Curves.easeInOut.transform(toggle.value.clamp(0.0, 1.0));
-    final phase = twinkle.value * 2 * math.pi;
     final rect = Offset.zero & size;
     final rrect = RRect.fromRectAndRadius(rect, Radius.circular(size.height / 2));
+    final fill = _mix(_darkFill, _lightFill, light);
 
-    canvas.save();
-    canvas.clipRRect(rrect);
-    canvas.drawRect(
-      rect,
+    // Dark: obsidian, brightening slightly toward violet on the right. The
+    // tint fades out as the track turns to Daylight, which is flat alabaster.
+    final tintedEnd = _mix(_darkFill, _violetDeep, 0.5 * (1 - light));
+    canvas.drawRRect(
+      rrect,
       Paint()
         ..shader = LinearGradient(
-          colors: [for (var i = 0; i < 3; i++) _mix(_night[i], _day[i], light)],
-          stops: const [0.0, 0.52, 1.0],
+          colors: [fill, fill, _mix(fill, tintedEnd, 1 - light)],
+          stops: const [0.0, 0.45, 1.0],
         ).createShader(rect),
     );
 
-    // Dark: twinkling photon dots.
-    final starAlpha = 1 - light;
-    if (starAlpha > 0.01) {
-      final paint = Paint();
-      for (final (fx, fy, offset) in _stars) {
-        final tw = 0.4 + 0.6 * (0.5 + 0.5 * math.sin(phase * 2 + offset));
-        paint.color = Colors.white.withValues(alpha: 0.85 * tw * starAlpha);
-        canvas.drawCircle(Offset(fx * size.width, fy * size.height), 0.7 + 0.5 * tw, paint);
-      }
-    }
+    // The glyphs: an aperture ring on the left, an eclipse slit on the right.
+    final glyph = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1
+      ..color = _mix(_darkGlyph, _lightGlyph, light);
+    final y = size.height / 2;
+    final ringCentre = Offset(ShaderThemeSwitch._inset + ShaderThemeSwitch.thumb / 2, y);
+    final slitX = size.width - ShaderThemeSwitch._inset - ShaderThemeSwitch.thumb / 2;
+    canvas.drawCircle(ringCentre, 4.5, glyph);
+    canvas.drawLine(Offset(slitX, y - 5), Offset(slitX, y + 5), glyph);
 
-    // Light: radiant caustic rings around the solar orb on the left.
-    if (light > 0.01) {
-      final center = Offset(3 + ShaderThemeSwitch.thumb / 2, size.height / 2);
-      for (var i = 0; i < 3; i++) {
-        final shimmer = 0.6 + 0.4 * math.sin(phase + i * 1.7);
-        canvas.drawCircle(
-          center,
-          15.0 + i * 8.5,
-          Paint()
-            ..style = PaintingStyle.stroke
-            ..strokeWidth = 1.1
-            ..color = _mix(const Color(0xFFF59E0B), const Color(0xFF8A2BE2), i / 2.0).withValues(alpha: 0.26 * shimmer * light),
-        );
-      }
-    }
-    canvas.restore();
-
+    final edge = _mix(_darkEdge, _lightEdge, light);
     canvas.drawRRect(
       rrect.deflate(0.5),
       Paint()
         ..style = PaintingStyle.stroke
         ..strokeWidth = 1
-        ..color = _mix(
-          Colors.white.withValues(alpha: hovered ? 0.3 : 0.14),
-          _mix(edge, const Color(0xFF8A2BE2), hovered ? 0.6 : 0.2),
-          light,
-        ),
+        ..color = hovered ? _mix(edge, const Color(0xFF8A2BE2), 0.5) : edge,
     );
   }
 
   @override
-  bool shouldRepaint(_TrackPainter old) => old.hovered != hovered || old.edge != edge;
+  bool shouldRepaint(_TrackPainter old) => old.hovered != hovered;
 }
 
-/// The thumb: a crescent moon that opens into a sun as [light] goes 0 to 1.
-class _OrbPainter extends CustomPainter {
-  _OrbPainter(this.light);
+/// The thumb: a precision disc with a ring and a centre pip. Violet on a dark
+/// disc in Dark Grading; carbon on alabaster in Daylight.
+class _ThumbPainter extends CustomPainter {
+  _ThumbPainter(this.light);
 
   final double light;
 
   @override
   void paint(Canvas canvas, Size size) {
-    final center = size.center(Offset.zero);
-    final r = size.width / 2 - 1;
-    final disc = Path()..addOval(Rect.fromCircle(center: center, radius: r));
-
-    // Moon: a pale disc with a bite taken out of its upper right.
-    final moonAlpha = 1 - light;
-    if (moonAlpha > 0.01) {
-      final bite = Path()..addOval(Rect.fromCircle(center: center + Offset(r * 0.5, -r * 0.32), radius: r * 0.82));
-      canvas.drawPath(
-        Path.combine(PathOperation.difference, disc, bite),
-        Paint()..color = const Color(0xFFEDE9FE).withValues(alpha: moonAlpha),
-      );
-      canvas.drawCircle(
-        center,
-        r,
-        Paint()
-          ..style = PaintingStyle.stroke
-          ..strokeWidth = 0.8
-          ..color = const Color(0xFFB57BFF).withValues(alpha: 0.5 * moonAlpha),
-      );
-    }
-
-    // Sun: a crisp aperture orb with short rays.
-    if (light > 0.01) {
-      final rect = Rect.fromCircle(center: center, radius: r);
-      canvas.drawCircle(
-        center,
-        r * 0.72,
-        Paint()
-          ..shader = RadialGradient(
-            colors: [
-              const Color(0xFFFFFBEB).withValues(alpha: light),
-              const Color(0xFFFDE68A).withValues(alpha: light),
-              const Color(0xFFF59E0B).withValues(alpha: light),
-            ],
-            stops: const [0.0, 0.55, 1.0],
-          ).createShader(rect),
-      );
-      final ray = Paint()
-        ..strokeCap = StrokeCap.round
-        ..strokeWidth = 1.1
-        ..color = const Color(0xFFF59E0B).withValues(alpha: light);
-      for (var i = 0; i < 8; i++) {
-        final a = i * math.pi / 4;
-        final dir = Offset(math.cos(a), math.sin(a));
-        canvas.drawLine(center + dir * (r * 0.84), center + dir * r, ray);
-      }
-    }
+    final t = Curves.easeInOut.transform(light);
+    final centre = size.center(Offset.zero);
+    final radius = size.width / 2;
+    canvas.drawCircle(centre, radius, Paint()..color = _mix(const Color(0xFF1E1F24), const Color(0xFFFFFFFF), t));
+    canvas.drawCircle(
+      centre,
+      radius - 0.75,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.5
+        ..color = _mix(const Color(0xFF8A2BE2), const Color(0xFF0E0E10), t),
+    );
+    canvas.drawCircle(centre, 2, Paint()..color = _mix(const Color(0xFFB57BFF), const Color(0xFF0E0E10), t));
   }
 
   @override
-  bool shouldRepaint(_OrbPainter old) => old.light != light;
+  bool shouldRepaint(_ThumbPainter old) => old.light != light;
 }

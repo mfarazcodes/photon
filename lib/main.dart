@@ -25,7 +25,7 @@ class PhotonApp extends StatefulWidget {
 class _PhotonAppState extends State<PhotonApp> {
   // The app opens on the launch film and shows the projects as a stacked deck.
   late final StudioController _studio =
-      widget.controller ?? StudioController(startInLandingPage: widget.startInLandingPage, startInDeckView: true);
+      widget.controller ?? StudioController(startInLandingPage: widget.startInLandingPage);
   late bool _dark = _studio.darkGrading;
 
   // Built once: ThemeData construction pulls in the Google Fonts text theme.
@@ -59,6 +59,9 @@ class _PhotonAppState extends State<PhotonApp> {
         title: 'PHOTON® Spatial Studio',
         debugShowCheckedModeBanner: false,
         theme: _dark ? _grading : _daylight,
+        // A theme change is one rebuild, not a 200ms interpolation of the whole
+        // tree. The surfaces that want a transition animate it themselves.
+        themeAnimationDuration: Duration.zero,
         home: const Scaffold(body: SpatialCanvas()),
       ),
     );

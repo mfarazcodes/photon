@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 
 import '../state/studio_controller.dart';
 import '../theme/photon_theme.dart';
-import 'card_deck_carousel.dart';
 import 'intent_file_trigger.dart';
 import 'photon_primitives.dart';
 
@@ -81,20 +80,17 @@ class _ProjectsSidebarState extends State<ProjectsSidebar> {
         onIngest: () => studio.setIngestSheetOpen(true),
       ),
       const SizedBox(height: PhotonSpace.xs + 2),
+      // STACK DECK opens the deck on the centre stage; the list stays here.
       _ViewToggle(deck: deck, onChanged: studio.setDeckView),
       const SizedBox(height: PhotonSpace.xs + 2),
-      // The deck always shows every project, so it has no filter or search.
-      if (!deck) ...[
-        _FilterStrip(
-          selected: _filter,
-          onChanged: (f) => setState(() => _filter = f),
-        ),
-        const SizedBox(height: PhotonSpace.xs + 2),
-        _SearchField(onChanged: (q) => setState(() => _query = q)),
-      ],
+      _FilterStrip(
+        selected: _filter,
+        onChanged: (f) => setState(() => _filter = f),
+      ),
+      const SizedBox(height: PhotonSpace.xs + 2),
+      _SearchField(onChanged: (q) => setState(() => _query = q)),
       const SizedBox(height: PhotonSpace.sm),
     ];
-    const deckWidget = CardDeckCarousel(key: Key('card-deck-carousel'));
 
     final empty = Padding(
       padding: const EdgeInsets.all(PhotonSpace.md),
@@ -113,9 +109,7 @@ class _ProjectsSidebarState extends State<ProjectsSidebar> {
           children: [
             ...controls,
             Expanded(
-              child: deck
-                  ? const SingleChildScrollView(child: deckWidget)
-                  : projects.isEmpty
+              child: projects.isEmpty
                   ? empty
                   // Eager (not a lazy ListView): the list is short, and every
                   // card should exist for accessibility and drag targets.
@@ -141,9 +135,6 @@ class _ProjectsSidebarState extends State<ProjectsSidebar> {
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         ...controls,
-        if (deck)
-          const Center(child: SizedBox(width: ProjectsSidebar.width + 16, child: deckWidget))
-        else
         SizedBox(
           height: ProjectsSidebar.carouselHeight,
           child: projects.isEmpty

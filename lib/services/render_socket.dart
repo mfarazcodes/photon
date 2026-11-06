@@ -23,7 +23,8 @@ class RenderSocket {
 
   static final Uri defaultUri = Uri.parse('ws://127.0.0.1:8765');
 
-  final Uri uri;
+  /// Where the engine is. Changed by [retarget].
+  Uri uri;
   final Duration minBackoff;
   final Duration maxBackoff;
   final Duration connectTimeout;
@@ -51,6 +52,17 @@ class RenderSocket {
     _running = true;
     _attempt = 0;
     _open(++_session);
+  }
+
+  /// Points the link at a different engine. With [reconnect] the current link
+  /// is dropped and a new one opened at once; without it the address is only
+  /// staged for the next [connect].
+  void retarget(Uri newUri, {bool reconnect = true}) {
+    if (_disposed) return;
+    final wasRunning = _running;
+    if (wasRunning) disconnect();
+    uri = newUri;
+    if (wasRunning || reconnect) connect();
   }
 
   void disconnect() {

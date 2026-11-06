@@ -1,3 +1,4 @@
+import 'dart:io';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
@@ -244,10 +245,77 @@ const List<IngestPreset> kIngestPresets = [
   IngestPreset('STUDIO_SOFTBOX.hdr', 36.0, 'Dome light · 16K latlong', Icons.wb_sunny_outlined),
 ];
 
-/// The ingest popover: curated assets to pull into the studio. Escape or a
-/// click outside closes it; choosing a file starts the Progressive Flux Loader.
-class FileIngestSheet extends StatelessWidget {
+/// The ingest sheet: bring a file from disk, embed a direct URL, or pick one of
+/// the curated samples. Escape or a click outside closes it; any of them starts
+/// the Progressive Flux Loader.
+class FileIngestSheet extends StatefulWidget {
   const FileIngestSheet({super.key});
+
+  /// The largest image read into memory for the viewport (bigger ones are shown
+  /// from disk instead).
+  static const int maxInlineImageBytes = 32 * 1024 * 1024;
+
+  @override
+  State<FileIngestSheet> createState() => _FileIngestSheetState();
+}
+
+class _FileIngestSheetState extends State<FileIngestSheet> {
+  final TextEditingController _path = TextEditingController();
+  final TextEditingController _url = TextEditingController();
+  final FocusNode _pathFocus = FocusNode(debugLabel: 'ingest-path');
+
+  /// A line under the browse card: what happened, or what to do next.
+  String? _note;
+  bool _browsing = false;
+
+  @override
+  void dispose() {
+    _path.dispose();
+    _url.dispose();
+    _pathFocus.dispose();
+    super.dispose();
+  }
+
+  /// Opens the native file dialog; if there is none, or it is cancelled, falls
+  /// back to the path field.
+  Future<void> _browse() async {
+    if (_browsing) return;
+    final studio = StudioScope.read(context);
+    setState(() => _browsing = true);
+    final picked = await studio.pickLocalFile();
+    if (!mounted) return;
+    setState(() => _browsing = false);
+    if (picked == null) {
+      setState(() => _note = 'NO FILE CHOSEN · TYPE OR PASTE A PATH BELOW');
+      _pathFocus.requestFocus();
+      return;
+    }
+    _ingestPath(picked);
+  }
+
+  /// Reads [raw] from disk (size, and the bytes of an image) and ingests it.
+  void _ingestPath(String raw) {
+    final studio = StudioScope.read(context);
+    var path = raw.trim();
+    if (path.length > 1 && path.startsWith('"') && path.endsWith('"')) path = path.substring(1, path.length - 1);
+    if (path.isEmpty) {
+      setState(() => _note = 'TYPE OR PASTE A FILE PATH');
+      return;
+    }
+    final file = File(path);
+    if (!file.existsSync()) {
+      studio.showToast('FILE NOT FOUND · $path');
+      setState(() => _note = 'FILE NOT FOUND · CHECK THE PATH');
+      return;
+    }
+    final size = file.lengthSync();
+    final dot = path.lastIndexOf('.');
+    final ext = dot > 0 ? path.substring(dot + 1).toLowerCase() : '';
+    final Uint8List? bytes = StudioController.imageExtensions.contains(ext) && size <= FileIngestSheet.maxInlineImageBytes
+        ? file.readAsBytesSync()
+        : null;
+    studio.startLocalFileIngest(filePath: path, bytes: bytes, sizeMb: size / (1024 * 1024));
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -275,7 +343,9 @@ class FileIngestSheet extends StatelessWidget {
           ),
           Center(
             child: ConstrainedBox(
-              constraints: const BoxConstraints(maxWidth: 440),
+              // Wide enough for the path and URL fields; it scrolls inside the
+              // window rather than overflow it.
+              constraints: BoxConstraints(maxWidth: 480, maxHeight: MediaQuery.sizeOf(context).height),
               child: GestureDetector(
                 behavior: HitTestBehavior.opaque,
                 onTap: () {},
@@ -289,7 +359,8 @@ class FileIngestSheet extends StatelessWidget {
                     border: Border.all(color: c.border),
                     boxShadow: t.level2,
                   ),
-                  child: Column(
+                  child: SingleChildScrollView(
+                    child: Column(
                     mainAxisSize: MainAxisSize.min,
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
@@ -332,6 +403,39 @@ class FileIngestSheet extends StatelessWidget {
                         ],
                       ),
                       const SizedBox(height: PhotonSpace.md),
+                      Text('LOCAL FILE UPLOAD', style: t.text.labelCaps.copyWith(fontSize: 8, color: c.ghost)),
+                      const SizedBox(height: PhotonSpace.xs + 2),
+                      _BrowseCard(
+                        key: const Key('ingest-local-file-btn'),
+                        busy: _browsing,
+                        onTap: _browse,
+                      ),
+                      if (_note != null) ...[
+                        const SizedBox(height: PhotonSpace.xs + 2),
+                        Text(_note!, key: const Key('ingest-note'), style: t.text.labelCaps.copyWith(fontSize: 7.5, color: c.rose)),
+                      ],
+                      const SizedBox(height: PhotonSpace.sm),
+                      _InputRow(
+                        fieldKey: const Key('ingest-local-path-input'),
+                        buttonKey: const Key('ingest-local-path-submit'),
+                        controller: _path,
+                        focusNode: _pathFocus,
+                        hint: r'C:\path\to\scene.png, .exr, .usd',
+                        button: 'INGEST',
+                        onSubmit: () => _ingestPath(_path.text),
+                      ),
+                      const SizedBox(height: PhotonSpace.md),
+                      Text('DIRECT URL EMBED', style: t.text.labelCaps.copyWith(fontSize: 8, color: c.ghost)),
+                      const SizedBox(height: PhotonSpace.xs + 2),
+                      _InputRow(
+                        fieldKey: const Key('ingest-url-input'),
+                        buttonKey: const Key('ingest-url-submit-btn'),
+                        controller: _url,
+                        hint: 'https://.../scene.png, .exr, .usd or ws://...',
+                        button: 'EMBED URL',
+                        onSubmit: () => studio.startUrlIngest(_url.text),
+                      ),
+                      const SizedBox(height: PhotonSpace.md),
                       Text('CURATED ASSETS', style: t.text.labelCaps.copyWith(fontSize: 8, color: c.ghost)),
                       const SizedBox(height: PhotonSpace.xs + 2),
                       for (final preset in kIngestPresets) ...[
@@ -343,12 +447,201 @@ class FileIngestSheet extends StatelessWidget {
                       ],
                     ],
                   ),
+                  ),
                 ),
               ),
             ),
           ),
         ],
       ),
+    );
+  }
+}
+
+/// A dashed, tactile card that opens the file dialog.
+class _BrowseCard extends StatelessWidget {
+  const _BrowseCard({super.key, required this.busy, required this.onTap});
+
+  final bool busy;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = context.photon;
+    final c = t.colors;
+    return Semantics(
+      button: true,
+      label: 'Upload local file',
+      child: HoverBuilder(
+        cursor: SystemMouseCursors.click,
+        builder: (context, hovered) => GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTap: onTap,
+          child: CustomPaint(
+            painter: _DashedBorderPainter(
+              color: hovered ? c.violet : c.border,
+              fill: hovered ? c.violet.withValues(alpha: 0.07) : c.hoverFill,
+            ),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: PhotonSpace.md, vertical: PhotonSpace.md - 2),
+              child: Row(
+                children: [
+                  Icon(Icons.upload_file, size: 20, color: hovered ? c.violetInk : c.textMuted),
+                  const SizedBox(width: PhotonSpace.md - 2),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(
+                          'UPLOAD LOCAL FILE (.PNG, .JPG, .USD, .EXR, .OBJ)',
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: t.text.labelCaps.copyWith(fontSize: 8.5, color: c.carbon),
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          'Pick a file on this computer. Images open in the viewport as they are.',
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: t.text.telemetrySm.copyWith(fontSize: 9, color: c.textMuted),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(width: PhotonSpace.sm),
+                  Container(
+                    height: 24,
+                    padding: const EdgeInsets.symmetric(horizontal: PhotonSpace.sm + 2),
+                    alignment: Alignment.center,
+                    decoration: BoxDecoration(
+                      color: c.carbon,
+                      borderRadius: BorderRadius.circular(PhotonRadius.control),
+                    ),
+                    child: Text(
+                      busy ? 'OPENING...' : 'BROWSE DISK...',
+                      style: t.text.labelCaps.copyWith(fontSize: 8, color: c.onCarbon, fontWeight: FontWeight.w700),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _DashedBorderPainter extends CustomPainter {
+  const _DashedBorderPainter({required this.color, required this.fill});
+
+  final Color color;
+  final Color fill;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final rrect = RRect.fromRectAndRadius(Offset.zero & size, const Radius.circular(PhotonRadius.window));
+    canvas.drawRRect(rrect, Paint()..color = fill);
+    final border = Path()..addRRect(rrect.deflate(0.5));
+    final paint = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1
+      ..color = color;
+    const dash = 5.0;
+    const gap = 4.0;
+    for (final metric in border.computeMetrics()) {
+      for (var d = 0.0; d < metric.length; d += dash + gap) {
+        canvas.drawPath(metric.extractPath(d, math.min(d + dash, metric.length)), paint);
+      }
+    }
+  }
+
+  @override
+  bool shouldRepaint(_DashedBorderPainter old) => old.color != color || old.fill != fill;
+}
+
+/// A single-line field with an action button beside it; Enter submits too.
+class _InputRow extends StatelessWidget {
+  const _InputRow({
+    required this.fieldKey,
+    required this.buttonKey,
+    required this.controller,
+    required this.hint,
+    required this.button,
+    required this.onSubmit,
+    this.focusNode,
+  });
+
+  final Key fieldKey;
+  final Key buttonKey;
+  final TextEditingController controller;
+  final FocusNode? focusNode;
+  final String hint;
+  final String button;
+  final VoidCallback onSubmit;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = context.photon;
+    final c = t.colors;
+    OutlineInputBorder border(Color color) => OutlineInputBorder(
+      borderRadius: BorderRadius.circular(PhotonRadius.control),
+      borderSide: BorderSide(color: color),
+    );
+    return Row(
+      children: [
+        Expanded(
+          child: SizedBox(
+            height: 30,
+            child: TextField(
+              key: fieldKey,
+              controller: controller,
+              focusNode: focusNode,
+              onSubmitted: (_) => onSubmit(),
+              maxLines: 1,
+              cursorColor: c.violetInk,
+              style: t.text.telemetryMd.copyWith(color: c.carbon),
+              decoration: InputDecoration(
+                isDense: true,
+                filled: true,
+                fillColor: c.canvas,
+                hintText: hint,
+                hintStyle: t.text.telemetrySm.copyWith(color: c.ghost),
+                contentPadding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+                border: border(c.border),
+                enabledBorder: border(c.border),
+                focusedBorder: border(c.violet),
+              ),
+            ),
+          ),
+        ),
+        const SizedBox(width: PhotonSpace.sm),
+        Semantics(
+          button: true,
+          label: button,
+          child: HoverBuilder(
+            cursor: SystemMouseCursors.click,
+            builder: (context, hovered) => GestureDetector(
+              key: buttonKey,
+              behavior: HitTestBehavior.opaque,
+              onTap: onSubmit,
+              child: AnimatedContainer(
+                duration: const Duration(milliseconds: 120),
+                height: 30,
+                padding: const EdgeInsets.symmetric(horizontal: PhotonSpace.md),
+                alignment: Alignment.center,
+                decoration: BoxDecoration(
+                  color: hovered ? c.violet.withValues(alpha: 0.16) : c.violet.withValues(alpha: 0.1),
+                  borderRadius: BorderRadius.circular(PhotonRadius.control),
+                  border: Border.all(color: hovered ? c.violet : c.violet.withValues(alpha: 0.5)),
+                ),
+                child: Text(button, style: t.text.labelCaps.copyWith(fontSize: 8, color: c.violetInk, fontWeight: FontWeight.w700)),
+              ),
+            ),
+          ),
+        ),
+      ],
     );
   }
 }

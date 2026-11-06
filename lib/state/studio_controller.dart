@@ -1,9 +1,12 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'dart:math' as math;
+import 'dart:ui' as ui;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart' show RenderRepaintBoundary;
 import 'package:flutter/services.dart';
 
 import '../models/prompt_result.dart';
@@ -11,6 +14,7 @@ import '../models/render_snapshot.dart';
 import '../models/scene_asset.dart';
 import '../models/studio_account.dart';
 import '../models/studio_project.dart';
+import '../services/file_dialog.dart';
 import '../services/render_socket.dart';
 import '../theme/photon_theme.dart';
 
@@ -152,6 +156,84 @@ const List<SceneAsset> kSceneAssets = [
   ),
 ];
 
+/// PHOTON LUMEN-1, the neural ray-tracing and light-transport model, in three
+/// tiers. A tier is a preset: sample count, bounce depth and integrator.
+///
+/// The display name is [name] (which shadows the built-in enum `name`); the
+/// stable identifier, `lite` / `quick` / `pro`, is [id].
+enum PhotonModelTier {
+  lite(
+    'PHOTON LUMEN · LITE',
+    'LITE',
+    'LUMEN LITE',
+    'Neural Draft · 64 SPP · 4 Bounces',
+    '64 SPP · 4 Bounces · Sub-8ms Viewport',
+    64,
+    4,
+    IntegratorMode.unidirectional,
+    Color(0xFF22D3EE),
+  ),
+  quick(
+    'PHOTON LUMEN · QUICK',
+    'QUICK',
+    'LUMEN QUICK',
+    'ReSTIR Interactive · 256 SPP · 12 Bounces',
+    '256 SPP · 12 Bounces · Real-Time OIDN',
+    256,
+    12,
+    IntegratorMode.restir,
+    Color(0xFF8A2BE2),
+  ),
+  pro(
+    'PHOTON LUMEN · PRO',
+    'PRO',
+    'LUMEN PRO',
+    'Full Spectral BiDir + SPPM · 1024 SPP · 24 Bounces',
+    '1024 SPP · 24 Bounces · Spectral Cauchy',
+    1024,
+    24,
+    IntegratorMode.sppm,
+    Color(0xFFFF2D78),
+  );
+
+  const PhotonModelTier(
+    this.name,
+    this.shortTag,
+    this.title,
+    this.spec,
+    this.detail,
+    this.defaultSpp,
+    this.defaultBounces,
+    this.defaultIntegrator,
+    this.accent,
+  );
+
+  /// The model's id on the engine socket.
+  static const String modelId = 'photon_lumen_1';
+
+  /// `PHOTON LUMEN · QUICK`.
+  final String name;
+
+  /// The badge on the processor button.
+  final String shortTag;
+
+  /// The card title in the selector (`LUMEN QUICK`).
+  final String title;
+
+  /// One-line spec (`ReSTIR Interactive · 256 SPP · 12 Bounces`).
+  final String spec;
+
+  /// The card's detail line.
+  final String detail;
+  final int defaultSpp;
+  final int defaultBounces;
+  final IntegratorMode defaultIntegrator;
+  final Color accent;
+
+  /// `lite`, `quick` or `pro`: the Dart enum name that [name] shadows.
+  String get id => EnumName(this).name;
+}
+
 /// Single source of truth for the studio workspace.
 ///
 /// Low-frequency state (theme, parameters, selection) notifies as a whole.
@@ -177,6 +259,7 @@ class StudioController extends ChangeNotifier {
        _showLaunchPortal = startInLandingPage,
        _inStudioWorkspace = !startInLandingPage,
        _deckView = startInDeckView,
+       _autoConnect = autoConnect,
        // A private field cannot be a named parameter, so this stays an assignment.
        // ignore: prefer_initializing_formals
        _animateShader = animateShader {
@@ -193,6 +276,10 @@ class StudioController extends ChangeNotifier {
 
   final RenderSocket socket;
   final DateTime Function() _now;
+
+  /// Whether this studio keeps a link to the engine. Off, the engine address
+  /// can still be changed but nothing connects.
+  final bool _autoConnect;
   late final StreamSubscription<Map<String, dynamic>> _messageSub;
 
   /// Drives convergence and the idle-frame check. It only exists while one of
@@ -646,11 +733,6 @@ class StudioController extends ChangeNotifier {
     notifyListeners();
   }
 
-  void exportExr() {
-    final sent = socket.send({'action': 'export_exr'});
-    showToast(sent ? 'EXR EXPORT REQUESTED' : 'ENGINE OFFLINE · EXPORT UNAVAILABLE');
-  }
-
   // --- Projects --------------------------------------------------------
 
   final List<StudioProject> _projects = List.of(kDefaultProjects);
@@ -811,6 +893,11 @@ class StudioController extends ChangeNotifier {
 
   /// Maximizing a panel also expands it, so the two states never fight.
   void setMaximizedPanel(String? panelId) {
+    // The account has one home: its console, over the workspace.
+    if (panelId == 'account') {
+      setAccountModalOpen(true);
+      return;
+    }
     _maximizedPanel = panelId;
     if (panelId == 'viewport') _viewportCollapsed = false;
     if (panelId == 'optics') _opticsCollapsed = false;
@@ -859,6 +946,7 @@ class StudioController extends ChangeNotifier {
     params: Map<String, double>.of(_params),
     projectId: _activeProjectId,
     integrator: _integrator,
+    modelTier: _modelTier,
   );
 
   /// Saves the state as it is now, ahead of a change. Consecutive changes to
@@ -897,6 +985,8 @@ class StudioController extends ChangeNotifier {
       ..clear()
       ..addAll(s.params);
     _integrator = s.integrator;
+    final tierChanged = s.modelTier != null && s.modelTier != _modelTier;
+    _modelTier = s.modelTier ?? _modelTier;
     final project = _projects.where((p) => p.id == s.projectId).firstOrNull;
     if (project != null && project.id != _activeProjectId) {
       _activeProjectId = project.id;
@@ -905,6 +995,7 @@ class StudioController extends ChangeNotifier {
     _syncActiveProject();
     _restartConvergence();
     socket.send({'load_project': _activeProjectId, 'params': Map<String, double>.of(_params)});
+    if (tierChanged) socket.send({'model': PhotonModelTier.modelId, 'tier': _modelTier.id});
     notifyListeners();
   }
 
@@ -953,8 +1044,8 @@ class StudioController extends ChangeNotifier {
 
   void setAccountModalOpen(bool open) {
     if (_accountModalOpen == open) return;
+    if (open) _closeOverlays();
     _accountModalOpen = open;
-    if (open) _commandPaletteOpen = false;
     notifyListeners();
   }
 
@@ -1071,8 +1162,8 @@ class StudioController extends ChangeNotifier {
 
   void setCommandPaletteOpen(bool open) {
     if (_commandPaletteOpen == open) return;
+    if (open) _closeOverlays();
     _commandPaletteOpen = open;
-    if (open) _accountModalOpen = false;
     notifyListeners();
   }
 
@@ -1094,9 +1185,7 @@ class StudioController extends ChangeNotifier {
     if (_showLaunchPortal) return;
     _showLaunchPortal = true;
     _inStudioWorkspace = false;
-    _accountModalOpen = false;
-    _commandPaletteOpen = false;
-    _ingestSheetOpen = false;
+    _closeOverlays();
     notifyListeners();
   }
 
@@ -1115,7 +1204,21 @@ class StudioController extends ChangeNotifier {
 
   /// Whether the live scenes should hold still: something sits over them.
   bool get sceneAnimationPaused =>
-      _showLaunchPortal || _accountModalOpen || _commandPaletteOpen || _ingestSheetOpen;
+      _showLaunchPortal ||
+      _accountModalOpen ||
+      _commandPaletteOpen ||
+      _ingestSheetOpen ||
+      _exportModalOpen ||
+      _modelPopoverOpen;
+
+  /// Opening any overlay closes the others: one at a time.
+  void _closeOverlays() {
+    _accountModalOpen = false;
+    _commandPaletteOpen = false;
+    _ingestSheetOpen = false;
+    _exportModalOpen = false;
+    _modelPopoverOpen = false;
+  }
 
   // --- File ingest & upload --------------------------------------------
 
@@ -1124,11 +1227,8 @@ class StudioController extends ChangeNotifier {
 
   void setIngestSheetOpen(bool open) {
     if (_ingestSheetOpen == open) return;
+    if (open) _closeOverlays();
     _ingestSheetOpen = open;
-    if (open) {
-      _accountModalOpen = false;
-      _commandPaletteOpen = false;
-    }
     notifyListeners();
   }
 
@@ -1175,11 +1275,24 @@ class StudioController extends ChangeNotifier {
 
   /// Starts ingesting [fileName]. Progress advances with the studio ticker;
   /// when it reaches 100% the asset joins the project list.
-  void startFileUpload(String fileName, {double sizeMb = 48.5}) {
+  void startFileUpload(String fileName, {double sizeMb = 48.5}) => _beginUpload(fileName, sizeMb);
+
+  /// Image types the viewport can show as a still.
+  static const Set<String> imageExtensions = {'png', 'jpg', 'jpeg', 'webp', 'bmp', 'gif'};
+
+  // What the transfer in flight will attach to the project it creates.
+  String? _pendingLocalPath;
+  Uint8List? _pendingBytes;
+  String? _pendingUrl;
+
+  void _beginUpload(String fileName, double sizeMb, {String? localPath, Uint8List? bytes, String? url}) {
     if (_isUploading) {
       showToast('INGEST IN PROGRESS · $_uploadingFileName');
       return;
     }
+    _pendingLocalPath = localPath;
+    _pendingBytes = bytes;
+    _pendingUrl = url;
     _uploadLingerTimer?.cancel();
     _uploadLingering = false;
     _isUploading = true;
@@ -1192,6 +1305,51 @@ class StudioController extends ChangeNotifier {
     _ingestSheetOpen = false;
     _ensureTicking();
     notifyListeners();
+  }
+
+  /// Brings a file from disk into the studio. The name and size come from the
+  /// path and [bytes] (or [sizeMb], or the file itself); the transfer runs the
+  /// flux loader, and the project it creates keeps [filePath] and [bytes], so
+  /// an image shows in the viewport as it is.
+  void startLocalFileIngest({required String filePath, Uint8List? bytes, double? sizeMb}) {
+    final path = filePath.trim();
+    if (path.isEmpty) {
+      showToast('CHOOSE A FILE FIRST');
+      return;
+    }
+    final fileName = path.split(RegExp(r'[\\/]')).last;
+    var mb = sizeMb ?? (bytes != null ? bytes.length / (1024 * 1024) : null);
+    if (mb == null) {
+      try {
+        mb = File(path).lengthSync() / (1024 * 1024);
+      } on FileSystemException {
+        // Not on disk (yet): fall through to a nominal size.
+      }
+    }
+    _beginUpload(fileName.isEmpty ? path : fileName, mb ?? 1.0, localPath: path, bytes: bytes);
+  }
+
+  /// Embeds a direct URL. `http` and `https` run the flux loader and create a
+  /// project the viewport loads from that address; `ws` and `wss` point the
+  /// engine link at that stream instead.
+  void startUrlIngest(String rawUrl) {
+    final url = rawUrl.trim();
+    final uri = Uri.tryParse(url);
+    const schemes = {'http', 'https', 'ws', 'wss'};
+    if (url.isEmpty || uri == null || !schemes.contains(uri.scheme.toLowerCase()) || uri.host.isEmpty) {
+      showToast('INVALID URL · USE HTTP/HTTPS/WS');
+      return;
+    }
+    if (uri.scheme.toLowerCase().startsWith('ws')) {
+      _ingestSheetOpen = false;
+      socket.retarget(uri, reconnect: _autoConnect);
+      showToast('STREAM LINKED · $url');
+      notifyListeners();
+      return;
+    }
+    final last = uri.pathSegments.isEmpty ? '' : uri.pathSegments.last;
+    final fileName = last.isNotEmpty ? last : '${uri.host.replaceAll('.', '_')}.url';
+    _beginUpload(fileName, 8.0, url: url);
   }
 
   void _advanceUpload() {
@@ -1243,20 +1401,38 @@ class StudioController extends ChangeNotifier {
     final kind = ProceduralSceneKind.values[pick % ProceduralSceneKind.values.length];
     final preview = _ingestPreviews[pick % _ingestPreviews.length];
 
+    // What came with the transfer, claimed now so the next one starts clean.
+    final localPath = _pendingLocalPath;
+    final bytes = _pendingBytes;
+    final url = _pendingUrl;
+    _pendingLocalPath = null;
+    _pendingBytes = null;
+    _pendingUrl = null;
+    final isImage = imageExtensions.contains(ext);
+    final remote = url != null;
+    final host = remote ? Uri.parse(url).host : '';
+
     _projectSeq++;
     final project = StudioProject(
       id: '${stem.toLowerCase().replaceAll(RegExp(r'[^a-z0-9]+'), '_')}_$_projectSeq',
       name: stem,
       code: 'PRJ-${_projectSeq.toString().padLeft(2, '0')}',
-      sceneType: _ingestSceneTypes[ext] ?? 'Imported Asset',
-      subtitle: '.$ext · ${_uploadSizeMb.toStringAsFixed(1)} MB',
+      sceneType: remote
+          ? (isImage ? 'Remote Image' : 'Remote Asset')
+          : (isImage && localPath != null ? 'Local Image' : (_ingestSceneTypes[ext] ?? 'Imported Asset')),
+      subtitle: remote ? '.$ext · $host' : '.$ext · ${_uploadSizeMb.toStringAsFixed(1)} MB',
       updatedAt: 'just now',
       status: ProjectStatus.draft,
       previewAsset: preview,
       params: Map<String, double>.of(_params),
       integrator: _integrator,
       sceneKind: kind,
-      isDynamic: const {'usd', 'ior', 'obj'}.contains(ext),
+      // An image, or anything embedded from a URL, is shown as the still it
+      // is, not replaced by a simulation.
+      isDynamic: !isImage && !remote && const {'usd', 'ior', 'obj'}.contains(ext),
+      localFilePath: localPath,
+      externalUrl: url,
+      customBytes: bytes,
     );
     _projects.insert(0, project);
     selectProject(project.id);
@@ -1287,6 +1463,250 @@ class StudioController extends ChangeNotifier {
     'assets/images/caustic_wave.jpg',
     'assets/images/gold_bsdf_sphere.jpg',
   ];
+
+  // --- Photon model ----------------------------------------------------
+
+  PhotonModelTier _modelTier = PhotonModelTier.quick;
+
+  /// The PHOTON LUMEN-1 tier in use. Quick is the default.
+  PhotonModelTier get modelTier => _modelTier;
+
+  bool _modelPopoverOpen = false;
+  bool get modelPopoverOpen => _modelPopoverOpen;
+
+  void setModelPopoverOpen(bool open) {
+    if (_modelPopoverOpen == open) return;
+    if (open) _closeOverlays();
+    _modelPopoverOpen = open;
+    notifyListeners();
+  }
+
+  /// Switches tier and applies its preset: sample count, bounce depth and
+  /// integrator (one undo step), tells the engine, and restarts convergence.
+  void setModelTier(PhotonModelTier tier) {
+    _recordUndo(Object());
+    _modelTier = tier;
+    _writeParam('samples_per_pixel', tier.defaultSpp.toDouble());
+    _writeParam('max_bounces', tier.defaultBounces.toDouble());
+    if (_integrator != tier.defaultIntegrator) {
+      _integrator = tier.defaultIntegrator;
+      socket.send({'integrator': _integrator.name});
+    }
+    _syncActiveProject();
+    socket.send({'model': PhotonModelTier.modelId, 'tier': tier.id});
+    _restartConvergence();
+    _modelPopoverOpen = false;
+    showToast('MODEL · ${tier.name}');
+    notifyListeners();
+  }
+
+  /// Drops the engine link and opens a new one. A studio that was built not to
+  /// connect (tests) only reports the address.
+  void reconnectEngine() {
+    if (_autoConnect) {
+      socket.disconnect();
+      socket.connect();
+    }
+    showToast('RECONNECTING · ${socket.uri}');
+  }
+
+  // --- Optical probe ---------------------------------------------------
+
+  bool _probeVisible = true;
+
+  /// Whether the focus probe (the ring and the wavelength readout) is drawn on
+  /// the stage.
+  bool get probeVisible => _probeVisible;
+
+  void setProbeVisible(bool value) {
+    if (_probeVisible == value) return;
+    _probeVisible = value;
+    notifyListeners();
+  }
+
+  void toggleProbeVisible() => setProbeVisible(!_probeVisible);
+
+  // --- Local file picker -----------------------------------------------
+
+  /// Replaces the native file dialog (tests).
+  Future<String?> Function()? filePickerOverride;
+
+  /// Asks the user for a file on disk: the native dialog on Windows, null
+  /// anywhere it cannot be shown (cancelled, headless, other platforms).
+  Future<String?> pickLocalFile() {
+    final override = filePickerOverride;
+    return override != null ? override() : pickLocalFileNative();
+  }
+
+  // --- Export ----------------------------------------------------------
+
+  bool _exportModalOpen = false;
+  String? _lastExportSummary;
+  String? _stagedManifest;
+
+  bool get exportModalOpen => _exportModalOpen;
+
+  /// The path of the last file the export sheet wrote.
+  String? get lastExportSummary => _lastExportSummary;
+
+  /// The scene manifest staged by the last [exportExr].
+  String? get stagedManifest => _stagedManifest;
+
+  /// The viewport stage's repaint boundary, so a frame can be captured from it.
+  final GlobalKey viewportCaptureKey = GlobalKey(debugLabel: 'viewport-capture');
+
+  /// Where exports are written. The system temp directory unless overridden.
+  Directory? exportDirectoryOverride;
+  Directory get exportDirectory => exportDirectoryOverride ?? Directory.systemTemp;
+
+  void setExportModalOpen(bool open) {
+    if (_exportModalOpen == open) return;
+    if (open) _closeOverlays();
+    _exportModalOpen = open;
+    notifyListeners();
+  }
+
+  /// Everything needed to reopen this scene: project, model tier, integrator,
+  /// the six optics parameters, probe wavelength, camera, and the takes.
+  Map<String, Object?> buildSceneManifest() {
+    final project = activeProject;
+    return {
+      'schema': 'photon.scene/1',
+      'exported_at': _now().toUtc().toIso8601String(),
+      'project': {
+        'id': _activeProjectId,
+        'name': project?.name ?? 'UNSAVED',
+        'code': project?.code,
+        'scene_type': project?.sceneType,
+        'scene_kind': project?.sceneKind.name,
+        'dynamic': project?.isDynamic ?? false,
+        'preview_asset': project?.previewAsset,
+        'local_file': project?.localFilePath,
+        'url': project?.externalUrl,
+      },
+      'model': {'id': PhotonModelTier.modelId, 'tier': _modelTier.id, 'name': _modelTier.name},
+      'integrator': _integrator.name,
+      'optics': {for (final p in kOpticsParams) p.id: _params[p.id]},
+      'probe': {'wavelength_nm': _wavelengthNm, 'visible': _probeVisible},
+      'camera': {
+        'zoom': cameraZoom.value,
+        'focus': {'x': focusPoint.value.dx, 'y': focusPoint.value.dy},
+        'orbit': {'x': orbit.value.dx, 'y': orbit.value.dy},
+      },
+      'snapshots': [
+        for (final s in _snapshots)
+          {
+            'id': s.id,
+            'label': s.label,
+            'project': s.projectId,
+            'integrator': s.integrator.name,
+            'params': s.params,
+            'timestamp': s.timestamp.toUtc().toIso8601String(),
+          },
+      ],
+    };
+  }
+
+  String get _manifestJson => const JsonEncoder.withIndent('  ').convert(buildSceneManifest());
+
+  /// `EXPORT EXR`: asks the engine for the pass, stages the scene manifest, and
+  /// opens the export sheet. It works with the engine offline too: the sheet
+  /// can write the viewport frame and the manifest itself.
+  void exportExr() {
+    final name = activeProject?.name ?? 'SCENE';
+    _stagedManifest = _manifestJson;
+    final sent = socket.send({
+      'action': 'export_exr',
+      'project': _activeProjectId,
+      'model_tier': _modelTier.id,
+      'params': Map<String, double>.of(_params),
+    });
+    _closeOverlays();
+    _exportModalOpen = true;
+    showToast(sent ? 'EXR EXPORT REQUESTED · STUDIO MANIFEST READY' : 'EXPORT READY · $name.exr');
+    notifyListeners();
+  }
+
+  static String _safeFileName(String name) => name.replaceAll(RegExp(r'[^A-Za-z0-9._\- ]+'), '_');
+
+  String _exportPath(String fileName) => '${exportDirectory.path}${Platform.pathSeparator}$fileName';
+
+  /// The picture to export when the stage cannot be captured: the active
+  /// project's own image, re-encoded as PNG.
+  Future<Uint8List> _projectImagePng() async {
+    final project = activeProject;
+    final Uint8List source;
+    if (project?.customBytes != null) {
+      source = project!.customBytes!;
+    } else if (project?.localFilePath != null && File(project!.localFilePath!).existsSync()) {
+      source = await File(project.localFilePath!).readAsBytes();
+    } else {
+      final data = await rootBundle.load(project?.previewAsset ?? 'assets/images/caustic_wave.jpg');
+      source = data.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes);
+    }
+    final codec = await ui.instantiateImageCodec(source);
+    final frame = await codec.getNextFrame();
+    final png = await frame.image.toByteData(format: ui.ImageByteFormat.png);
+    frame.image.dispose();
+    codec.dispose();
+    return png!.buffer.asUint8List();
+  }
+
+  /// Writes the viewport frame as `<PROJECT>_4K_ACEScg.png`: the live stage,
+  /// captured at up to 3840px wide, or the project's own image when the stage
+  /// is not on screen. Returns the path, or null if it could not be written.
+  Future<String?> exportFrame() async {
+    final fileName = '${_safeFileName(activeProject?.name ?? 'SCENE')}_4K_ACEScg.png';
+    try {
+      Uint8List? png;
+      final boundary = viewportCaptureKey.currentContext?.findRenderObject();
+      if (boundary is RenderRepaintBoundary && boundary.hasSize && !boundary.size.isEmpty) {
+        try {
+          final image = await boundary.toImage(pixelRatio: (3840 / boundary.size.width).clamp(1.0, 4.0).toDouble());
+          final data = await image.toByteData(format: ui.ImageByteFormat.png);
+          image.dispose();
+          png = data?.buffer.asUint8List();
+        } catch (e) {
+          debugPrint('StudioController: stage capture failed ($e); exporting the project image');
+        }
+      }
+      png ??= await _projectImagePng();
+      final path = _exportPath(fileName);
+      await File(path).writeAsBytes(png);
+      _lastExportSummary = path;
+      showToast('EXPORTED · $fileName');
+      notifyListeners();
+      return path;
+    } catch (e) {
+      showToast('EXPORT FAILED · $e');
+      return null;
+    }
+  }
+
+  /// Writes `<PROJECT>.pht.json` and copies the manifest to the clipboard.
+  /// Returns the path, or null if it could not be written.
+  Future<String?> exportSceneManifest() async {
+    final fileName = '${_safeFileName(activeProject?.name ?? 'SCENE')}.pht.json';
+    final json = _manifestJson;
+    final String path;
+    try {
+      path = _exportPath(fileName);
+      await File(path).writeAsString(json);
+    } catch (e) {
+      showToast('EXPORT FAILED · $e');
+      return null;
+    }
+    _stagedManifest = json;
+    _lastExportSummary = path;
+    try {
+      await Clipboard.setData(ClipboardData(text: json));
+      showToast('SCENE MANIFEST COPIED & SAVED');
+    } catch (_) {
+      showToast('MANIFEST SAVED · CLIPBOARD UNAVAILABLE');
+    }
+    notifyListeners();
+    return path;
+  }
 
   // --- Sidebar deck ----------------------------------------------------
 
@@ -1338,15 +1758,18 @@ class StudioController extends ChangeNotifier {
   }
 }
 
-/// Everything an undo step restores: the optics, the integrator and which
-/// project they belong to.
+/// Everything an undo step restores: the optics, the integrator, the model
+/// tier that set them, and which project they belong to.
 @immutable
 class _StudioState {
-  const _StudioState({required this.params, required this.projectId, required this.integrator});
+  const _StudioState({required this.params, required this.projectId, required this.integrator, this.modelTier});
 
   final Map<String, double> params;
   final String projectId;
   final IntegratorMode integrator;
+
+  /// Null leaves the tier as it is (restoring a take does not change it).
+  final PhotonModelTier? modelTier;
 }
 
 /// Exposes the [StudioController] to the widget tree.
