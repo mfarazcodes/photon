@@ -52,3 +52,73 @@ Built with an interface inspired by the **Lusion.co** design system, PHOTON pair
 ---
 
 ## ✦ Repository Architecture
+
+
+================================================================================
+                    PHOTON® SPATIAL STUDIO — ARCHITECTURE BLUEPRINT
+================================================================================
+
+--------------------------------------------------------------------------------
+1. HIGH-LEVEL SYSTEM TOPOLOGY
+--------------------------------------------------------------------------------
+   +------------------------------------------------------------------------+
+   |                        FLUTTER DESKTOP CLIENT                          |
+   |                     (Windows 11 · Dart 3 · M3 UI)                      |
+   +------------------------------------------------------------------------+
+        |                                                        |
+        | (Local WebSocket Protocol)                             | (Win32 API Bridge)
+        v                                                        v
+   +-----------------------+                            +-------------------+
+   |  JAVA WEBSOCKET SERVER|                            | WINDOWS 11 DWM    |
+   |  (ws://127.0.0.1:8765)|                            | (Native Frame /   |
+   +-----------------------+                            |  Dark/Light Theme)|
+        |                                               +-------------------+
+        v
+   +-----------------------+
+   | NATIVE WORKER BINARIES|
+   | (Vulkan / CUDA Paths) |
+   +-----------------------+
+
+--------------------------------------------------------------------------------
+2. FRONTEND ARCHITECTURAL LAYERS (Flutter / Clean State Partitioning)
+--------------------------------------------------------------------------------
+   [Presentation Layer]
+      ├── SpatialCanvas (Master Layout Router: Desktop vs Companion Layouts)
+      ├── MacWindowViewport (SCENE_VIEWPORT.rt & Interactive Canvas Overlay)
+      └── TopTelemetryBar & CommandDock (Unified Controls & Model Selector)
+
+   [Interactive UX / Gestural Components]
+      ├── CardDeckCarousel (3D Matrix4 Perspective Swipe & Full-Screen Staging)
+      ├── ShaderThemeSwitch (Hardware Optical Toggle with Sun/Moon Cross-Fading)
+      └── IntentFileTrigger & FileIngestSheet (Modern Spatial Ingest Portal)
+
+   [State & Data Layer (Single Source of Truth)]
+      ├── StudioController (ChangeNotifier Managing Optics, History & Assets)
+      ├── StudioScope (InheritedNotifier Providing Reactive Context)
+      └── RenderSocket (Full-Duplex TCP WebSocket Client with Exponential Backoff)
+
+--------------------------------------------------------------------------------
+3. BACKEND & RENDERING PIPELINE (Java + Native Workers)
+--------------------------------------------------------------------------------
+   [Java WebSocket Server Pipeline]
+      ├── PhotonServer (org.java_websocket Standalone Daemon on Port 8765)
+      ├── Subprocess Process Manager (Spawns Local Worker Binaries Automatically)
+      └── Binary Byte-Stream Bridge (Zero-Copy Frame Buffer Transmission)
+
+   [Compute & Protocol Routing]
+      ├── JNI / Local Subprocess Bridge (Job Dispatch & Render Payload Sync)
+      ├── Model Context Protocol (MCP) Server (stdio/SSE Interface for AI Coding Tools)
+      └── Remote GPU Cluster Node Dispatch (gRPC / mTLS over Cloud Compute Nodes)
+
+--------------------------------------------------------------------------------
+4. DESIGN SYSTEM & COLOR ARCHITECTURE (Lusion.co Design Language)
+--------------------------------------------------------------------------------
+   [Theme Tokens - PhotonPalette]
+      ├── Dark Grading (Void: #0B0C10, Surface: #14151B, Substrate: #12141C)
+      ├── Daylight Lab (Canvas: #F0F1FA, Surface: #E4E6EF, Substrate: #FFFFFF)
+      └── Brand Accents (Electric Ultramarine: #1A2FFB, Hot Coral: #FF4C41)
+
+   [Typography Engine - PhotonType]
+      ├── Geist (UI, Headings, and Prose scaling)
+      └── JetBrains Mono (Tabular Figures for jitter-free real-time convergence)
+================================================================================
