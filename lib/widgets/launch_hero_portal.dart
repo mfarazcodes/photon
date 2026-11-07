@@ -20,7 +20,6 @@ class LaunchHeroPortal extends StatefulWidget {
   const LaunchHeroPortal({super.key});
 
   static const String edition = "EDITION WINTER '26 // SPATIAL RAY-TRACING ENGINE";
-  static const String headline = 'Physically Based Light Transport.';
   static const String cta = 'Take me to Photon';
 
   /// Seconds each keyframe is on screen, including its cross-fade.
@@ -60,6 +59,28 @@ class LaunchHeroPortal extends StatefulWidget {
       primaryScale: 1 + pushGain * (handoff + (1 - handoff) * within),
       incomingScale: 1 + pushGain * handoff * fade,
     );
+  }
+
+  /// Daylight Lab's grade for the film, as a 5x4 colour matrix: desaturate to
+  /// 55%, lift the luminance (gain 1.3, plus 18% of white), then blend 30% of
+  /// the Lusion lavender `#F0F1FA` over it, so the dark frames become a luminous
+  /// high-key film that sits on the Daylight canvas without a jump in contrast.
+  static final List<double> daylightGrade = _buildDaylightGrade();
+
+  static List<double> _buildDaylightGrade() {
+    const saturation = 0.55, gain = 1.3, lift = 0.18 * 255, wash = 0.30;
+    const lavender = [0xF0, 0xF1, 0xFA];
+    const lum = [0.2126, 0.7152, 0.0722];
+    final m = <double>[];
+    for (var row = 0; row < 3; row++) {
+      for (var col = 0; col < 3; col++) {
+        final w = lum[col] * (1 - saturation) + (row == col ? saturation : 0);
+        m.add(w * gain * (1 - wash));
+      }
+      m.addAll([0, 0]);
+      m[row * 5 + 4] = lift * (1 - wash) + lavender[row] * wash;
+    }
+    return m..addAll([0, 0, 0, 1, 0]);
   }
 
   /// Decode width for the film frames (the window is rarely wider).
@@ -120,34 +141,38 @@ class _LaunchHeroPortalState extends State<LaunchHeroPortal> with SingleTickerPr
 
   @override
   Widget build(BuildContext context) {
+    // Dark Grading: the studio's near-black and white type. Daylight Lab: the
+    // Lusion lavender and obsidian type, over the high-key film.
+    final light = !context.photon.colors.isDark;
+    final veil = light ? const Color(0xFFF0F1FA) : const Color(0xFF0B0C10);
+    final ink = light ? const Color(0xFF14151B) : Colors.white;
     return SizedBox.expand(
       child: ColoredBox(
-        color: const Color(0xFF0E0E10),
+        color: veil,
         child: LayoutBuilder(
           builder: (context, box) {
-            final headlineSize = (box.maxWidth * 0.052).clamp(30.0, 68.0);
             return Stack(
               fit: StackFit.expand,
               children: [
                 _FilmBackdrop(time: _time),
-                // Vignette: the near-black of the studio at the edges, so the
-                // type stays razor sharp over the busiest frames.
-                const Positioned.fill(
+                // Vignette: the studio's own ground at the edges, so the type
+                // stays razor sharp over the busiest frames.
+                Positioned.fill(
                   child: IgnorePointer(
                     child: DecoratedBox(
-                      key: Key('hero-vignette'),
+                      key: const Key('hero-vignette'),
                       decoration: BoxDecoration(
                         gradient: RadialGradient(
                           radius: 0.95,
-                          colors: [Color(0x000E0E10), Color(0x990E0E10), Color(0xFF0E0E10)],
-                          stops: [0.35, 0.78, 1.0],
+                          colors: [veil.withValues(alpha: 0), veil.withValues(alpha: 0.6), veil],
+                          stops: const [0.35, 0.78, 1.0],
                         ),
                       ),
                     ),
                   ),
                 ),
-                // A floor under the headline.
-                const Positioned(
+                // A floor under the button.
+                Positioned(
                   left: 0,
                   right: 0,
                   bottom: 0,
@@ -158,13 +183,13 @@ class _LaunchHeroPortalState extends State<LaunchHeroPortal> with SingleTickerPr
                         gradient: LinearGradient(
                           begin: Alignment.topCenter,
                           end: Alignment.bottomCenter,
-                          colors: [Color(0x000E0E10), Color(0xCC0E0E10)],
+                          colors: [veil.withValues(alpha: 0), veil.withValues(alpha: 0.8)],
                         ),
                       ),
                     ),
                   ),
                 ),
-                const Positioned(left: 0, right: 0, top: 0, child: _Masthead()),
+                Positioned(left: 0, right: 0, top: 0, child: _Masthead(ink: ink)),
                 Positioned(
                   left: PhotonSpace.xl,
                   right: PhotonSpace.xl,
@@ -172,21 +197,9 @@ class _LaunchHeroPortalState extends State<LaunchHeroPortal> with SingleTickerPr
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      Semantics(
-                        header: true,
-                        child: Text(
-                          LaunchHeroPortal.headline,
-                          key: const Key('hero-headline'),
-                          textAlign: TextAlign.center,
-                          style: context.photon.text
-                              .ui(size: headlineSize, weight: FontWeight.w500, height: 1.08, tracking: -0.035, color: Colors.white)
-                              .copyWith(fontStyle: FontStyle.italic),
-                        ),
-                      ),
-                      const SizedBox(height: PhotonSpace.xl),
                       KeyedSubtree(
                         key: const Key('enter-studio-btn'),
-                        child: _TakeMeButton(onTap: _enter, time: _time),
+                        child: _TakeMeButton(onTap: _enter, time: _time, ink: ink),
                       ),
                     ],
                   ),
@@ -223,7 +236,7 @@ class _FilmBackdrop extends StatelessWidget {
               fit: BoxFit.cover,
               gaplessPlayback: true,
               filterQuality: FilterQuality.medium,
-              errorBuilder: (_, _, _) => const ColoredBox(color: Color(0xFF0E0E10)),
+              errorBuilder: (_, _, _) => const ColoredBox(color: Color(0xFF0B0C10)),
             ),
           ),
         ),
@@ -233,17 +246,26 @@ class _FilmBackdrop extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final light = !context.photon.colors.isDark;
     return ValueListenableBuilder<double>(
       key: const Key('hero-stage'),
       valueListenable: time,
       builder: (context, t, _) {
         final l = LaunchHeroPortal.layersAt(t);
-        return Stack(
+        final film = Stack(
           fit: StackFit.expand,
           children: [
             _layer(frame: l.primary, scale: l.primaryScale, opacity: 1),
             _layer(frame: l.incoming, scale: l.incomingScale, opacity: l.mix),
           ],
+        );
+        // Dark Grading keeps the film's own cinematic grade, untouched (no
+        // filter pass at all). Daylight Lab grades both layers together, once.
+        if (!light) return film;
+        return ColorFiltered(
+          key: const Key('hero-daylight-grade'),
+          colorFilter: ColorFilter.matrix(LaunchHeroPortal.daylightGrade),
+          child: film,
         );
       },
     );
@@ -252,7 +274,10 @@ class _FilmBackdrop extends StatelessWidget {
 
 /// `PHOTON®` on the left, the edition line in the centre.
 class _Masthead extends StatelessWidget {
-  const _Masthead();
+  const _Masthead({required this.ink});
+
+  /// White over the dark film, obsidian over the Daylight one.
+  final Color ink;
 
   @override
   Widget build(BuildContext context) {
@@ -272,7 +297,7 @@ class _Masthead extends StatelessWidget {
                 Text(
                   'PHOTON®',
                   key: const Key('hero-wordmark'),
-                  style: t.text.mono(size: 12, weight: FontWeight.w700, height: 1.2, tracking: 0.12, color: Colors.white),
+                  style: t.text.mono(size: 12, weight: FontWeight.w700, height: 1.2, tracking: 0.12, color: ink),
                 ),
               ],
             ),
@@ -286,7 +311,7 @@ class _Masthead extends StatelessWidget {
                 LaunchHeroPortal.edition,
                 key: const Key('hero-edition-label'),
                 maxLines: 1,
-                style: t.text.labelCaps.copyWith(fontSize: 10, color: Colors.white.withValues(alpha: 0.82), letterSpacing: 1.1),
+                style: t.text.labelCaps.copyWith(fontSize: 10, color: ink.withValues(alpha: 0.82), letterSpacing: 1.1),
               ),
             ),
           ),
@@ -299,8 +324,9 @@ class _Masthead extends StatelessWidget {
 /// The one control: a glass pill ringed by a slow specular beam, that lifts on
 /// hover and nudges its arrow.
 class _TakeMeButton extends StatelessWidget {
-  const _TakeMeButton({required this.onTap, required this.time});
+  const _TakeMeButton({required this.onTap, required this.time, required this.ink});
 
+  final Color ink;
   final VoidCallback onTap;
   final ValueListenable<double> time;
 
@@ -330,10 +356,10 @@ class _TakeMeButton extends StatelessWidget {
                   height: 52,
                   padding: const EdgeInsets.symmetric(horizontal: 28),
                   decoration: BoxDecoration(
-                    color: Colors.white.withValues(alpha: hovered ? 0.2 : 0.12),
+                    color: ink.withValues(alpha: hovered ? 0.2 : 0.12),
                     borderRadius: BorderRadius.circular(PhotonRadius.pill),
                     boxShadow: [
-                      BoxShadow(color: const Color(0xFF8A2BE2).withValues(alpha: hovered ? 0.55 : 0.3), blurRadius: hovered ? 36 : 24, spreadRadius: -6),
+                      BoxShadow(color: const Color(0xFF1A2FFB).withValues(alpha: hovered ? 0.55 : 0.3), blurRadius: hovered ? 36 : 24, spreadRadius: -6),
                     ],
                   ),
                   // Scales down rather than overflow on a very narrow window.
@@ -344,13 +370,13 @@ class _TakeMeButton extends StatelessWidget {
                       children: [
                         Text(
                           LaunchHeroPortal.cta,
-                          style: t.text.ui(size: 16, weight: FontWeight.w600, height: 1.2, tracking: -0.01, color: Colors.white),
+                          style: t.text.ui(size: 16, weight: FontWeight.w600, height: 1.2, tracking: -0.01, color: ink),
                         ),
                         AnimatedContainer(
                           duration: const Duration(milliseconds: 160),
                           width: hovered ? 14 : 10,
                         ),
-                        const Icon(Icons.arrow_forward, size: 18, color: Colors.white),
+                        Icon(Icons.arrow_forward, size: 18, color: ink),
                       ],
                     ),
                   ),
@@ -376,8 +402,8 @@ class _BeamBorderPainter extends CustomPainter {
     final rect = Offset.zero & size;
     const clear = Color(0x00FFFFFF);
     final shader = SweepGradient(
-      colors: const [clear, Color(0xFFB57BFF), Colors.white, Color(0xFFFF2D78), clear, clear],
-      stops: const [0.0, 0.12, 0.2, 0.28, 0.42, 1.0],
+      colors: const [clear, Color(0xFF6878FF), Color(0xFF22D3EE), Colors.white, Color(0xFFFF4C41), clear, clear],
+      stops: const [0.0, 0.10, 0.16, 0.21, 0.28, 0.42, 1.0],
       transform: GradientRotation(time.value * 2 * math.pi / 3.2),
     ).createShader(rect);
     final rrect = RRect.fromRectAndRadius(rect.deflate(0.7), Radius.circular(size.height / 2));

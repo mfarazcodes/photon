@@ -63,14 +63,24 @@ class _SpatialCanvasState extends State<SpatialCanvas> {
     final studio = StudioScope.read(context);
     // With animation off (tests, deterministic renders) nothing is on a clock
     // to stutter, and ~20 background decodes per run only slow things down.
-    if (studio.animateShader) _precacheImages(studio);
+    // After the first frame, so the launch film's own frames (queued by the
+    // landing page as it builds) decode first; the stills follow while the
+    // user is still reading the landing page, well before "Take me to Photon".
+    if (studio.animateShader) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _precacheImages(studio);
+      });
+    }
   }
 
   /// Decodes every preview render once, up front, at each size the studio
   /// shows it (viewport, sidebar thumbnail, deck print), so switching projects
   /// or flicking the deck never waits on a disk decode.
   void _precacheImages(StudioController studio) {
-    final assets = <String>{for (final p in studio.projects) if (p.previewAsset.isNotEmpty) p.previewAsset};
+    final assets = <String>{
+      for (final p in studio.projects)
+        if (p.previewAsset.isNotEmpty) p.previewAsset,
+    };
     for (final asset in assets) {
       final provider = AssetImage(asset);
       for (final image in <ImageProvider>[
@@ -103,7 +113,10 @@ class _SpatialCanvasState extends State<SpatialCanvas> {
       studio.toggleCommandPalette();
       return true;
     }
-    final typing = FocusManager.instance.primaryFocus?.context?.findAncestorWidgetOfExactType<EditableText>() != null;
+    final typing =
+        FocusManager.instance.primaryFocus?.context
+            ?.findAncestorWidgetOfExactType<EditableText>() !=
+        null;
     if (typing) return false;
     if (key == LogicalKeyboardKey.keyZ) {
       kb.isShiftPressed ? studio.redo() : studio.undo();
@@ -144,15 +157,20 @@ class _SpatialCanvasState extends State<SpatialCanvas> {
                     children: [
                       RepaintBoundary(
                         child: DotMatrixSubstrate(
-                          color: c.isDark ? const Color(0xFF262936) : const Color(0xFFD0D3E2),
-                          highlight: c.isDark ? const Color(0xFFF0F1FA) : const Color(0xFF14151B),
+                          color: c.isDark
+                              ? const Color(0xFF262936)
+                              : const Color(0xFFD0D3E2),
+                          highlight: c.isDark
+                              ? const Color(0xFFF0F1FA)
+                              : const Color(0xFF14151B),
                           tint: c.violetInk,
                           pointerPos: _pointerPos,
                         ),
                       ),
                       SafeArea(
                         child: LayoutBuilder(
-                          builder: (context, box) => box.maxWidth >= SpatialCanvas.wideBreakpoint
+                          builder: (context, box) =>
+                              box.maxWidth >= SpatialCanvas.wideBreakpoint
                               ? _desktop(studio, box)
                               : _companion(studio, box),
                         ),
@@ -164,28 +182,60 @@ class _SpatialCanvasState extends State<SpatialCanvas> {
               // Overlays sit above everything, header and dock included.
               if (studio.uploadLoaderVisible) _fluxLoader(studio),
               if (studio.promptResult != null) _rollerResult(studio),
-              // Keyed so one overlay appearing never resets another's state.
+              // Keyed so one overlay appearing never resets another's state,
+              // and each on its own layer: opening it, hovering it or typing in
+              // it repaints that overlay alone, never the workspace beneath.
               if (studio.ingestSheetOpen)
-                const Positioned.fill(key: ValueKey('overlay-ingest'), child: FileIngestSheet()),
+                const Positioned.fill(
+                  key: ValueKey('overlay-ingest'),
+                  child: RepaintBoundary(child: FileIngestSheet()),
+                ),
               if (studio.modelPopoverOpen)
-                const Positioned.fill(key: ValueKey('overlay-model'), child: PhotonModelPopover()),
+                const Positioned.fill(
+                  key: ValueKey('overlay-model'),
+                  child: RepaintBoundary(child: PhotonModelPopover()),
+                ),
               if (studio.exportModalOpen)
-                const Positioned.fill(key: ValueKey('overlay-export'), child: ExportProjectModal()),
-        if (studio.newProjectSheetOpen)
-          const Positioned.fill(key: ValueKey('overlay-new-project'), child: NewProjectSheet()),
+                const Positioned.fill(
+                  key: ValueKey('overlay-export'),
+                  child: RepaintBoundary(child: ExportProjectModal()),
+                ),
+              if (studio.newProjectSheetOpen)
+                const Positioned.fill(
+                  key: ValueKey('overlay-new-project'),
+                  child: RepaintBoundary(child: NewProjectSheet()),
+                ),
               if (studio.accountModalOpen)
-                const Positioned.fill(key: ValueKey('overlay-account'), child: AccountInspectorModal(key: Key('account-modal'))),
-              if (studio.commandPaletteOpen) const Positioned.fill(key: ValueKey('overlay-palette'), child: CommandPalette()),
+                const Positioned.fill(
+                  key: ValueKey('overlay-account'),
+                  child: RepaintBoundary(
+                    child: AccountInspectorModal(key: Key('account-modal')),
+                  ),
+                ),
+              if (studio.commandPaletteOpen)
+                const Positioned.fill(
+                  key: ValueKey('overlay-palette'),
+                  child: RepaintBoundary(child: CommandPalette()),
+                ),
               // Entering the studio fades and shrinks the landing page away in
               // 260ms; the page has already stopped its animation by then.
               Positioned.fill(
                 key: const ValueKey('overlay-portal'),
                 child: AnimatedSwitcher(
                   duration: const Duration(milliseconds: 260),
-                  switchOutCurve: Curves.easeIn,
+                  // A weighted lens pull: the page settles in decelerating, and
+                  // leaves with an ease at both ends rather than a flat fade.
+                  switchInCurve: Curves.easeOutCubic,
+                  switchOutCurve: Curves.easeInOutCubic,
                   transitionBuilder: (child, animation) => FadeTransition(
                     opacity: animation,
-                    child: ScaleTransition(scale: Tween<double>(begin: 1.04, end: 1).animate(animation), child: child),
+                    child: ScaleTransition(
+                      scale: Tween<double>(
+                        begin: 1.04,
+                        end: 1,
+                      ).animate(animation),
+                      child: child,
+                    ),
                   ),
                   child: studio.showLaunchPortal
                       ? const LaunchHeroPortal(key: Key('launch-hero-portal'))
@@ -213,7 +263,10 @@ class _SpatialCanvasState extends State<SpatialCanvas> {
             // Progress ticks move only these notifiers: the loader repaints at
             // tick rate and nothing else in the workspace rebuilds.
             child: AnimatedBuilder(
-              animation: Listenable.merge([studio.uploadProgressNotifier, studio.uploadPhaseNotifier]),
+              animation: Listenable.merge([
+                studio.uploadProgressNotifier,
+                studio.uploadPhaseNotifier,
+              ]),
               builder: (context, _) => ProgressiveFluxLoader(
                 key: const Key('progressive-flux-loader'),
                 fileName: studio.uploadingFileName ?? '',
@@ -233,11 +286,16 @@ class _SpatialCanvasState extends State<SpatialCanvas> {
 
   /// The prompt / ingest result banner, centered just above the dock.
   Widget _rollerResult(StudioController studio) {
-    final wide = MediaQuery.sizeOf(context).width >= SpatialCanvas.wideBreakpoint;
+    final wide =
+        MediaQuery.sizeOf(context).width >= SpatialCanvas.wideBreakpoint;
     return Positioned.fill(
       key: const ValueKey('overlay-roller'),
       child: Padding(
-        padding: EdgeInsets.only(bottom: wide ? 104 : 200, left: PhotonSpace.md, right: PhotonSpace.md),
+        padding: EdgeInsets.only(
+          bottom: wide ? 104 : 200,
+          left: PhotonSpace.md,
+          right: PhotonSpace.md,
+        ),
         child: Align(
           alignment: Alignment.bottomCenter,
           child: RollerPromptResult(
@@ -259,11 +317,13 @@ class _SpatialCanvasState extends State<SpatialCanvas> {
     const viewport = RepaintBoundary(child: MacWindowViewport());
     const optics = RepaintBoundary(child: OpticsInspectorDeck());
     return [
-      if (showViewport) studio.viewportCollapsed ? viewport : const Expanded(child: viewport),
+      if (showViewport)
+        studio.viewportCollapsed ? viewport : const Expanded(child: viewport),
       if (showViewport && showOptics) const SizedBox(height: PhotonSpace.md),
       if (showOptics)
         // A collapsed or maximized neighbour hands its space to this panel.
-        (!studio.opticsCollapsed && (maximized == 'optics' || studio.viewportCollapsed))
+        (!studio.opticsCollapsed &&
+                (maximized == 'optics' || studio.viewportCollapsed))
             ? const Expanded(child: optics)
             : optics,
     ];
@@ -331,11 +391,18 @@ class _SpatialCanvasState extends State<SpatialCanvas> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    const RepaintBoundary(child: ProjectsSidebar(axis: Axis.horizontal)),
+                    const RepaintBoundary(
+                      child: ProjectsSidebar(axis: Axis.horizontal),
+                    ),
                     const SizedBox(height: PhotonSpace.lg),
-                    if (maximized != 'optics') const RepaintBoundary(child: MacWindowViewport(stageAspectRatio: 16 / 10)),
-                    if (maximized == null) const SizedBox(height: PhotonSpace.lg),
-                    if (maximized != 'viewport') const RepaintBoundary(child: OpticsInspectorDeck()),
+                    if (maximized != 'optics')
+                      const RepaintBoundary(
+                        child: MacWindowViewport(stageAspectRatio: 16 / 10),
+                      ),
+                    if (maximized == null)
+                      const SizedBox(height: PhotonSpace.lg),
+                    if (maximized != 'viewport')
+                      const RepaintBoundary(child: OpticsInspectorDeck()),
                   ],
                 ),
               ),
@@ -454,12 +521,14 @@ class DotMatrixPainter extends CustomPainter {
 
   /// Falloff weight for a dot [distance] px from the pointer: 1 under the
   /// cursor, easing to 0 at [spotlightRadius].
-  static double proximity(double distance) =>
-      distance >= spotlightRadius ? 0 : math.pow(1 - distance / spotlightRadius, 2).toDouble();
+  static double proximity(double distance) => distance >= spotlightRadius
+      ? 0
+      : math.pow(1 - distance / spotlightRadius, 2).toDouble();
 
   /// Resting color through the violet tint to the highlight as [t] goes 0 to 1.
-  Color colorAt(double t) =>
-      t < 0.5 ? Color.lerp(color, tint, t * 2)! : Color.lerp(tint, highlight, (t - 0.5) * 2)!;
+  Color colorAt(double t) => t < 0.5
+      ? Color.lerp(color, tint, t * 2)!
+      : Color.lerp(tint, highlight, (t - 0.5) * 2)!;
 
   // Allocated once per painter, not once per frame.
   late final Paint _restPaint = Paint()
@@ -480,10 +549,22 @@ class DotMatrixPainter extends CustomPainter {
     // Only the grid cells inside the spotlight's bounding box are visited.
     const pitch = DotGridCache.pitch;
     const half = pitch / 2;
-    final colMin = math.max(0, ((p.dx - spotlightRadius - half) / pitch).ceil());
-    final colMax = math.min(cache.columns - 1, ((p.dx + spotlightRadius - half) / pitch).floor());
-    final rowMin = math.max(0, ((p.dy - spotlightRadius - half) / pitch).ceil());
-    final rowMax = math.min(cache.rows - 1, ((p.dy + spotlightRadius - half) / pitch).floor());
+    final colMin = math.max(
+      0,
+      ((p.dx - spotlightRadius - half) / pitch).ceil(),
+    );
+    final colMax = math.min(
+      cache.columns - 1,
+      ((p.dx + spotlightRadius - half) / pitch).floor(),
+    );
+    final rowMin = math.max(
+      0,
+      ((p.dy - spotlightRadius - half) / pitch).ceil(),
+    );
+    final rowMax = math.min(
+      cache.rows - 1,
+      ((p.dy + spotlightRadius - half) / pitch).floor(),
+    );
     const r2 = spotlightRadius * spotlightRadius;
 
     final paint = _spotPaint;
@@ -498,7 +579,11 @@ class DotMatrixPainter extends CustomPainter {
         if (d2 >= r2) continue;
         final t = proximity(math.sqrt(d2));
         paint.color = colorAt(t);
-        canvas.drawCircle(Offset(x, y), (baseStroke + (peakStroke - baseStroke) * t) / 2, paint);
+        canvas.drawCircle(
+          Offset(x, y),
+          (baseStroke + (peakStroke - baseStroke) * t) / 2,
+          paint,
+        );
       }
     }
   }

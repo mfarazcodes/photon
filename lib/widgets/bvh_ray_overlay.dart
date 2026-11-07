@@ -109,8 +109,9 @@ class BvhRayPainter extends CustomPainter {
   final int bounces;
 
   static const _cyan = Color(0xFF22D3EE);
-  static const _violet = Color(0xFF8A2BE2);
-  static const _rose = Color(0xFFFF2D78);
+  // Lifted Lusion blue (Electric Blue is too deep to read on the dark stage).
+  static const _violet = Color(0xFF6878FF);
+  static const _rose = Color(0xFFFF4C41);
 
   @override
   void paint(Canvas canvas, Size size) {

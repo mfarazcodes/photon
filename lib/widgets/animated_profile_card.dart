@@ -13,6 +13,7 @@ import 'photon_primitives.dart';
 /// Lusion Electric Blue (lifted in Dark Grading so it reads on the void).
 extension _ConsoleInk on BuildContext {
   Color get ink => photon.colors.carbon;
+
   Color get accent => photon.colors.violetInk;
 
   /// A sunken well: black in the dark, a pale cool tint in the light.
@@ -53,13 +54,36 @@ class AnimatedBlueProfileCard extends StatefulWidget {
   final VoidCallback? onClose;
 
   @override
-  State<AnimatedBlueProfileCard> createState() => _AnimatedBlueProfileCardState();
+  State<AnimatedBlueProfileCard> createState() =>
+      _AnimatedBlueProfileCardState();
 }
 
-class _AnimatedBlueProfileCardState extends State<AnimatedBlueProfileCard> with SingleTickerProviderStateMixin {
-  /// Pointer over the card, 0..1 in both axes; null when it is elsewhere.
-  final ValueNotifier<Offset?> _pointer = ValueNotifier(null);
-  late final AnimationController _aurora = AnimationController(vsync: this, duration: const Duration(seconds: 14), value: 0.25);
+class _AnimatedBlueProfileCardState extends State<AnimatedBlueProfileCard>
+    with TickerProviderStateMixin {
+  /// The card's tilt (x: about the X axis, y: about Y), radians. It follows the
+  /// pointer directly, so it is exactly as smooth as the pointer events are:
+  /// no tween is built or restarted per move. Only when the pointer leaves does
+  /// [_settle] ease it back to flat, once.
+  final ValueNotifier<Offset> _tilt = ValueNotifier(Offset.zero);
+  late final AnimationController _settle = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 220),
+  );
+  Offset _settleFrom = Offset.zero;
+
+  void _onSettle() {
+    _tilt.value = Offset.lerp(
+      _settleFrom,
+      Offset.zero,
+      Curves.easeOutCubic.transform(_settle.value),
+    )!;
+  }
+
+  late final AnimationController _aurora = AnimationController(
+    vsync: this,
+    duration: const Duration(seconds: 14),
+    value: 0.25,
+  );
 
   /// What the aurora paints from: the drift, in steps. The drift takes 14s a
   /// lap, so drawing it 60 times a second would redraw three card-sized
@@ -76,6 +100,7 @@ class _AnimatedBlueProfileCardState extends State<AnimatedBlueProfileCard> with 
   void initState() {
     super.initState();
     _aurora.addListener(_onAurora);
+    _settle.addListener(_onSettle);
   }
 
   ProfileTab _tab = ProfileTab.identity;
@@ -94,7 +119,9 @@ class _AnimatedBlueProfileCardState extends State<AnimatedBlueProfileCard> with 
 
   @override
   void dispose() {
-    _pointer.dispose();
+    _settle.removeListener(_onSettle);
+    _settle.dispose();
+    _tilt.dispose();
     _aurora.removeListener(_onAurora);
     _aurora.dispose();
     _drift.dispose();
@@ -158,13 +185,23 @@ class _AnimatedBlueProfileCardState extends State<AnimatedBlueProfileCard> with 
           builder: (context, v, child) => Offstage(
             offstage: v == 0,
             child: ClipRect(
-              child: Align(alignment: Alignment.topCenter, heightFactor: v, child: child),
+              child: Align(
+                alignment: Alignment.topCenter,
+                heightFactor: v,
+                child: child,
+              ),
             ),
           ),
           child: Padding(
             padding: const EdgeInsets.only(top: PhotonSpace.sm),
+            // A quick cross-fade between tabs (a fade only: no size or layout
+            // animation, so the quota bars never restart mid-switch).
             child: AnimatedSwitcher(
-              duration: const Duration(milliseconds: 200),
+              duration: const Duration(milliseconds: 160),
+              switchInCurve: Curves.easeOutCubic,
+              switchOutCurve: Curves.easeOutCubic,
+              transitionBuilder: (child, animation) =>
+                  FadeTransition(opacity: animation, child: child),
               child: KeyedSubtree(
                 key: ValueKey(_tab),
                 child: _Drawer(
@@ -187,7 +224,11 @@ class _AnimatedBlueProfileCardState extends State<AnimatedBlueProfileCard> with 
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        _StatusRow(account: a, animate: studio.animateShader && _hovering, onClose: widget.onClose),
+        _StatusRow(
+          account: a,
+          animate: studio.animateShader && _hovering,
+          onClose: widget.onClose,
+        ),
         const SizedBox(height: PhotonSpace.md),
         Flexible(child: SingleChildScrollView(child: body)),
         const SizedBox(height: PhotonSpace.sm),
@@ -200,11 +241,13 @@ class _AnimatedBlueProfileCardState extends State<AnimatedBlueProfileCard> with 
       label: 'Account console: ${a.displayName}',
       child: MouseRegion(
         onEnter: (_) {
+          _settle.stop();
           setState(() => _hovering = true);
           _syncAnimation(StudioScope.read(context).animateShader);
         },
         onExit: (_) {
-          _pointer.value = null;
+          _settleFrom = _tilt.value;
+          if (_settleFrom != Offset.zero) _settle.forward(from: 0);
           setState(() => _hovering = false);
           _syncAnimation(StudioScope.read(context).animateShader);
         },
@@ -212,92 +255,103 @@ class _AnimatedBlueProfileCardState extends State<AnimatedBlueProfileCard> with 
           final box = context.findRenderObject();
           if (box is! RenderBox || !box.hasSize || box.size.isEmpty) return;
           final local = box.globalToLocal(e.position);
-          // Whole percents: a finer pointer would only restart the tilt for
-          // changes of a hundredth of a degree.
-          final next = Offset(
-            ((local.dx / box.size.width).clamp(0.0, 1.0) * 100).round() / 100,
-            ((local.dy / box.size.height).clamp(0.0, 1.0) * 100).round() / 100,
-          );
-          if (next != _pointer.value) _pointer.value = next;
+          // Up to ~3.4 degrees each way. Whole percents of the card: a finer
+          // pointer would only repaint for changes of a hundredth of a degree.
+          final px =
+              ((local.dx / box.size.width).clamp(0.0, 1.0) * 100).round() / 100;
+          final py =
+              ((local.dy / box.size.height).clamp(0.0, 1.0) * 100).round() /
+              100;
+          final next = Offset(-(py - 0.5) * 0.12, (px - 0.5) * 0.12);
+          if (next != _tilt.value) _tilt.value = next;
         },
-        child: ValueListenableBuilder<Offset?>(
-          valueListenable: _pointer,
+        child: ValueListenableBuilder<Offset>(
+          valueListenable: _tilt,
           // The card body is built once per state change, not per pointer move,
           // and sits on its own layer: tilting it re-composites a cached texture
           // instead of re-rasterising the 40px shadow, the gradient and the text
           // on every frame.
           child: RepaintBoundary(
             child: Container(
-            key: const Key('profile-card-surface'),
-            decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(18),
-              // A 1px hairline; Dark Grading adds the Lusion blue to it.
-              border: Border.all(color: c.isDark ? Color.alphaBlend(c.violet.withValues(alpha: 0.45), c.border) : c.border),
-              boxShadow: [
-                BoxShadow(
-                  color: c.violet.withValues(alpha: c.isDark ? 0.22 : 0.10),
-                  blurRadius: 40,
-                  spreadRadius: -10,
-                  offset: const Offset(0, 14),
+              key: const Key('profile-card-surface'),
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(18),
+                // A 1px hairline; Dark Grading adds the Lusion blue to it.
+                border: Border.all(
+                  color: c.isDark
+                      ? Color.alphaBlend(
+                          c.violet.withValues(alpha: 0.45),
+                          c.border,
+                        )
+                      : c.border,
                 ),
-              ],
-            ),
-            child: ClipRRect(
-              borderRadius: BorderRadius.circular(17),
-              child: Stack(
-                children: [
-                  // Lusion architectural surface: deep void in Dark Grading, high-key
-                  // white-to-lavender in Daylight.
-                  Positioned.fill(
-                    child: DecoratedBox(
-                      decoration: BoxDecoration(
-                        gradient: LinearGradient(
-                          begin: Alignment.topLeft,
-                          end: Alignment.bottomRight,
-                          colors: c.isDark
-                              ? const [Color(0xFF0B0C10), Color(0xFF12141C), Color(0xFF171A28)]
-                              : const [Color(0xFFFFFFFF), Color(0xFFF0F1FA), Color(0xFFE4E6EF)],
-                        ),
-                      ),
-                    ),
+                boxShadow: [
+                  BoxShadow(
+                    color: c.violet.withValues(alpha: c.isDark ? 0.22 : 0.10),
+                    blurRadius: 40,
+                    spreadRadius: -10,
+                    offset: const Offset(0, 14),
                   ),
-                  Positioned.fill(
-                    child: RepaintBoundary(
-                      child: CustomPaint(
-                        painter: _AuroraPainter(
-                          aurora: _drift,
-                          isDark: c.isDark,
-                          blue: c.violet,
-                          cyan: const Color(0xFF22D3EE),
-                        ),
-                      ),
-                    ),
-                  ),
-                  Padding(padding: const EdgeInsets.all(PhotonSpace.md), child: content),
                 ],
               ),
-            ),
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(17),
+                child: Stack(
+                  children: [
+                    // Lusion architectural surface: deep void in Dark Grading, high-key
+                    // white-to-lavender in Daylight.
+                    Positioned.fill(
+                      child: DecoratedBox(
+                        decoration: BoxDecoration(
+                          gradient: LinearGradient(
+                            begin: Alignment.topLeft,
+                            end: Alignment.bottomRight,
+                            colors: c.isDark
+                                ? const [
+                                    Color(0xFF0B0C10),
+                                    Color(0xFF12141C),
+                                    Color(0xFF171A28),
+                                  ]
+                                : const [
+                                    Color(0xFFFFFFFF),
+                                    Color(0xFFF0F1FA),
+                                    Color(0xFFE4E6EF),
+                                  ],
+                          ),
+                        ),
+                      ),
+                    ),
+                    Positioned.fill(
+                      child: RepaintBoundary(
+                        child: CustomPaint(
+                          painter: _AuroraPainter(
+                            aurora: _drift,
+                            isDark: c.isDark,
+                            blue: c.violet,
+                            cyan: const Color(0xFF22D3EE),
+                          ),
+                        ),
+                      ),
+                    ),
+                    Padding(
+                      padding: const EdgeInsets.all(PhotonSpace.md),
+                      child: content,
+                    ),
+                  ],
+                ),
+              ),
             ),
           ),
-          builder: (context, p, child) {
-            // 3D tilt toward the pointer: up to ~7 degrees.
-            final tiltY = p == null ? 0.0 : (p.dx - 0.5) * 0.12;
-            final tiltX = p == null ? 0.0 : -(p.dy - 0.5) * 0.12;
-            return TweenAnimationBuilder<Offset>(
-              tween: Tween<Offset>(end: Offset(tiltX, tiltY)),
-              duration: const Duration(milliseconds: 120),
-              curve: Curves.easeOut,
-              child: child,
-              builder: (context, tilt, child) => Transform(
-                alignment: Alignment.center,
-                transform: Matrix4.identity()
-                  ..setEntry(3, 2, 0.0011)
-                  ..rotateX(tilt.dx)
-                  ..rotateY(tilt.dy),
-                child: child,
-              ),
-            );
-          },
+          // Perspective tilt of the cached card texture (above): one matrix per
+          // pointer move, no subtree work.
+          builder: (context, tilt, child) => Transform(
+            alignment: Alignment.center,
+            transform: Matrix4.identity()
+              ..setEntry(3, 2, 0.0011)
+              ..rotateX(tilt.dx)
+              ..rotateY(tilt.dy),
+            child: child,
+          ),
         ),
       ),
     );
@@ -307,7 +361,11 @@ class _AnimatedBlueProfileCardState extends State<AnimatedBlueProfileCard> with 
 /// `VERIFIED LEAD ARCHITECT` with a pulsing online pip, the workspace tag, and
 /// the close button.
 class _StatusRow extends StatelessWidget {
-  const _StatusRow({required this.account, required this.animate, required this.onClose});
+  const _StatusRow({
+    required this.account,
+    required this.animate,
+    required this.onClose,
+  });
 
   final StudioAccount account;
   final bool animate;
@@ -329,14 +387,22 @@ class _StatusRow extends StatelessWidget {
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                FlashingPip(color: const Color(0xFF34D399), size: 6, flash: animate),
+                FlashingPip(
+                  color: const Color(0xFF34D399),
+                  size: 6,
+                  flash: animate,
+                ),
                 const SizedBox(width: 6),
                 Flexible(
                   child: Text(
                     'VERIFIED LEAD ARCHITECT',
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
-                    style: t.text.labelCaps.copyWith(fontSize: 8, color: context.ink, fontWeight: FontWeight.w700),
+                    style: t.text.labelCaps.copyWith(
+                      fontSize: 8,
+                      color: context.ink,
+                      fontWeight: FontWeight.w700,
+                    ),
                   ),
                 ),
               ],
@@ -346,7 +412,12 @@ class _StatusRow extends StatelessWidget {
         const Spacer(),
         Text(
           account.workspaceId,
-          style: t.text.mono(size: 9.5, weight: FontWeight.w600, height: 1.2, color: context.ink.withValues(alpha: 0.8)),
+          style: t.text.mono(
+            size: 9.5,
+            weight: FontWeight.w600,
+            height: 1.2,
+            color: context.ink.withValues(alpha: 0.8),
+          ),
         ),
         if (onClose != null) ...[
           const SizedBox(width: PhotonSpace.sm),
@@ -367,8 +438,14 @@ class _StatusRow extends StatelessWidget {
                     height: 24,
                     decoration: BoxDecoration(
                       shape: BoxShape.circle,
-                      color: context.ink.withValues(alpha: hovered ? 0.22 : 0.1),
-                      border: Border.all(color: context.ink.withValues(alpha: hovered ? 0.7 : 0.3)),
+                      color: context.ink.withValues(
+                        alpha: hovered ? 0.22 : 0.1,
+                      ),
+                      border: Border.all(
+                        color: context.ink.withValues(
+                          alpha: hovered ? 0.7 : 0.3,
+                        ),
+                      ),
                     ),
                     child: Icon(Icons.close, size: 13, color: context.ink),
                   ),
@@ -404,7 +481,12 @@ class _StatusStrip extends StatelessWidget {
         valueListenable: studio.toast,
         builder: (context, message, _) => Row(
           children: [
-            Pip(color: message == null ? context.ink.withValues(alpha: 0.35) : context.accent, size: 5),
+            Pip(
+              color: message == null
+                  ? context.ink.withValues(alpha: 0.35)
+                  : context.accent,
+              size: 5,
+            ),
             const SizedBox(width: PhotonSpace.sm),
             Expanded(
               child: Text(
@@ -413,7 +495,9 @@ class _StatusStrip extends StatelessWidget {
                 overflow: TextOverflow.ellipsis,
                 style: t.text.labelCaps.copyWith(
                   fontSize: 8.5,
-                  color: message == null ? context.ink.withValues(alpha: 0.5) : context.ink,
+                  color: message == null
+                      ? context.ink.withValues(alpha: 0.5)
+                      : context.ink,
                 ),
               ),
             ),
@@ -446,21 +530,25 @@ class _Hero extends StatelessWidget {
             alignment: Alignment.center,
             children: [
               // Outer ring: a conic cyan/blue sweep, turning.
-              RotationTransition(
-                turns: ring,
-                child: Container(
-                  width: 72,
-                  height: 72,
-                  decoration: BoxDecoration(
-                    shape: BoxShape.circle,
-                    gradient: SweepGradient(
-                      colors: [
-                        c.violetInk,
-                        c.violet,
-                        c.violet.withValues(alpha: 0.06),
-                        c.violetInk,
-                      ],
-                      stops: const [0.0, 0.35, 0.7, 1.0],
+              // Its own layer: the ring's turn repaints this 72px box, never the
+              // name block beside it.
+              RepaintBoundary(
+                child: RotationTransition(
+                  turns: ring,
+                  child: Container(
+                    width: 72,
+                    height: 72,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      gradient: SweepGradient(
+                        colors: [
+                          c.violetInk,
+                          c.violet,
+                          c.violet.withValues(alpha: 0.06),
+                          c.violetInk,
+                        ],
+                        stops: const [0.0, 0.35, 0.7, 1.0],
+                      ),
                     ),
                   ),
                 ),
@@ -477,7 +565,12 @@ class _Hero extends StatelessWidget {
                 alignment: Alignment.center,
                 child: Text(
                   account.initials,
-                  style: t.text.ui(size: 22, weight: FontWeight.w600, tracking: -0.02, color: white),
+                  style: t.text.ui(
+                    size: 22,
+                    weight: FontWeight.w600,
+                    tracking: -0.02,
+                    color: white,
+                  ),
                 ),
               ),
             ],
@@ -493,26 +586,45 @@ class _Hero extends StatelessWidget {
                 account.displayName,
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
-                style: t.text.ui(size: 20, weight: FontWeight.w600, height: 1.2, tracking: -0.02, color: white),
+                style: t.text.ui(
+                  size: 20,
+                  weight: FontWeight.w600,
+                  height: 1.2,
+                  tracking: -0.02,
+                  color: white,
+                ),
               ),
               Text(
                 account.handle,
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
-                style: t.text.mono(size: 11, weight: FontWeight.w500, height: 1.4, color: context.accent),
+                style: t.text.mono(
+                  size: 11,
+                  weight: FontWeight.w500,
+                  height: 1.4,
+                  color: context.accent,
+                ),
               ),
               const SizedBox(height: 3),
               Text(
                 'B.Tech CSE · Lead Rendering & VFX Architect',
                 maxLines: 2,
                 overflow: TextOverflow.ellipsis,
-                style: t.text.ui(size: 11, height: 1.35, color: white.withValues(alpha: 0.88)),
+                style: t.text.ui(
+                  size: 11,
+                  height: 1.35,
+                  color: white.withValues(alpha: 0.88),
+                ),
               ),
               Text(
                 account.organization,
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
-                style: t.text.mono(size: 9.5, height: 1.5, color: white.withValues(alpha: 0.6)),
+                style: t.text.mono(
+                  size: 9.5,
+                  height: 1.5,
+                  color: white.withValues(alpha: 0.6),
+                ),
               ),
             ],
           ),
@@ -561,7 +673,9 @@ class _TabBar extends StatelessWidget {
                       decoration: BoxDecoration(
                         color: selected == tab
                             ? context.ink.withValues(alpha: 0.2)
-                            : (hovered ? context.ink.withValues(alpha: 0.1) : Colors.transparent),
+                            : (hovered
+                                  ? context.ink.withValues(alpha: 0.1)
+                                  : Colors.transparent),
                         borderRadius: BorderRadius.circular(PhotonRadius.pill),
                       ),
                       child: FittedBox(
@@ -571,7 +685,9 @@ class _TabBar extends StatelessWidget {
                           maxLines: 1,
                           style: t.text.labelCaps.copyWith(
                             fontSize: 8.5,
-                            color: context.ink.withValues(alpha: selected == tab || hovered ? 1 : 0.7),
+                            color: context.ink.withValues(
+                              alpha: selected == tab || hovered ? 1 : 0.7,
+                            ),
                             fontWeight: FontWeight.w700,
                           ),
                         ),
@@ -607,39 +723,50 @@ class _Drawer extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(PhotonSpace.md - 2),
-      decoration: BoxDecoration(
-        gradient: LinearGradient(
-          begin: Alignment.topCenter,
-          end: Alignment.bottomCenter,
-          // Dark: a frosted wash of ink; Daylight: white cards on lavender.
-          colors: context.photon.colors.isDark
-              ? [context.ink.withValues(alpha: 0.08), context.ink.withValues(alpha: 0.03)]
-              : [context.photon.colors.substrate, context.photon.colors.surface],
+    // Its own layer: the curtain opening, a tab cross-fading or a field being
+    // edited repaints the drawer alone, never the card around it.
+    return RepaintBoundary(
+      child: Container(
+        width: double.infinity,
+        padding: const EdgeInsets.all(PhotonSpace.md - 2),
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+            // Dark: a frosted wash of ink; Daylight: white cards on lavender.
+            colors: context.photon.colors.isDark
+                ? [
+                    context.ink.withValues(alpha: 0.08),
+                    context.ink.withValues(alpha: 0.03),
+                  ]
+                : [
+                    context.photon.colors.substrate,
+                    context.photon.colors.surface,
+                  ],
+          ),
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(color: context.photon.colors.border),
         ),
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: context.photon.colors.border),
+        child: switch (tab) {
+          ProfileTab.identity => _IdentityPane(
+            studio: studio,
+            editing: editing,
+            onToggleEdit: onToggleEdit,
+            nameController: nameController,
+            orgController: orgController,
+          ),
+          ProfileTab.plan => _PlanPane(studio: studio),
+          ProfileTab.auth => _AuthPane(studio: studio),
+        },
       ),
-      child: switch (tab) {
-        ProfileTab.identity => _IdentityPane(
-          studio: studio,
-          editing: editing,
-          onToggleEdit: onToggleEdit,
-          nameController: nameController,
-          orgController: orgController,
-        ),
-        ProfileTab.plan => _PlanPane(studio: studio),
-        ProfileTab.auth => _AuthPane(studio: studio),
-      },
     );
   }
 }
 
 /// Puts [outer] above [child] when given: a widget answers to two keys (the
 /// card's own and the console's long-standing ones) by nesting them.
-Widget _alsoKeyed(Key? outer, Widget child) => outer == null ? child : KeyedSubtree(key: outer, child: child);
+Widget _alsoKeyed(Key? outer, Widget child) =>
+    outer == null ? child : KeyedSubtree(key: outer, child: child);
 
 class _KeyValue extends StatelessWidget {
   const _KeyValue(this.label, this.value);
@@ -657,14 +784,24 @@ class _KeyValue extends StatelessWidget {
         children: [
           SizedBox(
             width: 56,
-            child: Text(label, style: t.text.labelCaps.copyWith(fontSize: 7.5, color: context.ink.withValues(alpha: 0.55))),
+            child: Text(
+              label,
+              style: t.text.labelCaps.copyWith(
+                fontSize: 7.5,
+                color: context.ink.withValues(alpha: 0.55),
+              ),
+            ),
           ),
           Expanded(
             child: Text(
               value,
               maxLines: 2,
               overflow: TextOverflow.ellipsis,
-              style: t.text.mono(size: 10, height: 1.4, color: context.ink.withValues(alpha: 0.92)),
+              style: t.text.mono(
+                size: 10,
+                height: 1.4,
+                color: context.ink.withValues(alpha: 0.92),
+              ),
             ),
           ),
         ],
@@ -686,7 +823,13 @@ class _SectionLabel extends StatelessWidget {
     return Row(
       children: [
         Expanded(
-          child: Text(text, style: t.text.labelCaps.copyWith(fontSize: 7.5, color: context.ink.withValues(alpha: 0.55))),
+          child: Text(
+            text,
+            style: t.text.labelCaps.copyWith(
+              fontSize: 7.5,
+              color: context.ink.withValues(alpha: 0.55),
+            ),
+          ),
         ),
         ?trailing,
       ],
@@ -697,7 +840,15 @@ class _SectionLabel extends StatelessWidget {
 /// Small glass button used inside the drawer. With no [label] it is an icon
 /// button.
 class _GlassButton extends StatelessWidget {
-  const _GlassButton({super.key, required this.label, required this.onTap, this.icon, this.filled = false, this.tooltip, this.danger = false});
+  const _GlassButton({
+    super.key,
+    required this.label,
+    required this.onTap,
+    this.icon,
+    this.filled = false,
+    this.tooltip,
+    this.danger = false,
+  });
 
   final String label;
   final VoidCallback onTap;
@@ -721,11 +872,17 @@ class _GlassButton extends StatelessWidget {
           child: AnimatedContainer(
             duration: const Duration(milliseconds: 120),
             height: 24,
-            padding: EdgeInsets.symmetric(horizontal: label.isEmpty ? 6 : PhotonSpace.sm + 2),
+            padding: EdgeInsets.symmetric(
+              horizontal: label.isEmpty ? 6 : PhotonSpace.sm + 2,
+            ),
             decoration: BoxDecoration(
-              color: context.ink.withValues(alpha: filled ? 0.26 : (hovered ? 0.18 : 0.08)),
+              color: context.ink.withValues(
+                alpha: filled ? 0.26 : (hovered ? 0.18 : 0.08),
+              ),
               borderRadius: BorderRadius.circular(PhotonRadius.control),
-              border: Border.all(color: accent.withValues(alpha: hovered || filled ? 0.8 : 0.3)),
+              border: Border.all(
+                color: accent.withValues(alpha: hovered || filled ? 0.8 : 0.3),
+              ),
             ),
             child: Row(
               mainAxisSize: MainAxisSize.min,
@@ -733,7 +890,14 @@ class _GlassButton extends StatelessWidget {
                 if (icon != null) Icon(icon, size: 12, color: accent),
                 if (icon != null && label.isNotEmpty) const SizedBox(width: 4),
                 if (label.isNotEmpty)
-                  Text(label, style: t.text.labelCaps.copyWith(fontSize: 8, color: accent, fontWeight: FontWeight.w700)),
+                  Text(
+                    label,
+                    style: t.text.labelCaps.copyWith(
+                      fontSize: 8,
+                      color: accent,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
               ],
             ),
           ),
@@ -768,7 +932,10 @@ class _IdentityPane extends StatelessWidget {
         const _KeyValue('GITHUB', 'github.com/mfarazcodes'),
         _KeyValue('EMAIL', a.email),
         _KeyValue('ROLE', '${a.role} · ${a.organization}'),
-        const _KeyValue('NODE', 'Motorola Motobook 60 · Windows 11 · Vulkan RT'),
+        const _KeyValue(
+          'NODE',
+          'Motorola Motobook 60 · Windows 11 · Vulkan RT',
+        ),
         if (editing) ...[
           const SizedBox(height: PhotonSpace.sm),
           _ProfileField(
@@ -802,7 +969,12 @@ class _IdentityPane extends StatelessWidget {
 }
 
 class _ProfileField extends StatelessWidget {
-  const _ProfileField({required this.fieldKey, required this.label, required this.controller, required this.onChanged});
+  const _ProfileField({
+    required this.fieldKey,
+    required this.label,
+    required this.controller,
+    required this.onChanged,
+  });
 
   final Key fieldKey;
   final String label;
@@ -819,7 +991,13 @@ class _ProfileField extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text(label, style: t.text.labelCaps.copyWith(fontSize: 7.5, color: context.ink.withValues(alpha: 0.6))),
+        Text(
+          label,
+          style: t.text.labelCaps.copyWith(
+            fontSize: 7.5,
+            color: context.ink.withValues(alpha: 0.6),
+          ),
+        ),
         const SizedBox(height: 3),
         SizedBox(
           height: 30,
@@ -834,7 +1012,10 @@ class _ProfileField extends StatelessWidget {
               isDense: true,
               filled: true,
               fillColor: context.sunk(0.28),
-              contentPadding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+              contentPadding: const EdgeInsets.symmetric(
+                horizontal: 8,
+                vertical: 8,
+              ),
               border: border(context.ink.withValues(alpha: 0.25)),
               enabledBorder: border(context.ink.withValues(alpha: 0.25)),
               focusedBorder: border(context.accent),
@@ -856,7 +1037,8 @@ String _group(num n) {
   return out.toString();
 }
 
-String _trim(double v) => v == v.roundToDouble() ? v.round().toString() : v.toStringAsFixed(1);
+String _trim(double v) =>
+    v == v.roundToDouble() ? v.round().toString() : v.toStringAsFixed(1);
 
 class _PlanPane extends StatelessWidget {
   const _PlanPane({required this.studio});
@@ -887,14 +1069,32 @@ class _PlanPane extends StatelessWidget {
                 key: const Key('profile-plan-summary'),
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
-                style: t.text.ui(size: 13, weight: FontWeight.w600, color: context.ink),
+                style: t.text.ui(
+                  size: 13,
+                  weight: FontWeight.w600,
+                  color: context.ink,
+                ),
               ),
             ),
             const SizedBox(width: PhotonSpace.sm),
-            Text(a.tier.price, style: t.text.mono(size: 10, height: 1.3, color: context.ink.withValues(alpha: 0.65))),
+            Text(
+              a.tier.price,
+              style: t.text.mono(
+                size: 10,
+                height: 1.3,
+                color: context.ink.withValues(alpha: 0.65),
+              ),
+            ),
           ],
         ),
-        Text(a.tier.quota, style: t.text.mono(size: 9.5, height: 1.4, color: context.ink.withValues(alpha: 0.6))),
+        Text(
+          a.tier.quota,
+          style: t.text.mono(
+            size: 9.5,
+            height: 1.4,
+            color: context.ink.withValues(alpha: 0.6),
+          ),
+        ),
         const SizedBox(height: PhotonSpace.sm),
         Wrap(
           spacing: PhotonSpace.xs + 2,
@@ -915,16 +1115,20 @@ class _PlanPane extends StatelessWidget {
         const SizedBox(height: PhotonSpace.md),
         _QuotaBar(
           title: 'GPU RENDER COMPUTE QUOTA',
-          primary: '${_trim(a.gpuHoursUsed)} / ${_group(a.tier.gpuHours)} GPU-hrs',
-          detail: '${_trim(a.gpuHoursUsed)} / ${_group(a.tier.gpuHours)} hrs · ${(gpu * 100).round()}%'
+          primary:
+              '${_trim(a.gpuHoursUsed)} / ${_group(a.tier.gpuHours)} GPU-hrs',
+          detail:
+              '${_trim(a.gpuHoursUsed)} / ${_group(a.tier.gpuHours)} hrs · ${(gpu * 100).round()}%'
               '${gpu > 1 ? ' · OVER QUOTA' : ''}',
           fraction: gpu,
         ),
         const SizedBox(height: PhotonSpace.sm + 2),
         _QuotaBar(
           title: 'OPENUSD CLOUD VAULT STORAGE',
-          primary: '${_trim(a.storageUsedGb)} / ${_group(a.storageLimitGb)} GB USD Vault',
-          detail: '${_trim(a.storageUsedGb)} / ${_trim(a.storageLimitGb)} GB · ${(vault * 100).round()}%',
+          primary:
+              '${_trim(a.storageUsedGb)} / ${_group(a.storageLimitGb)} GB USD Vault',
+          detail:
+              '${_trim(a.storageUsedGb)} / ${_trim(a.storageLimitGb)} GB · ${(vault * 100).round()}%',
           fraction: vault,
         ),
       ],
@@ -933,7 +1137,12 @@ class _PlanPane extends StatelessWidget {
 }
 
 class _TierChip extends StatelessWidget {
-  const _TierChip({super.key, required this.label, required this.selected, required this.onTap});
+  const _TierChip({
+    super.key,
+    required this.label,
+    required this.selected,
+    required this.onTap,
+  });
 
   final String label;
   final bool selected;
@@ -953,11 +1162,18 @@ class _TierChip extends StatelessWidget {
           onTap: onTap,
           child: AnimatedContainer(
             duration: const Duration(milliseconds: 140),
-            padding: const EdgeInsets.symmetric(horizontal: PhotonSpace.md - 2, vertical: 5),
+            padding: const EdgeInsets.symmetric(
+              horizontal: PhotonSpace.md - 2,
+              vertical: 5,
+            ),
             decoration: BoxDecoration(
-              color: selected ? context.ink.withValues(alpha: 0.9) : context.ink.withValues(alpha: hovered ? 0.16 : 0.06),
+              color: selected
+                  ? context.ink.withValues(alpha: 0.9)
+                  : context.ink.withValues(alpha: hovered ? 0.16 : 0.06),
               borderRadius: BorderRadius.circular(PhotonRadius.pill),
-              border: Border.all(color: context.ink.withValues(alpha: selected ? 1 : 0.3)),
+              border: Border.all(
+                color: context.ink.withValues(alpha: selected ? 1 : 0.3),
+              ),
             ),
             child: Text(
               label,
@@ -978,7 +1194,12 @@ class _TierChip extends StatelessWidget {
 /// A quota: a title, the headline figure, a detail line, and an animated bar
 /// that is Lusion blue, and rose when over.
 class _QuotaBar extends StatelessWidget {
-  const _QuotaBar({required this.title, required this.primary, required this.detail, required this.fraction});
+  const _QuotaBar({
+    required this.title,
+    required this.primary,
+    required this.detail,
+    required this.fraction,
+  });
 
   final String title;
   final String primary;
@@ -996,13 +1217,30 @@ class _QuotaBar extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Text(title, maxLines: 1, overflow: TextOverflow.ellipsis, style: t.text.labelCaps.copyWith(fontSize: 7.5, color: context.ink.withValues(alpha: 0.55))),
+          Text(
+            title,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: t.text.labelCaps.copyWith(
+              fontSize: 7.5,
+              color: context.ink.withValues(alpha: 0.55),
+            ),
+          ),
           const SizedBox(height: 2),
           Align(
             alignment: Alignment.centerLeft,
             child: FittedBox(
               fit: BoxFit.scaleDown,
-              child: Text(primary, maxLines: 1, style: t.text.mono(size: 11, weight: FontWeight.w600, height: 1.3, color: context.ink)),
+              child: Text(
+                primary,
+                maxLines: 1,
+                style: t.text.mono(
+                  size: 11,
+                  weight: FontWeight.w600,
+                  height: 1.3,
+                  color: context.ink,
+                ),
+              ),
             ),
           ),
           Align(
@@ -1012,7 +1250,13 @@ class _QuotaBar extends StatelessWidget {
               child: Text(
                 detail,
                 maxLines: 1,
-                style: t.text.mono(size: 9, height: 1.4, color: over ? t.colors.rose : context.ink.withValues(alpha: 0.6)),
+                style: t.text.mono(
+                  size: 9,
+                  height: 1.4,
+                  color: over
+                      ? t.colors.rose
+                      : context.ink.withValues(alpha: 0.6),
+                ),
               ),
             ),
           ),
@@ -1027,7 +1271,11 @@ class _QuotaBar extends StatelessWidget {
                 curve: Curves.easeOutCubic,
                 builder: (context, v, _) => Stack(
                   children: [
-                    Positioned.fill(child: ColoredBox(color: context.ink.withValues(alpha: 0.14))),
+                    Positioned.fill(
+                      child: ColoredBox(
+                        color: context.ink.withValues(alpha: 0.14),
+                      ),
+                    ),
                     FractionallySizedBox(
                       widthFactor: v,
                       child: DecoratedBox(
@@ -1087,8 +1335,20 @@ class _AuthPaneState extends State<_AuthPane> {
       children: [
         const _SectionLabel('ACTIVE AUTHENTICATION'),
         const SizedBox(height: 2),
-        Text(system, key: const Key('profile-auth-system'), style: t.text.mono(size: 10.5, weight: FontWeight.w600, height: 1.4, color: context.ink)),
-        Text(a.authMethod.label, style: t.text.mono(size: 9.5, height: 1.4, color: muted)),
+        Text(
+          system,
+          key: const Key('profile-auth-system'),
+          style: t.text.mono(
+            size: 10.5,
+            weight: FontWeight.w600,
+            height: 1.4,
+            color: context.ink,
+          ),
+        ),
+        Text(
+          a.authMethod.label,
+          style: t.text.mono(size: 9.5, height: 1.4, color: muted),
+        ),
         const SizedBox(height: 3),
         Row(
           children: [
@@ -1124,7 +1384,9 @@ class _AuthPaneState extends State<_AuthPane> {
           _SwitchRow(
             key: const Key('profile-2fa-toggle'),
             label: '2FA / TOTP AUTHENTICATOR',
-            caption: a.twoFactorEnabled ? 'Enabled · 6-digit rolling code' : 'Disabled',
+            caption: a.twoFactorEnabled
+                ? 'Enabled · 6-digit rolling code'
+                : 'Disabled',
             state: a.twoFactorEnabled ? 'ARMED' : 'OFF',
             value: a.twoFactorEnabled,
             onTap: studio.toggleTwoFactor,
@@ -1144,18 +1406,25 @@ class _AuthPaneState extends State<_AuthPane> {
           trailing: _GlassButton(
             key: const Key('create-api-key-btn'),
             label: '+ NEW KEY',
-            onTap: () => studio.createApiKey('Studio Key ${a.apiKeys.length + 1}'),
+            onTap: () =>
+                studio.createApiKey('Studio Key ${a.apiKeys.length + 1}'),
           ),
         ),
         const SizedBox(height: PhotonSpace.sm - 2),
-        if (a.apiKeys.isEmpty) Text('NO ACTIVE KEYS', style: t.text.labelCaps.copyWith(color: muted)),
+        if (a.apiKeys.isEmpty)
+          Text(
+            'NO ACTIVE KEYS',
+            style: t.text.labelCaps.copyWith(color: muted),
+          ),
         for (var i = 0; i < a.apiKeys.length; i++) ...[
           _KeyRow(
             record: a.apiKeys[i],
             primary: i == 0,
             revealed: _revealed.contains(a.apiKeys[i].id),
             onReveal: () => setState(() {
-              if (!_revealed.remove(a.apiKeys[i].id)) _revealed.add(a.apiKeys[i].id);
+              if (!_revealed.remove(a.apiKeys[i].id)) {
+                _revealed.add(a.apiKeys[i].id);
+              }
             }),
             onCopy: () => _copy(a.apiKeys[i].secret),
             onRotate: () => studio.rotateApiKey(a.apiKeys[i].id),
@@ -1165,11 +1434,19 @@ class _AuthPaneState extends State<_AuthPane> {
         const SizedBox(height: PhotonSpace.xs),
         _SectionLabel(
           'ACTIVE CLUSTER & AGENT SESSIONS',
-          trailing: Text('${a.sessions.length}', style: t.text.mono(size: 9, height: 1.2, color: muted)),
+          trailing: Text(
+            '${a.sessions.length}',
+            style: t.text.mono(size: 9, height: 1.2, color: muted),
+          ),
         ),
         const SizedBox(height: PhotonSpace.sm - 2),
         for (var i = 0; i < a.sessions.length; i++) ...[
-          if (i > 0) Divider(height: PhotonSpace.md, thickness: 1, color: context.ink.withValues(alpha: 0.12)),
+          if (i > 0)
+            Divider(
+              height: PhotonSpace.md,
+              thickness: 1,
+              color: context.ink.withValues(alpha: 0.12),
+            ),
           _SessionRow(studio: studio, session: a.sessions[i]),
         ],
       ],
@@ -1179,7 +1456,14 @@ class _AuthPaneState extends State<_AuthPane> {
 
 /// A labelled glass switch with a state word.
 class _SwitchRow extends StatelessWidget {
-  const _SwitchRow({super.key, required this.label, required this.caption, required this.state, required this.value, required this.onTap});
+  const _SwitchRow({
+    super.key,
+    required this.label,
+    required this.caption,
+    required this.state,
+    required this.value,
+    required this.onTap,
+  });
 
   final String label;
   final String caption;
@@ -1206,28 +1490,65 @@ class _SwitchRow extends StatelessWidget {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text(label, maxLines: 1, overflow: TextOverflow.ellipsis, style: t.text.labelCaps.copyWith(fontSize: 8.5, color: context.ink, fontWeight: FontWeight.w700)),
-                      Text(caption, maxLines: 1, overflow: TextOverflow.ellipsis, style: t.text.mono(size: 9, height: 1.4, color: context.ink.withValues(alpha: 0.6))),
+                      Text(
+                        label,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: t.text.labelCaps.copyWith(
+                          fontSize: 8.5,
+                          color: context.ink,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                      Text(
+                        caption,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: t.text.mono(
+                          size: 9,
+                          height: 1.4,
+                          color: context.ink.withValues(alpha: 0.6),
+                        ),
+                      ),
                     ],
                   ),
                 ),
-                Text(state, style: t.text.labelCaps.copyWith(fontSize: 8, color: value ? context.accent : context.ink.withValues(alpha: 0.6))),
+                Text(
+                  state,
+                  style: t.text.labelCaps.copyWith(
+                    fontSize: 8,
+                    color: value
+                        ? context.accent
+                        : context.ink.withValues(alpha: 0.6),
+                  ),
+                ),
                 const SizedBox(width: PhotonSpace.sm),
                 AnimatedContainer(
                   duration: const Duration(milliseconds: 160),
                   width: 32,
                   height: 17,
                   padding: const EdgeInsets.all(2),
-                  alignment: value ? Alignment.centerRight : Alignment.centerLeft,
+                  alignment: value
+                      ? Alignment.centerRight
+                      : Alignment.centerLeft,
                   decoration: BoxDecoration(
-                    color: value ? t.colors.violet : context.ink.withValues(alpha: 0.16),
+                    color: value
+                        ? t.colors.violet
+                        : context.ink.withValues(alpha: 0.16),
                     borderRadius: BorderRadius.circular(PhotonRadius.pill),
-                    border: Border.all(color: context.ink.withValues(alpha: hovered ? 0.8 : 0.35)),
+                    border: Border.all(
+                      color: context.ink.withValues(
+                        alpha: hovered ? 0.8 : 0.35,
+                      ),
+                    ),
                   ),
                   child: Container(
                     width: 11,
                     height: 11,
-                    decoration: const BoxDecoration(color: Colors.white, shape: BoxShape.circle),
+                    decoration: const BoxDecoration(
+                      color: Colors.white,
+                      shape: BoxShape.circle,
+                    ),
                   ),
                 ),
               ],
@@ -1279,20 +1600,33 @@ class _KeyRow extends StatelessWidget {
                   record.label,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
-                  style: t.text.ui(size: 12, weight: FontWeight.w500, height: 1.3, color: context.ink),
+                  style: t.text.ui(
+                    size: 12,
+                    weight: FontWeight.w500,
+                    height: 1.3,
+                    color: context.ink,
+                  ),
                 ),
               ),
               _GlassButton(
                 key: Key('reveal-key-${record.id}'),
                 label: '',
-                icon: revealed ? Icons.visibility_off_outlined : Icons.visibility_outlined,
+                icon: revealed
+                    ? Icons.visibility_off_outlined
+                    : Icons.visibility_outlined,
                 tooltip: revealed ? 'Mask key' : 'Reveal key',
                 onTap: onReveal,
               ),
               const SizedBox(width: 4),
               _alsoKeyed(
                 primary ? const Key('profile-copy-key-btn') : null,
-                _GlassButton(key: Key('copy-key-${record.id}'), label: '', icon: Icons.copy, tooltip: 'Copy key', onTap: onCopy),
+                _GlassButton(
+                  key: Key('copy-key-${record.id}'),
+                  label: '',
+                  icon: Icons.copy,
+                  tooltip: 'Copy key',
+                  onTap: onCopy,
+                ),
               ),
               const SizedBox(width: 4),
               _alsoKeyed(
@@ -1317,7 +1651,11 @@ class _KeyRow extends StatelessWidget {
                 revealed ? record.secret : record.masked,
                 key: primary ? const Key('profile-key-masked') : null,
                 maxLines: 1,
-                style: t.text.mono(size: 10.5, height: 1.4, color: revealed ? context.accent : context.ink),
+                style: t.text.mono(
+                  size: 10.5,
+                  height: 1.4,
+                  color: revealed ? context.accent : context.ink,
+                ),
               ),
             ),
           ),
@@ -1326,7 +1664,11 @@ class _KeyRow extends StatelessWidget {
             'created ${record.created} · used ${record.lastUsed} · ${record.scopes.join(', ')}',
             maxLines: 2,
             overflow: TextOverflow.ellipsis,
-            style: t.text.mono(size: 9, height: 1.4, color: context.ink.withValues(alpha: 0.55)),
+            style: t.text.mono(
+              size: 9,
+              height: 1.4,
+              color: context.ink.withValues(alpha: 0.55),
+            ),
           ),
         ],
       ),
@@ -1348,7 +1690,10 @@ class _SessionRow extends StatelessWidget {
       children: [
         Padding(
           padding: const EdgeInsets.only(top: 4, right: PhotonSpace.sm),
-          child: Pip(color: session.isCurrent ? const Color(0xFF22C55E) : context.accent, size: 6),
+          child: Pip(
+            color: session.isCurrent ? const Color(0xFF22C55E) : context.accent,
+            size: 6,
+          ),
         ),
         Expanded(
           child: Column(
@@ -1358,19 +1703,32 @@ class _SessionRow extends StatelessWidget {
                 session.device,
                 maxLines: 2,
                 overflow: TextOverflow.ellipsis,
-                style: t.text.ui(size: 12, weight: FontWeight.w500, height: 1.3, color: context.ink),
+                style: t.text.ui(
+                  size: 12,
+                  weight: FontWeight.w500,
+                  height: 1.3,
+                  color: context.ink,
+                ),
               ),
               Text(
                 '${session.location} · ${session.ip}',
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
-                style: t.text.mono(size: 9.5, height: 1.4, color: context.ink.withValues(alpha: 0.7)),
+                style: t.text.mono(
+                  size: 9.5,
+                  height: 1.4,
+                  color: context.ink.withValues(alpha: 0.7),
+                ),
               ),
               Text(
                 '${session.protocol} · ${session.lastActive}',
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
-                style: t.text.mono(size: 9, height: 1.4, color: context.ink.withValues(alpha: 0.5)),
+                style: t.text.mono(
+                  size: 9,
+                  height: 1.4,
+                  color: context.ink.withValues(alpha: 0.5),
+                ),
               ),
             ],
           ),
@@ -1388,7 +1746,9 @@ class _SessionRow extends StatelessWidget {
               'THIS DEVICE',
               style: t.text.labelCaps.copyWith(
                 fontSize: 7.5,
-                color: t.colors.isDark ? const Color(0xFF86EFAC) : const Color(0xFF15803D),
+                color: t.colors.isDark
+                    ? const Color(0xFF86EFAC)
+                    : const Color(0xFF15803D),
               ),
             ),
           )
@@ -1407,7 +1767,12 @@ class _SessionRow extends StatelessWidget {
 /// The aurora: three drifting Lusion-blue blooms. Nothing follows the cursor:
 /// no ring and no spotlight (the card's own tilt is the pointer response).
 class _AuroraPainter extends CustomPainter {
-  _AuroraPainter({required this.aurora, required this.isDark, required this.blue, required this.cyan}) : super(repaint: aurora);
+  _AuroraPainter({
+    required this.aurora,
+    required this.isDark,
+    required this.blue,
+    required this.cyan,
+  }) : super(repaint: aurora);
 
   final ValueListenable<double> aurora;
   final bool isDark;
@@ -1419,24 +1784,46 @@ class _AuroraPainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
     final a = aurora.value * 2 * math.pi;
+    // One Paint for all three blooms; only its shader changes.
+    final paint = Paint();
     void bloom(Offset fraction, double radius, Color color) {
-      final center = Offset(fraction.dx * size.width, fraction.dy * size.height);
+      final center = Offset(
+        fraction.dx * size.width,
+        fraction.dy * size.height,
+      );
       final r = radius * size.width;
       canvas.drawCircle(
         center,
         r,
-        Paint()
-          ..shader = RadialGradient(colors: [color, color.withValues(alpha: 0)]).createShader(Rect.fromCircle(center: center, radius: r)),
+        paint
+          ..shader = RadialGradient(colors: [color, color.withValues(alpha: 0)])
+              .createShader(Rect.fromCircle(center: center, radius: r)),
       );
     }
 
     // Lusion Electric Blue at 0.18 (Dark) / 0.08 (Daylight).
     final k = isDark ? 0.18 : 0.08;
-    bloom(Offset(0.22 + 0.12 * math.sin(a), 0.2 + 0.1 * math.cos(a * 1.3)), 0.55, blue.withValues(alpha: k));
-    bloom(Offset(0.8 + 0.1 * math.cos(a * 0.8), 0.45 + 0.12 * math.sin(a * 1.1)), 0.5, blue.withValues(alpha: k * 0.8));
-    bloom(Offset(0.5 + 0.18 * math.sin(a * 0.6 + 2), 0.9 + 0.06 * math.cos(a)), 0.6, cyan.withValues(alpha: k * 0.5));
+    bloom(
+      Offset(0.22 + 0.12 * math.sin(a), 0.2 + 0.1 * math.cos(a * 1.3)),
+      0.55,
+      blue.withValues(alpha: k),
+    );
+    bloom(
+      Offset(0.8 + 0.1 * math.cos(a * 0.8), 0.45 + 0.12 * math.sin(a * 1.1)),
+      0.5,
+      blue.withValues(alpha: k * 0.8),
+    );
+    bloom(
+      Offset(0.5 + 0.18 * math.sin(a * 0.6 + 2), 0.9 + 0.06 * math.cos(a)),
+      0.6,
+      cyan.withValues(alpha: k * 0.5),
+    );
   }
 
   @override
-  bool shouldRepaint(_AuroraPainter old) => old.isDark != isDark || old.blue != blue || old.cyan != cyan;
+  bool shouldRepaint(_AuroraPainter old) =>
+      old.aurora != aurora ||
+      old.isDark != isDark ||
+      old.blue != blue ||
+      old.cyan != cyan;
 }

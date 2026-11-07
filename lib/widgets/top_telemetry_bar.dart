@@ -96,19 +96,19 @@ class _WorkspaceSwitch extends StatelessWidget {
           _Segment(
             label: 'SPLIT',
             selected: focus == null,
-            onTap: () => studio.setMaximizedPanel(null),
+            onTap: () => studio.selectWorkspaceLayout(null),
             tokens: t,
           ),
           _Segment(
             label: 'VIEWPORT',
             selected: focus == 'viewport',
-            onTap: () => studio.setMaximizedPanel('viewport'),
+            onTap: () => studio.selectWorkspaceLayout('viewport'),
             tokens: t,
           ),
           _Segment(
             label: 'OPTICS',
             selected: focus == 'optics',
-            onTap: () => studio.setMaximizedPanel('optics'),
+            onTap: () => studio.selectWorkspaceLayout('optics'),
             tokens: t,
           ),
           // The project deck takes over the centre stage; it is a switch of
@@ -376,9 +376,9 @@ class _AccountPill extends StatelessWidget {
                     width: 20,
                     height: 20,
                     alignment: Alignment.center,
-                    decoration: const BoxDecoration(
+                    decoration: BoxDecoration(
                       shape: BoxShape.circle,
-                      gradient: LinearGradient(colors: [Color(0xFF8A2BE2), Color(0xFFFF2D78)]),
+                      gradient: LinearGradient(colors: [c.violet, c.rose]),
                     ),
                     child: Text(
                       a.initials,

@@ -84,7 +84,7 @@ abstract final class IreScale {
   static const Color blue = Color(0xFF0000FF);
   static const Color cyanGreen = Color(0xFF00FFB3);
   static const Color yellow = Color(0xFFFFFF02);
-  static const Color clip = Color(0xFFFF2D78);
+  static const Color clip = Color(0xFFFF4C41);
 
   /// Luma where each anchor sits (0..1 of full scale).
   static const double mid = 0.18;
@@ -163,7 +163,7 @@ class IreExposureLegend extends StatelessWidget {
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: PhotonSpace.md, vertical: PhotonSpace.sm - 2),
         decoration: BoxDecoration(
-          color: const Color(0xFF0E0E10).withValues(alpha: 0.74),
+          color: const Color(0xFF0B0C10).withValues(alpha: 0.74),
           borderRadius: BorderRadius.circular(PhotonRadius.window),
           border: Border.all(color: Colors.white.withValues(alpha: 0.1)),
         ),
@@ -319,7 +319,7 @@ class _Lens extends StatelessWidget {
         child: Stack(
           fit: StackFit.expand,
           children: [
-            ColoredBox(color: const Color(0xFF0E0E10), child: const SizedBox.expand()),
+            ColoredBox(color: const Color(0xFF0B0C10), child: const SizedBox.expand()),
             OverflowBox(
               alignment: Alignment.topLeft,
               minWidth: stageSize.width,
@@ -403,7 +403,7 @@ class _Readout extends StatelessWidget {
       height: PixelLoupeOverlay.readoutHeight,
       padding: const EdgeInsets.symmetric(horizontal: PhotonSpace.sm, vertical: 6),
       decoration: BoxDecoration(
-        color: const Color(0xFF0E0E10).withValues(alpha: 0.88),
+        color: const Color(0xFF0B0C10).withValues(alpha: 0.88),
         borderRadius: BorderRadius.circular(PhotonRadius.window + 2),
         border: Border.all(color: Colors.white.withValues(alpha: 0.1)),
       ),

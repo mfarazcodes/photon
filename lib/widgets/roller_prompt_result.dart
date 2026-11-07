@@ -331,7 +331,7 @@ class _BreakPulsePainter extends CustomPainter {
       ..style = PaintingStyle.stroke
       ..strokeWidth = 1.5
       ..color = color.withValues(alpha: 0.9 * intensity);
-    canvas.drawRRect(shifted(2), stroke(const Color(0xFFFF2D78)));
+    canvas.drawRRect(shifted(2), stroke(const Color(0xFFFF4C41)));
     canvas.drawRRect(shifted(-2), stroke(const Color(0xFF22D3EE)));
     final y = size.height * b;
     canvas.drawLine(

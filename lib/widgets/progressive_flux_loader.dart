@@ -1,12 +1,11 @@
 import 'dart:math' as math;
-import 'dart:ui' show ImageFilter;
 
 import 'package:flutter/material.dart';
 
 import '../theme/photon_theme.dart';
 
 /// Text that flies in one character at a time: each glyph rises from +10px,
-/// fades from 0 and un-blurs from 4px, 18ms after the one before it. Giving it
+/// fades from 0 and settles from 92% scale, 18ms after the one before it. Giving it
 /// new [text] plays the whole line again.
 class StaggeredLetterText extends StatefulWidget {
   const StaggeredLetterText({
@@ -27,14 +26,19 @@ class StaggeredLetterText extends StatefulWidget {
   final Duration letterDuration;
 
   /// Total time for [text] to finish.
-  Duration get totalDuration => stagger * math.max(0, text.length - 1) + letterDuration;
+  Duration get totalDuration =>
+      stagger * math.max(0, text.length - 1) + letterDuration;
 
   @override
   State<StaggeredLetterText> createState() => _StaggeredLetterTextState();
 }
 
-class _StaggeredLetterTextState extends State<StaggeredLetterText> with SingleTickerProviderStateMixin {
-  late final AnimationController _c = AnimationController(vsync: this, duration: widget.totalDuration)..forward();
+class _StaggeredLetterTextState extends State<StaggeredLetterText>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _c = AnimationController(
+    vsync: this,
+    duration: widget.totalDuration,
+  )..forward();
 
   @override
   void didUpdateWidget(StaggeredLetterText old) {
@@ -66,7 +70,12 @@ class _StaggeredLetterTextState extends State<StaggeredLetterText> with SingleTi
             mainAxisSize: MainAxisSize.min,
             children: [
               for (var i = 0; i < chars.length; i++)
-                _letter(chars[i], ((nowMs - i * widget.stagger.inMilliseconds) / widget.letterDuration.inMilliseconds).clamp(0.0, 1.0)),
+                _letter(
+                  chars[i],
+                  ((nowMs - i * widget.stagger.inMilliseconds) /
+                          widget.letterDuration.inMilliseconds)
+                      .clamp(0.0, 1.0),
+                ),
             ],
           );
         },
@@ -76,14 +85,19 @@ class _StaggeredLetterTextState extends State<StaggeredLetterText> with SingleTi
 
   Widget _letter(String ch, double raw) {
     final p = Curves.easeOutCubic.transform(raw);
-    Widget glyph = Text(ch, style: widget.style, softWrap: false);
-    final blur = 4 * (1 - p);
-    if (blur > 0.05) {
-      glyph = ImageFiltered(imageFilter: ImageFilter.blur(sigmaX: blur, sigmaY: blur), child: glyph);
-    }
+    // Rise, fade and a hair of scale: all of it composited, none of it
+    // re-rasterised. (A blur here meant one offscreen Gaussian pass per
+    // character per frame: 32 of them for a phase label.)
     return Opacity(
       opacity: p,
-      child: Transform.translate(offset: Offset(0, 10 * (1 - p)), child: glyph),
+      child: Transform.translate(
+        offset: Offset(0, 10 * (1 - p)),
+        child: Transform.scale(
+          scale: 0.92 + 0.08 * p,
+          alignment: Alignment.bottomCenter,
+          child: Text(ch, style: widget.style, softWrap: false),
+        ),
+      ),
     );
   }
 }
@@ -115,8 +129,13 @@ class ProgressiveFluxLoader extends StatelessWidget {
   /// False freezes the shimmer wave (tests).
   final bool animate;
 
-  /// Spectral Violet, Magenta, Caustic Rose, Cyan.
-  static const List<Color> fluxColors = [Color(0xFF8A2BE2), Color(0xFFE879F9), Color(0xFFFF2D78), Color(0xFF22D3EE)];
+  /// Lusion Electric Blue, Lifted Blue, Hot Coral, Cyan.
+  static const List<Color> fluxColors = [
+    Color(0xFF1A2FFB),
+    Color(0xFF6878FF),
+    Color(0xFFFF4C41),
+    Color(0xFF22D3EE),
+  ];
 
   static const double width = 440;
 
@@ -134,13 +153,24 @@ class ProgressiveFluxLoader extends StatelessWidget {
       label: 'Ingesting $fileName, $percent percent. $phaseLabel',
       child: Container(
         width: width,
-        padding: const EdgeInsets.fromLTRB(PhotonSpace.md, PhotonSpace.md - 2, PhotonSpace.md, PhotonSpace.md),
+        padding: const EdgeInsets.fromLTRB(
+          PhotonSpace.md,
+          PhotonSpace.md - 2,
+          PhotonSpace.md,
+          PhotonSpace.md,
+        ),
         decoration: BoxDecoration(
           color: c.dock.withValues(alpha: 0.97),
           borderRadius: BorderRadius.circular(14),
-          border: Border.all(color: c.isDark ? Colors.white.withValues(alpha: 0.14) : c.border),
+          border: Border.all(
+            color: c.isDark ? Colors.white.withValues(alpha: 0.14) : c.border,
+          ),
           boxShadow: [
-            BoxShadow(color: fluxColors[0].withValues(alpha: 0.28), blurRadius: 30, spreadRadius: -8),
+            BoxShadow(
+              color: fluxColors[0].withValues(alpha: 0.28),
+              blurRadius: 30,
+              spreadRadius: -8,
+            ),
             ...t.level2,
           ],
         ),
@@ -152,35 +182,51 @@ class ProgressiveFluxLoader extends StatelessWidget {
               children: [
                 Flexible(
                   child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
-                  decoration: BoxDecoration(
-                    color: fluxColors[0].withValues(alpha: 0.16),
-                    borderRadius: BorderRadius.circular(PhotonRadius.control),
-                    border: Border.all(color: fluxColors[0].withValues(alpha: 0.5)),
-                  ),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Icon(Icons.insert_drive_file_outlined, size: 10, color: c.violetInk),
-                      const SizedBox(width: 4),
-                      Flexible(
-                        child: Text(
-                          fileName,
-                          key: const Key('flux-file-badge'),
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: t.text.labelCaps.copyWith(fontSize: 8.5, color: c.violetInk, fontWeight: FontWeight.w700),
-                        ),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 7,
+                      vertical: 3,
+                    ),
+                    decoration: BoxDecoration(
+                      color: fluxColors[0].withValues(alpha: 0.16),
+                      borderRadius: BorderRadius.circular(PhotonRadius.control),
+                      border: Border.all(
+                        color: fluxColors[0].withValues(alpha: 0.5),
                       ),
-                      if (sizeMb != null) ...[
-                        const SizedBox(width: 6),
-                        Text(
-                          '${sizeMb!.toStringAsFixed(1)} MB',
-                          style: t.text.labelCaps.copyWith(fontSize: 8, color: c.onDock.withValues(alpha: 0.6)),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(
+                          Icons.insert_drive_file_outlined,
+                          size: 10,
+                          color: c.violetInk,
                         ),
+                        const SizedBox(width: 4),
+                        Flexible(
+                          child: Text(
+                            fileName,
+                            key: const Key('flux-file-badge'),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: t.text.labelCaps.copyWith(
+                              fontSize: 8.5,
+                              color: c.violetInk,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                        ),
+                        if (sizeMb != null) ...[
+                          const SizedBox(width: 6),
+                          Text(
+                            '${sizeMb!.toStringAsFixed(1)} MB',
+                            style: t.text.labelCaps.copyWith(
+                              fontSize: 8,
+                              color: c.onDock.withValues(alpha: 0.6),
+                            ),
+                          ),
+                        ],
                       ],
-                    ],
-                  ),
+                    ),
                   ),
                 ),
                 const SizedBox(width: PhotonSpace.sm),
@@ -189,7 +235,10 @@ class ProgressiveFluxLoader extends StatelessWidget {
                     '1.42 GB/s · PCIe 5.0 DMA',
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
-                    style: t.text.labelCaps.copyWith(fontSize: 8, color: c.onDock.withValues(alpha: 0.55)),
+                    style: t.text.labelCaps.copyWith(
+                      fontSize: 8,
+                      color: c.onDock.withValues(alpha: 0.55),
+                    ),
                   ),
                 ),
               ],
@@ -207,7 +256,11 @@ class ProgressiveFluxLoader extends StatelessWidget {
                       child: StaggeredLetterText(
                         key: const Key('flux-phase-label'),
                         text: phaseLabel,
-                        style: t.text.labelCaps.copyWith(fontSize: 10, color: c.onDock, fontWeight: FontWeight.w700),
+                        style: t.text.labelCaps.copyWith(
+                          fontSize: 10,
+                          color: c.onDock,
+                          fontWeight: FontWeight.w700,
+                        ),
                       ),
                     ),
                   ),
@@ -216,7 +269,12 @@ class ProgressiveFluxLoader extends StatelessWidget {
                 Text(
                   label,
                   key: const Key('flux-percent'),
-                  style: t.text.mono(size: 18, weight: FontWeight.w700, height: 1, color: done ? fluxColors[3] : c.onDock),
+                  style: t.text.mono(
+                    size: 18,
+                    weight: FontWeight.w700,
+                    height: 1,
+                    color: done ? fluxColors[3] : c.onDock,
+                  ),
                 ),
               ],
             ),
@@ -227,12 +285,18 @@ class ProgressiveFluxLoader extends StatelessWidget {
               children: [
                 Text(
                   'PHASE ${phaseIndex + 1}/$phaseCount',
-                  style: t.text.labelCaps.copyWith(fontSize: 7.5, color: c.onDock.withValues(alpha: 0.5)),
+                  style: t.text.labelCaps.copyWith(
+                    fontSize: 7.5,
+                    color: c.onDock.withValues(alpha: 0.5),
+                  ),
                 ),
                 const Spacer(),
                 Text(
                   done ? 'FIRST LIGHT READY' : 'STREAMING TO GPU',
-                  style: t.text.labelCaps.copyWith(fontSize: 7.5, color: c.onDock.withValues(alpha: 0.5)),
+                  style: t.text.labelCaps.copyWith(
+                    fontSize: 7.5,
+                    color: c.onDock.withValues(alpha: 0.5),
+                  ),
                 ),
               ],
             ),
@@ -253,7 +317,8 @@ class _FluxBar extends StatefulWidget {
   State<_FluxBar> createState() => _FluxBarState();
 }
 
-class _FluxBarState extends State<_FluxBar> with SingleTickerProviderStateMixin {
+class _FluxBarState extends State<_FluxBar>
+    with SingleTickerProviderStateMixin {
   late final AnimationController _shimmer = AnimationController(
     vsync: this,
     duration: const Duration(milliseconds: 1500),
@@ -296,7 +361,11 @@ class _FluxBarState extends State<_FluxBar> with SingleTickerProviderStateMixin 
             duration: const Duration(milliseconds: 140),
             builder: (context, p, _) {
               final fillWidth = box.maxWidth * p;
-              final tip = Color.lerp(ProgressiveFluxLoader.fluxColors[1], ProgressiveFluxLoader.fluxColors[3], p)!;
+              final tip = Color.lerp(
+                ProgressiveFluxLoader.fluxColors[1],
+                ProgressiveFluxLoader.fluxColors[3],
+                p,
+              )!;
               return Stack(
                 clipBehavior: Clip.none,
                 alignment: Alignment.centerLeft,
@@ -325,7 +394,13 @@ class _FluxBarState extends State<_FluxBar> with SingleTickerProviderStateMixin 
                         decoration: BoxDecoration(
                           color: Colors.white,
                           borderRadius: BorderRadius.circular(2),
-                          boxShadow: [BoxShadow(color: tip, blurRadius: 16, spreadRadius: 2)],
+                          boxShadow: [
+                            BoxShadow(
+                              color: tip,
+                              blurRadius: 16,
+                              spreadRadius: 2,
+                            ),
+                          ],
                         ),
                         child: const SizedBox(width: 4, height: 10),
                       ),
@@ -341,7 +416,11 @@ class _FluxBarState extends State<_FluxBar> with SingleTickerProviderStateMixin 
 }
 
 class _FluxBarPainter extends CustomPainter {
-  _FluxBarPainter({required this.progress, required this.shimmer, required this.trackColor}) : super(repaint: shimmer);
+  _FluxBarPainter({
+    required this.progress,
+    required this.shimmer,
+    required this.trackColor,
+  }) : super(repaint: shimmer);
 
   final double progress;
   final Animation<double> shimmer;
@@ -350,11 +429,17 @@ class _FluxBarPainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
     final radius = Radius.circular(size.height / 2);
-    canvas.drawRRect(RRect.fromRectAndRadius(Offset.zero & size, radius), Paint()..color = trackColor);
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(Offset.zero & size, radius),
+      Paint()..color = trackColor,
+    );
     final fillWidth = size.width * progress;
     if (fillWidth <= 0.5) return;
 
-    final fill = RRect.fromRectAndRadius(Rect.fromLTWH(0, 0, fillWidth, size.height), radius);
+    final fill = RRect.fromRectAndRadius(
+      Rect.fromLTWH(0, 0, fillWidth, size.height),
+      radius,
+    );
     canvas.save();
     canvas.clipRRect(fill);
     canvas.drawRect(
@@ -378,13 +463,21 @@ class _FluxBarPainter extends CustomPainter {
     canvas.drawPath(
       wave,
       Paint()
-        ..shader = LinearGradient(
-          colors: [Colors.white.withValues(alpha: 0), Colors.white.withValues(alpha: 0.55), Colors.white.withValues(alpha: 0)],
-        ).createShader(Rect.fromLTWH(x, 0, band * 0.5 + size.height, size.height)),
+        ..shader =
+            LinearGradient(
+              colors: [
+                Colors.white.withValues(alpha: 0),
+                Colors.white.withValues(alpha: 0.55),
+                Colors.white.withValues(alpha: 0),
+              ],
+            ).createShader(
+              Rect.fromLTWH(x, 0, band * 0.5 + size.height, size.height),
+            ),
     );
     canvas.restore();
   }
 
   @override
-  bool shouldRepaint(_FluxBarPainter old) => old.progress != progress || old.trackColor != trackColor;
+  bool shouldRepaint(_FluxBarPainter old) =>
+      old.progress != progress || old.trackColor != trackColor;
 }

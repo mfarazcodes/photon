@@ -250,7 +250,7 @@ class NativeFrame {
   /// film's prism light as a hairline.
   static const film = NativeFrame(
     dark: true,
-    caption: Color(0xFF0E0E10),
+    caption: Color(0xFF0B0C10),
     text: Color(0xFFF0F1FA),
     border: Color(0xFF5B4A9A),
   );
@@ -1026,6 +1026,19 @@ class StudioController extends ChangeNotifier {
   }
 
   void toggleMaximizedPanel(String panelId) => setMaximizedPanel(_maximizedPanel == panelId ? null : panelId);
+
+  /// Switches the workspace layout (`null` is SPLIT, `'viewport'`, `'optics'`)
+  /// and leaves the project deck if it is up, in one notification: the layout
+  /// segments and the DECK segment change in the same frame, and the user is
+  /// never left behind the deck's scrim.
+  void selectWorkspaceLayout(String? panelId) {
+    if (panelId == 'account') {
+      setAccountModalOpen(true);
+      return;
+    }
+    _deckView = false;
+    setMaximizedPanel(panelId);
+  }
 
   /// Maximizing a panel also expands it, so the two states never fight.
   void setMaximizedPanel(String? panelId) {

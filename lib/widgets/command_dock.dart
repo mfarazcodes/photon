@@ -595,7 +595,7 @@ class _LinkButton extends StatelessWidget {
                       ),
                       child: Text(
                         tier.shortTag,
-                        style: t.text.mono(size: 6.5, weight: FontWeight.w700, height: 1.1, color: tier.accent == const Color(0xFF8A2BE2) ? const Color(0xFFB57BFF) : tier.accent),
+                        style: t.text.mono(size: 6.5, weight: FontWeight.w700, height: 1.1, color: tier.accent == t.colors.violet && t.colors.isDark ? t.colors.violetInk : tier.accent),
                       ),
                     ),
                   ),

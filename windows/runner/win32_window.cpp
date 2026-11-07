@@ -181,7 +181,7 @@ bool Win32Window::Create(const std::wstring& title,
   // The app opens on the launch film, so the frame starts in its palette (no
   // flash of another colour before Dart takes over).
   UpdateFrame(window, true,
-              0x00100E0E,   // caption  #0E0E10 the landing page's near-black
+              0x00100C0B,   // caption  #0B0C10 the landing page's Lusion void
               0x00FAF1F0,   // text     #F0F1FA
               0x009A4A5B);  // border   #5B4A9A the film's prism violet
 

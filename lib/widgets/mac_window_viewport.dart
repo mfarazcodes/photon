@@ -626,7 +626,7 @@ class _RenderSurface extends StatelessWidget {
       fit: BoxFit.cover,
       filterQuality: quality,
       semanticLabel: label,
-      errorBuilder: (_, _, _) => const ColoredBox(color: Color(0xFF0E0E10)),
+      errorBuilder: (_, _, _) => const ColoredBox(color: Color(0xFF0B0C10)),
     );
 
     // The project's own picture when it has one (uploaded bytes, a file on
@@ -799,7 +799,7 @@ class _Hud extends StatelessWidget {
   Widget build(BuildContext context) => Container(
     padding: padding ?? const EdgeInsets.symmetric(horizontal: PhotonSpace.md - 2, vertical: 5),
     decoration: BoxDecoration(
-      color: const Color(0xFF0E0E10).withValues(alpha: 0.74),
+      color: const Color(0xFF0B0C10).withValues(alpha: 0.74),
       borderRadius: BorderRadius.circular(pill ? PhotonRadius.pill : PhotonRadius.window),
       border: Border.all(color: Colors.white.withValues(alpha: 0.1)),
     ),
@@ -842,12 +842,12 @@ class _TelemetryStrip extends StatelessWidget {
                   Icon(
                     studio.animateShader ? Icons.pause : Icons.play_arrow,
                     size: 11,
-                    color: const Color(0xFFDCB8FF),
+                    color: const Color(0xFF6878FF),
                   ),
                   const SizedBox(width: 4),
                   Text(
                     studio.animateShader ? 'SHADER' : 'PAUSED',
-                    style: style.copyWith(color: const Color(0xFFDCB8FF)),
+                    style: style.copyWith(color: const Color(0xFF6878FF)),
                   ),
                 ],
               ),
@@ -885,7 +885,7 @@ class _TelemetryStrip extends StatelessWidget {
             onTap: studio.cycleIntegrator,
             child: Text(
               studio.integrator.label,
-              style: style.copyWith(color: const Color(0xFFEFDBFF)),
+              style: style.copyWith(color: const Color(0xFFE0E5FF)),
             ),
           ),
         ],
@@ -1033,7 +1033,7 @@ class _TopLeftHud extends StatelessWidget {
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                Icon(loaded.icon, size: 10, color: const Color(0xFFDCB8FF)),
+                Icon(loaded.icon, size: 10, color: const Color(0xFF6878FF)),
                 const SizedBox(width: PhotonSpace.sm - 2),
                 Text(loaded.fileName, style: style),
               ],
@@ -1051,7 +1051,7 @@ class _TopLeftHud extends StatelessWidget {
                     padding: const EdgeInsets.only(top: PhotonSpace.xs + 2),
                     child: _Hud(
                       pill: true,
-                      child: Text(message, style: style.copyWith(color: const Color(0xFFDCB8FF))),
+                      child: Text(message, style: style.copyWith(color: const Color(0xFF6878FF))),
                     ),
                   ),
           ),
@@ -1132,7 +1132,7 @@ class _ProbeCrosshair extends StatelessWidget {
                         const SizedBox(width: 5),
                         Text(
                           'λ: ${nm.round()}nm | IOR: ${studio.param('ior').toStringAsFixed(3)}',
-                          style: t.text.mono(size: 8, height: 1.2, color: const Color(0xFFEFDBFF)),
+                          style: t.text.mono(size: 8, height: 1.2, color: const Color(0xFFE0E5FF)),
                         ),
                         const SizedBox(width: 4),
                         // Removes the probe from the stage at once.
@@ -1239,7 +1239,7 @@ class _ResolutionTag extends StatelessWidget {
               valueListenable: studio.cameraZoom,
               builder: (context, zoom, _) => Text(
                 'ZOOM ${zoom.toStringAsFixed(2)}×',
-                style: t.text.labelCaps.copyWith(fontSize: 8, color: const Color(0xFFEFDBFF)),
+                style: t.text.labelCaps.copyWith(fontSize: 8, color: const Color(0xFFE0E5FF)),
               ),
             ),
           ),
@@ -1272,7 +1272,7 @@ class _TakesFilmstrip extends StatelessWidget {
             children: [
               const Padding(
                 padding: EdgeInsets.only(left: 8, right: 4),
-                child: Icon(Icons.photo_camera_outlined, size: 11, color: Color(0xFFDCB8FF)),
+                child: Icon(Icons.photo_camera_outlined, size: 11, color: Color(0xFF6878FF)),
               ),
               for (final take in takes)
                 _HudPill(
@@ -1329,7 +1329,7 @@ class _ConvergenceGauge extends StatelessWidget {
                     Text(
                       '${(pct * 100).round()}%',
                       style: t.text.telemetrySm.copyWith(
-                        color: const Color(0xFFEFDBFF),
+                        color: const Color(0xFFE0E5FF),
                         fontWeight: FontWeight.w700,
                       ),
                     ),
@@ -1347,7 +1347,7 @@ class _ConvergenceGauge extends StatelessWidget {
                           height: 4,
                           decoration: const BoxDecoration(
                             gradient: LinearGradient(
-                              colors: [Color(0xFF8A2BE2), Color(0xFFE879F9)],
+                              colors: [Color(0xFF1A2FFB), Color(0xFF22D3EE)],
                             ),
                           ),
                         ),

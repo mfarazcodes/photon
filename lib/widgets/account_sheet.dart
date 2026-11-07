@@ -22,7 +22,8 @@ class AccountInspectorModal extends StatelessWidget {
     return Focus(
       autofocus: true,
       onKeyEvent: (node, event) {
-        if (event is KeyDownEvent && event.logicalKey == LogicalKeyboardKey.escape) {
+        if (event is KeyDownEvent &&
+            event.logicalKey == LogicalKeyboardKey.escape) {
           close();
           return KeyEventResult.handled;
         }
@@ -35,9 +36,23 @@ class AccountInspectorModal extends StatelessWidget {
             key: const Key('account-backdrop'),
             behavior: HitTestBehavior.opaque,
             onTap: close,
-            // A flat scrim, not a blur: a BackdropFilter re-blurs the whole
-            // window behind the card on every frame the card tilts.
-            child: ColoredBox(color: Colors.black.withValues(alpha: 0.62)),
+            // A flat architectural scrim, not a blur: a BackdropFilter re-blurs
+            // the whole window behind the card on every frame the card tilts.
+            // Its own layer, so it is painted once and only ever composited.
+            child: RepaintBoundary(
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  color: Colors.black.withValues(alpha: 0.62),
+                  gradient: RadialGradient(
+                    radius: 0.9,
+                    colors: [
+                      Colors.transparent,
+                      Colors.black.withValues(alpha: 0.22),
+                    ],
+                  ),
+                ),
+              ),
+            ),
           ),
           LayoutBuilder(
             builder: (context, box) => Center(
@@ -45,12 +60,22 @@ class AccountInspectorModal extends StatelessWidget {
                 padding: const EdgeInsets.all(PhotonSpace.lg),
                 child: ConstrainedBox(
                   // The card scrolls inside this height rather than overflow.
-                  constraints: BoxConstraints(maxWidth: maxCardWidth, maxHeight: box.maxHeight - PhotonSpace.lg * 2),
+                  constraints: BoxConstraints(
+                    maxWidth: maxCardWidth,
+                    maxHeight: box.maxHeight - PhotonSpace.lg * 2,
+                  ),
                   // Swallow clicks on the card so they do not reach the backdrop.
                   child: GestureDetector(
                     behavior: HitTestBehavior.opaque,
                     onTap: () {},
-                    child: AnimatedBlueProfileCard(key: const Key('animated-profile-card'), onClose: close),
+                    // Its own layer inside the modal: the card's tilt, ring and
+                    // drawer never dirty the scrim behind it.
+                    child: RepaintBoundary(
+                      child: AnimatedBlueProfileCard(
+                        key: const Key('animated-profile-card'),
+                        onClose: close,
+                      ),
+                    ),
                   ),
                 ),
               ),

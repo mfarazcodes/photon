@@ -339,8 +339,7 @@ class _CardDeckCarouselState extends State<CardDeckCarousel> with TickerProvider
               onTap: () {
                 // Tapping the top print opens that project, full screen.
                 studio.selectProject(p.id);
-                studio.setDeckView(false);
-                studio.setMaximizedPanel('viewport');
+                studio.selectWorkspaceLayout('viewport');
               },
               child: card,
             );

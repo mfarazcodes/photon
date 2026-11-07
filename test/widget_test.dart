@@ -1873,7 +1873,7 @@ void main() {
         '0x00362926': '#262936 dark border',
         '0x001B1514': '#14151B light text',
         '0x00E8DAD8': '#D8DAE8 light border',
-        '0x00100E0E': '#0E0E10 launch film caption',
+        '0x00100C0B': '#0B0C10 launch film caption',
         '0x009A4A5B': '#5B4A9A launch film border',
       }.entries) {
         expect(source, contains(entry.key), reason: entry.value);
@@ -1957,7 +1957,7 @@ void main() {
       studio.openLaunchPortal();
       expect(studio.nativeFrame, NativeFrame.film);
 
-      expect(NativeFrame.film.caption, const Color(0xFF0E0E10), reason: 'the landing page\'s own near-black');
+      expect(NativeFrame.film.caption, const Color(0xFF0B0C10), reason: 'the landing page\'s Lusion void');
       expect(NativeFrame.grading.toArguments(), {'dark': true, 'caption': 0x08090D, 'text': 0xF0F1FA, 'border': 0x262936});
       expect(NativeFrame.daylight.toArguments(), {'dark': false, 'caption': 0xF0F1FA, 'text': 0x14151B, 'border': 0xD8DAE8});
     });
@@ -3607,7 +3607,8 @@ void main() {
       expect(portal, findsOneWidget);
       expect(tester.getSize(portal), const Size(1280, 800), reason: 'full bleed');
 
-      expect(find.text('Physically Based Light Transport.'), findsOneWidget);
+      expect(find.text('Physically Based Light Transport.'), findsNothing, reason: 'no headline over the film');
+      expect(find.byKey(const Key('hero-headline')), findsNothing);
       expect(find.text("EDITION WINTER '26 // SPATIAL RAY-TRACING ENGINE"), findsOneWidget);
       expect(find.text('PHOTON®'), findsOneWidget);
       expect(find.text('Take me to Photon'), findsOneWidget);
@@ -3636,7 +3637,7 @@ void main() {
       final studio = await pumpLanding(tester);
       final vignette = tester.widget<DecoratedBox>(find.byKey(const Key('hero-vignette')));
       final gradient = (vignette.decoration as BoxDecoration).gradient! as RadialGradient;
-      expect(gradient.colors.last, const Color(0xFF0E0E10), reason: '#0E0E10 at the edges');
+      expect(gradient.colors.last, const Color(0xFF0B0C10), reason: '#0B0C10 at the edges');
       expect(gradient.colors.first.a, 0, reason: 'clear in the middle');
       final frames = tester.widgetList<Image>(find.descendant(of: find.byKey(const Key('hero-stage')), matching: find.byType(Image))).toList();
       expect(frames, hasLength(2), reason: 'both film layers are always in the tree');
@@ -3645,6 +3646,57 @@ void main() {
       }
       String asset(Image i) => ((i.image as ResizeImage).imageProvider as AssetImage).assetName;
       expect(frames.map(asset), ['assets/images/hero_frame_01.jpg', 'assets/images/hero_frame_02.jpg']);
+      await _teardown(tester, studio);
+    });
+
+    test('the Daylight grade is a 5x4 matrix that lifts, desaturates and washes lavender', () {
+      final m = LaunchHeroPortal.daylightGrade;
+      expect(m, hasLength(20));
+      expect(m.sublist(15), [0, 0, 0, 1, 0], reason: 'alpha untouched');
+      List<double> apply(double r, double g, double b) => [
+        for (var row = 0; row < 3; row++) (m[row * 5] * r + m[row * 5 + 1] * g + m[row * 5 + 2] * b + m[row * 5 + 4]).clamp(0.0, 255.0),
+      ];
+      // Black is lifted to a luminous cool lavender-grey, not left black.
+      final black = apply(0, 0, 0);
+      expect(black, everyElement(inInclusiveRange(95, 115)));
+      expect(black[2], greaterThan(black[0]), reason: 'cool: blue over red');
+      // The film's deep violet shadows come up too, and white goes to white.
+      expect(apply(20, 10, 30).every((v) => v > 100), isTrue);
+      expect(apply(255, 255, 255), everyElement(greaterThan(240)));
+      // Saturation is pulled in: a pure red's channels end up much closer together.
+      final red = apply(255, 0, 0);
+      expect(red[0] - red[1], lessThan(255 * 0.6));
+      expect(red[0] - red[1], greaterThan(0), reason: 'still red, only quieter');
+    });
+
+    testWidgets('Dark Grading leaves the film ungraded; Daylight Lab grades it high-key on lavender', (tester) async {
+      final studio = await pumpLanding(tester);
+      final grade = find.byKey(const Key('hero-daylight-grade'));
+      expect(studio.darkGrading, isTrue);
+      expect(grade, findsNothing, reason: 'the original cinematic grade, no filter pass');
+      Color vignetteEdge() =>
+          (((tester.widget<DecoratedBox>(find.byKey(const Key('hero-vignette'))).decoration as BoxDecoration).gradient!) as RadialGradient).colors.last;
+      expect(vignetteEdge(), const Color(0xFF0B0C10));
+      expect(tester.widget<Text>(find.byKey(const Key('hero-wordmark'))).style!.color, Colors.white);
+
+      studio.setDarkGrading(false);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 50));
+      expect(grade, findsOneWidget);
+      final filtered = tester.widget<ColorFiltered>(grade);
+      expect(filtered.colorFilter, ColorFilter.matrix(LaunchHeroPortal.daylightGrade));
+      // Both film layers sit under the one filter.
+      expect(find.descendant(of: grade, matching: find.byType(Image)), findsNWidgets(2));
+      expect(vignetteEdge(), const Color(0xFFF0F1FA), reason: 'the lavender canvas at the edges');
+      expect(tester.widget<Text>(find.text(LaunchHeroPortal.cta)).style!.color, const Color(0xFF14151B), reason: 'obsidian type on the bright film');
+      expect(tester.widget<Text>(find.byKey(const Key('hero-wordmark'))).style!.color, const Color(0xFF14151B));
+      expect(tester.takeException(), isNull);
+
+      studio.setDarkGrading(true);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 50));
+      expect(grade, findsNothing, reason: 'and back to the dark film');
+      expect(vignetteEdge(), const Color(0xFF0B0C10));
       await _teardown(tester, studio);
     });
 
@@ -3800,7 +3852,7 @@ void main() {
       final studio = StudioController(autoConnect: false, animateShader: false, startInLandingPage: true);
       await tester.pumpWidget(PhotonApp(controller: studio));
       await tester.pump(const Duration(milliseconds: 300));
-      expect(find.text('Physically Based Light Transport.'), findsOneWidget);
+      expect(find.text('Physically Based Light Transport.'), findsNothing);
       expect(takeMe, findsOneWidget);
       expect(tester.takeException(), isNull);
       await _teardown(tester, studio);
@@ -6905,6 +6957,145 @@ void main() {
       expect(tester.takeException(), isNull);
       expect(tester.getSize(modal).height, lessThanOrEqualTo(460));
       await tester.ensureVisible(find.byKey(const Key('new-project-create')));
+      await _teardown(tester, studio);
+    });
+  });
+
+  group('workspace switching', () {
+    Finder segment(String label) => find.byWidgetPredicate((w) => w is Semantics && w.properties.label == label && w.properties.button == true);
+    bool selected(WidgetTester tester, String label) => tester.widget<Semantics>(segment(label).first).properties.selected == true;
+
+    test('selectWorkspaceLayout sets the panel and leaves the deck in one notification', () {
+      final s = StudioController(autoConnect: false, animateShader: false, startInDeckView: true);
+      addTearDown(s.dispose);
+      var heard = 0;
+      s.addListener(() => heard++);
+      s.selectWorkspaceLayout('viewport');
+      expect([s.deckView, s.maximizedPanel], [false, 'viewport']);
+      expect(heard, 1, reason: 'one frame, one notification');
+      s.setDeckView(true);
+      s.selectWorkspaceLayout(null);
+      expect([s.deckView, s.maximizedPanel], [false, null]);
+      s.setDeckView(true);
+      s.selectWorkspaceLayout('optics');
+      expect([s.deckView, s.maximizedPanel], [false, 'optics']);
+      s.setDeckView(true);
+      s.selectWorkspaceLayout('account');
+      expect(s.accountModalOpen, isTrue, reason: 'the account has one home');
+      expect(s.deckView, isTrue, reason: 'opening the console is not a layout switch');
+    });
+
+    for (final entry in {'SPLIT': null, 'VIEWPORT': 'viewport', 'OPTICS': 'optics'}.entries) {
+      testWidgets('clicking ${entry.key} while the deck is open leaves the deck', (tester) async {
+        final studio = await _pumpStudio(tester, const Size(1280, 800));
+        studio.setDeckView(true);
+        await _pumpFor(tester, const Duration(milliseconds: 400));
+        expect(find.byKey(const Key('deck-top-card')), findsOneWidget);
+        expect(selected(tester, 'DECK'), isTrue);
+
+        await tester.tap(find.byWidgetPredicate((w) => w is Text && w.data == entry.key).first);
+        await tester.pump();
+        expect(studio.deckView, isFalse, reason: 'never stuck behind the deck scrim');
+        expect(studio.maximizedPanel, entry.value);
+        expect(selected(tester, 'DECK'), isFalse);
+        expect(selected(tester, entry.key), isTrue, reason: 'the layout highlights in the same frame');
+        await _pumpFor(tester, const Duration(milliseconds: 300));
+        expect(find.byKey(const Key('deck-top-card')), findsNothing);
+        expect(tester.takeException(), isNull);
+        await _teardown(tester, studio);
+      });
+    }
+
+    testWidgets('opening a print from the deck de-selects DECK and highlights VIEWPORT in one frame', (tester) async {
+      final studio = await _pumpStudio(tester, const Size(1280, 800));
+      studio.setDeckView(true);
+      await _pumpFor(tester, const Duration(milliseconds: 400));
+      await tester.tap(find.byKey(const Key('deck-top-card')));
+      await tester.pump();
+      expect(selected(tester, 'DECK'), isFalse);
+      expect(selected(tester, 'VIEWPORT'), isTrue);
+      expect(selected(tester, 'SPLIT'), isFalse);
+      await _teardown(tester, studio);
+    });
+  });
+
+  group('Lusion colour harmonisation', () {
+    test('no pre-Lusion purple or rose is left in the widgets', () {
+      final legacy = ['0xFF8A2BE2', '0xFFB57BFF', '0xFFFF2D78', '0xFFDCB8FF', '0xFFEFDBFF', '0xFF0E0E10'];
+      // The procedural scenes keep their own spectral artwork palette.
+      const artwork = {'procedural_scene_canvas.dart'};
+      for (final f in Directory('lib/widgets').listSync().whereType<File>().where((f) => f.path.endsWith('.dart'))) {
+        if (artwork.contains(f.uri.pathSegments.last)) continue;
+        final source = f.readAsStringSync();
+        for (final hex in legacy) {
+          expect(source.contains(hex), isFalse, reason: '$hex in ${f.uri.pathSegments.last}');
+        }
+      }
+    });
+
+    test('the flux loader, rays and loupe clip use Lusion tokens', () {
+      expect(ProgressiveFluxLoader.fluxColors, [const Color(0xFF1A2FFB), const Color(0xFF6878FF), const Color(0xFFFF4C41), const Color(0xFF22D3EE)]);
+      expect(IreScale.clip, const Color(0xFFFF4C41));
+    });
+
+    testWidgets('the account avatar is Electric Blue to Hot Coral, in both themes', (tester) async {
+      final studio = await _pumpStudio(tester, const Size(1280, 800));
+      List<Color> avatar() => tester
+          .widgetList<Container>(find.descendant(of: find.byKey(const Key('profile-card-trigger')), matching: find.byType(Container)))
+          .map((c) => c.decoration)
+          .whereType<BoxDecoration>()
+          .map((d) => d.gradient)
+          .whereType<LinearGradient>()
+          .first
+          .colors;
+      expect(avatar(), [const Color(0xFF1A2FFB), const Color(0xFFFF4C41)]);
+      await _setTheme(tester, dark: false);
+      await tester.pump();
+      expect(avatar(), [const Color(0xFF1A2FFB), const Color(0xFFFF4C41)]);
+      await _teardown(tester, studio);
+    });
+
+    testWidgets('the QUICK badge lifts to periwinkle on the dark dock and stays Electric Blue on the light one', (tester) async {
+      final studio = await _pumpStudio(tester, const Size(1280, 800));
+      Color badge() => tester.widget<Text>(find.descendant(of: find.byKey(const Key('model-tier-badge')), matching: find.byType(Text))).style!.color!;
+      expect(studio.modelTier, PhotonModelTier.quick);
+      expect(badge(), const Color(0xFF6878FF));
+      await _setTheme(tester, dark: false);
+      await tester.pump();
+      expect(badge(), const Color(0xFF1A2FFB));
+      studio.setModelTier(PhotonModelTier.pro);
+      await tester.pump();
+      expect(badge(), const Color(0xFFFF4C41));
+      await _teardown(tester, studio);
+    });
+
+    testWidgets('the launch button glows Electric Blue; the beam is blue, cyan, white and coral', (tester) async {
+      final studio = StudioController(autoConnect: false, animateShader: false, startInLandingPage: true);
+      await _pumpStudio(tester, const Size(1280, 800), controller: studio);
+      final glow = tester
+          .widgetList<AnimatedContainer>(find.descendant(of: find.byKey(const Key('take-me-to-photon-btn')), matching: find.byType(AnimatedContainer)))
+          .map((c) => c.decoration)
+          .whereType<BoxDecoration>()
+          .expand((d) => d.boxShadow ?? const <BoxShadow>[])
+          .first;
+      expect(glow.color.toARGB32() & 0xFFFFFF, 0x1A2FFB);
+      final source = File('lib/widgets/launch_hero_portal.dart').readAsStringSync();
+      for (final hex in ['0xFF6878FF', '0xFF22D3EE', '0xFFFF4C41']) {
+        expect(source, contains(hex), reason: hex);
+      }
+      await _teardown(tester, studio);
+    });
+
+    testWidgets('the portal hands over to the studio on an eased lens pull', (tester) async {
+      final studio = StudioController(autoConnect: false, animateShader: false, startInLandingPage: true);
+      await _pumpStudio(tester, const Size(1280, 800), controller: studio);
+      final switcher = tester.widget<AnimatedSwitcher>(find.byWidgetPredicate((w) => w is AnimatedSwitcher && w.duration == const Duration(milliseconds: 260)));
+      expect(switcher.switchInCurve, Curves.easeOutCubic);
+      expect(switcher.switchOutCurve, Curves.easeInOutCubic);
+      studio.enterPhotonStudio();
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(find.byKey(const Key('launch-hero-portal')), findsNothing, reason: 'still gone within the same 260ms');
       await _teardown(tester, studio);
     });
   });

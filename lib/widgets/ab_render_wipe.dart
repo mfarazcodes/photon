@@ -137,7 +137,7 @@ class _AbRenderWipeState extends State<AbRenderWipe> {
     Widget badge(String text) => Container(
       padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
       decoration: BoxDecoration(
-        color: const Color(0xFF0E0E10).withValues(alpha: 0.74),
+        color: const Color(0xFF0B0C10).withValues(alpha: 0.74),
         borderRadius: BorderRadius.circular(PhotonRadius.pill),
         border: Border.all(color: Colors.white.withValues(alpha: 0.1)),
       ),
@@ -242,7 +242,7 @@ class _Handle extends StatelessWidget {
       height: 36,
       alignment: Alignment.center,
       decoration: BoxDecoration(
-        color: pressed ? Color.alphaBlend(violet.withValues(alpha: 0.35), const Color(0xFF0E0E10)) : const Color(0xFF0E0E10),
+        color: pressed ? Color.alphaBlend(violet.withValues(alpha: 0.35), const Color(0xFF0B0C10)) : const Color(0xFF0B0C10),
         borderRadius: BorderRadius.circular(PhotonRadius.pill),
         border: Border.all(color: violet),
         boxShadow: [
