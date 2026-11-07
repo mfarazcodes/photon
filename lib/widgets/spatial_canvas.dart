@@ -18,6 +18,7 @@ import 'mac_window_viewport.dart';
 import 'new_project_sheet.dart';
 import 'optics_inspector_deck.dart';
 import 'photon_model_popover.dart';
+import 'photon_primitives.dart';
 import 'progressive_flux_loader.dart';
 import 'projects_sidebar.dart';
 import 'roller_prompt_result.dart';
@@ -77,6 +78,9 @@ class _SpatialCanvasState extends State<SpatialCanvas> {
   /// shows it (viewport, sidebar thumbnail, deck print), so switching projects
   /// or flicking the deck never waits on a disk decode.
   void _precacheImages(StudioController studio) {
+    // The logo in the top bar and the dock is in the first frame the studio
+    // draws, so it is decoded first.
+    precacheImage(const AssetImage(PhotonLogo.asset), context, onError: (_, _) {});
     final assets = <String>{
       for (final p in studio.projects)
         if (p.previewAsset.isNotEmpty) p.previewAsset,

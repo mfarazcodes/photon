@@ -1,6 +1,5 @@
 import 'dart:math' as math;
 
-import 'package:flutter/foundation.dart' show ValueListenable;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -37,10 +36,9 @@ enum ProfileTab {
 /// The account console: one architectural card that holds the whole account,
 /// in the Lusion palette of whichever studio theme is active (a void with a
 /// blue-accented hairline in Dark Grading, white-to-lavender in Daylight Lab).
-/// A soft blue aurora drifts behind it while the pointer is over the card (which
-/// tilts toward the pointer in 3D; nothing is drawn around the cursor), a conic
-/// ring turns around the avatar, and a glass curtain
-/// drawer opens under the tabs: identity, plan and quota, auth and keys with
+/// A still blue glow sits behind it and a conic ring rings the avatar; nothing
+/// in the console animates, and nothing is drawn around the cursor. A glass
+/// curtain drawer opens under the tabs, at once: identity, plan and quota, auth and keys with
 /// the active sessions.
 ///
 /// The header carries the verified badge, the workspace id and a close button;
@@ -58,90 +56,22 @@ class AnimatedBlueProfileCard extends StatefulWidget {
       _AnimatedBlueProfileCardState();
 }
 
-class _AnimatedBlueProfileCardState extends State<AnimatedBlueProfileCard>
-    with TickerProviderStateMixin {
-  /// The card's tilt (x: about the X axis, y: about Y), radians. It follows the
-  /// pointer directly, so it is exactly as smooth as the pointer events are:
-  /// no tween is built or restarted per move. Only when the pointer leaves does
-  /// [_settle] ease it back to flat, once.
-  final ValueNotifier<Offset> _tilt = ValueNotifier(Offset.zero);
-  late final AnimationController _settle = AnimationController(
-    vsync: this,
-    duration: const Duration(milliseconds: 220),
-  );
-  Offset _settleFrom = Offset.zero;
-
-  void _onSettle() {
-    _tilt.value = Offset.lerp(
-      _settleFrom,
-      Offset.zero,
-      Curves.easeOutCubic.transform(_settle.value),
-    )!;
-  }
-
-  late final AnimationController _aurora = AnimationController(
-    vsync: this,
-    duration: const Duration(seconds: 14),
-    value: 0.25,
-  );
-
-  /// What the aurora paints from: the drift, in steps. The drift takes 14s a
-  /// lap, so drawing it 60 times a second would redraw three card-sized
-  /// gradients for no visible gain; 20 steps a second is as smooth to the eye.
-  final ValueNotifier<double> _drift = ValueNotifier(0.25);
-  static const int _driftSteps = 280;
-
-  void _onAurora() {
-    final stepped = (_aurora.value * _driftSteps).floor() / _driftSteps;
-    if (stepped != _drift.value) _drift.value = stepped;
-  }
-
-  @override
-  void initState() {
-    super.initState();
-    _aurora.addListener(_onAurora);
-    _settle.addListener(_onSettle);
-  }
-
+/// The console is a still image: nothing in it animates (no tilt, no drifting
+/// glow, no turning ring, no curtain or tab transitions, no hover tweens), so
+/// it costs no frames while it is open.
+class _AnimatedBlueProfileCardState extends State<AnimatedBlueProfileCard> {
   ProfileTab _tab = ProfileTab.identity;
   bool _folded = false;
   bool _hovering = false;
   bool _editing = false;
-  bool _animating = false;
   final TextEditingController _name = TextEditingController();
   final TextEditingController _org = TextEditingController();
 
   @override
-  void didChangeDependencies() {
-    super.didChangeDependencies();
-    _syncAnimation(StudioScope.of(context).animateShader);
-  }
-
-  @override
   void dispose() {
-    _settle.removeListener(_onSettle);
-    _settle.dispose();
-    _tilt.dispose();
-    _aurora.removeListener(_onAurora);
-    _aurora.dispose();
-    _drift.dispose();
     _name.dispose();
     _org.dispose();
     super.dispose();
-  }
-
-  /// The aurora drift and the avatar ring turn only while the pointer is over
-  /// the card (and animation is on); at rest the card is a still image, so an
-  /// open console does not keep the app drawing frames.
-  void _syncAnimation(bool animate) {
-    final run = animate && _hovering;
-    if (run == _animating) return;
-    _animating = run;
-    if (run) {
-      _aurora.repeat();
-    } else {
-      _aurora.stop();
-    }
   }
 
   void _onTab(ProfileTab tab) => setState(() {
@@ -172,46 +102,24 @@ class _AnimatedBlueProfileCardState extends State<AnimatedBlueProfileCard>
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        _Hero(account: a, ring: _aurora),
+        _Hero(account: a),
         const SizedBox(height: PhotonSpace.md),
         _TabBar(selected: open ? _tab : null, onSelect: _onTab),
-        // Only opening and folding animate the height. Content changes inside
-        // an open drawer (editing, a new tab) resize at once, so nothing
-        // overlaps it mid-animation.
-        TweenAnimationBuilder<double>(
-          tween: Tween<double>(end: open ? 1.0 : 0.0),
-          duration: const Duration(milliseconds: 320),
-          curve: Curves.easeOutCubic,
-          builder: (context, v, child) => Offstage(
-            offstage: v == 0,
-            child: ClipRect(
-              child: Align(
-                alignment: Alignment.topCenter,
-                heightFactor: v,
-                child: child,
-              ),
-            ),
-          ),
+        // The drawer opens and folds at once, and a new tab replaces the old
+        // one in the same frame.
+        Offstage(
+          offstage: !open,
           child: Padding(
             padding: const EdgeInsets.only(top: PhotonSpace.sm),
-            // A quick cross-fade between tabs (a fade only: no size or layout
-            // animation, so the quota bars never restart mid-switch).
-            child: AnimatedSwitcher(
-              duration: const Duration(milliseconds: 160),
-              switchInCurve: Curves.easeOutCubic,
-              switchOutCurve: Curves.easeOutCubic,
-              transitionBuilder: (child, animation) =>
-                  FadeTransition(opacity: animation, child: child),
-              child: KeyedSubtree(
-                key: ValueKey(_tab),
-                child: _Drawer(
-                  tab: _tab,
-                  studio: studio,
-                  editing: _editing,
-                  onToggleEdit: () => _toggleEdit(studio),
-                  nameController: _name,
-                  orgController: _org,
-                ),
+            child: KeyedSubtree(
+              key: ValueKey(_tab),
+              child: _Drawer(
+                tab: _tab,
+                studio: studio,
+                editing: _editing,
+                onToggleEdit: () => _toggleEdit(studio),
+                nameController: _name,
+                orgController: _org,
               ),
             ),
           ),
@@ -224,11 +132,7 @@ class _AnimatedBlueProfileCardState extends State<AnimatedBlueProfileCard>
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        _StatusRow(
-          account: a,
-          animate: studio.animateShader && _hovering,
-          onClose: widget.onClose,
-        ),
+        _StatusRow(account: a, onClose: widget.onClose),
         const SizedBox(height: PhotonSpace.md),
         Flexible(child: SingleChildScrollView(child: body)),
         const SizedBox(height: PhotonSpace.sm),
@@ -240,38 +144,10 @@ class _AnimatedBlueProfileCardState extends State<AnimatedBlueProfileCard>
       container: true,
       label: 'Account console: ${a.displayName}',
       child: MouseRegion(
-        onEnter: (_) {
-          _settle.stop();
-          setState(() => _hovering = true);
-          _syncAnimation(StudioScope.read(context).animateShader);
-        },
-        onExit: (_) {
-          _settleFrom = _tilt.value;
-          if (_settleFrom != Offset.zero) _settle.forward(from: 0);
-          setState(() => _hovering = false);
-          _syncAnimation(StudioScope.read(context).animateShader);
-        },
-        onHover: (e) {
-          final box = context.findRenderObject();
-          if (box is! RenderBox || !box.hasSize || box.size.isEmpty) return;
-          final local = box.globalToLocal(e.position);
-          // Up to ~3.4 degrees each way. Whole percents of the card: a finer
-          // pointer would only repaint for changes of a hundredth of a degree.
-          final px =
-              ((local.dx / box.size.width).clamp(0.0, 1.0) * 100).round() / 100;
-          final py =
-              ((local.dy / box.size.height).clamp(0.0, 1.0) * 100).round() /
-              100;
-          final next = Offset(-(py - 0.5) * 0.12, (px - 0.5) * 0.12);
-          if (next != _tilt.value) _tilt.value = next;
-        },
-        child: ValueListenableBuilder<Offset>(
-          valueListenable: _tilt,
-          // The card body is built once per state change, not per pointer move,
-          // and sits on its own layer: tilting it re-composites a cached texture
-          // instead of re-rasterising the 40px shadow, the gradient and the text
-          // on every frame.
-          child: RepaintBoundary(
+        onEnter: (_) => setState(() => _hovering = true),
+        onExit: (_) => setState(() => _hovering = false),
+        // On its own layer: the 40px shadow and the gradient are painted once.
+        child: RepaintBoundary(
             child: Container(
               key: const Key('profile-card-surface'),
               decoration: BoxDecoration(
@@ -321,15 +197,13 @@ class _AnimatedBlueProfileCardState extends State<AnimatedBlueProfileCard>
                         ),
                       ),
                     ),
+                    // A still glow: painted once, never driven.
                     Positioned.fill(
-                      child: RepaintBoundary(
-                        child: CustomPaint(
-                          painter: _AuroraPainter(
-                            aurora: _drift,
-                            isDark: c.isDark,
-                            blue: c.violet,
-                            cyan: const Color(0xFF22D3EE),
-                          ),
+                      child: CustomPaint(
+                        painter: _AuroraPainter(
+                          isDark: c.isDark,
+                          blue: c.violet,
+                          cyan: const Color(0xFF22D3EE),
                         ),
                       ),
                     ),
@@ -342,33 +216,17 @@ class _AnimatedBlueProfileCardState extends State<AnimatedBlueProfileCard>
               ),
             ),
           ),
-          // Perspective tilt of the cached card texture (above): one matrix per
-          // pointer move, no subtree work.
-          builder: (context, tilt, child) => Transform(
-            alignment: Alignment.center,
-            transform: Matrix4.identity()
-              ..setEntry(3, 2, 0.0011)
-              ..rotateX(tilt.dx)
-              ..rotateY(tilt.dy),
-            child: child,
-          ),
-        ),
       ),
     );
   }
 }
 
-/// `VERIFIED LEAD ARCHITECT` with a pulsing online pip, the workspace tag, and
-/// the close button.
+/// `VERIFIED LEAD ARCHITECT` with an online pip, the workspace tag, and the
+/// close button.
 class _StatusRow extends StatelessWidget {
-  const _StatusRow({
-    required this.account,
-    required this.animate,
-    required this.onClose,
-  });
+  const _StatusRow({required this.account, required this.onClose});
 
   final StudioAccount account;
-  final bool animate;
   final VoidCallback? onClose;
 
   @override
@@ -387,11 +245,7 @@ class _StatusRow extends StatelessWidget {
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                FlashingPip(
-                  color: const Color(0xFF34D399),
-                  size: 6,
-                  flash: animate,
-                ),
+                const Pip(color: Color(0xFF34D399), size: 6),
                 const SizedBox(width: 6),
                 Flexible(
                   child: Text(
@@ -432,8 +286,7 @@ class _StatusRow extends StatelessWidget {
                   key: const ValueKey('pip-close-account'),
                   behavior: HitTestBehavior.opaque,
                   onTap: onClose,
-                  child: AnimatedContainer(
-                    duration: const Duration(milliseconds: 120),
+                  child: Container(
                     width: 24,
                     height: 24,
                     decoration: BoxDecoration(
@@ -510,10 +363,9 @@ class _StatusStrip extends StatelessWidget {
 
 /// Double-ring avatar and the name block.
 class _Hero extends StatelessWidget {
-  const _Hero({required this.account, required this.ring});
+  const _Hero({required this.account});
 
   final StudioAccount account;
-  final Animation<double> ring;
 
   @override
   Widget build(BuildContext context) {
@@ -529,27 +381,20 @@ class _Hero extends StatelessWidget {
           child: Stack(
             alignment: Alignment.center,
             children: [
-              // Outer ring: a conic cyan/blue sweep, turning.
-              // Its own layer: the ring's turn repaints this 72px box, never the
-              // name block beside it.
-              RepaintBoundary(
-                child: RotationTransition(
-                  turns: ring,
-                  child: Container(
-                    width: 72,
-                    height: 72,
-                    decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      gradient: SweepGradient(
-                        colors: [
-                          c.violetInk,
-                          c.violet,
-                          c.violet.withValues(alpha: 0.06),
-                          c.violetInk,
-                        ],
-                        stops: const [0.0, 0.35, 0.7, 1.0],
-                      ),
-                    ),
+              // Outer ring: a still conic blue sweep.
+              Container(
+                width: 72,
+                height: 72,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  gradient: SweepGradient(
+                    colors: [
+                      c.violetInk,
+                      c.violet,
+                      c.violet.withValues(alpha: 0.06),
+                      c.violetInk,
+                    ],
+                    stops: const [0.0, 0.35, 0.7, 1.0],
                   ),
                 ),
               ),
@@ -665,8 +510,7 @@ class _TabBar extends StatelessWidget {
                     key: Key(tab.keyName),
                     behavior: HitTestBehavior.opaque,
                     onTap: () => onSelect(tab),
-                    child: AnimatedContainer(
-                      duration: const Duration(milliseconds: 160),
+                    child: Container(
                       height: 24,
                       alignment: Alignment.center,
                       padding: const EdgeInsets.symmetric(horizontal: 6),
@@ -869,8 +713,7 @@ class _GlassButton extends StatelessWidget {
         builder: (context, hovered) => GestureDetector(
           behavior: HitTestBehavior.opaque,
           onTap: onTap,
-          child: AnimatedContainer(
-            duration: const Duration(milliseconds: 120),
+          child: Container(
             height: 24,
             padding: EdgeInsets.symmetric(
               horizontal: label.isEmpty ? 6 : PhotonSpace.sm + 2,
@@ -1160,8 +1003,7 @@ class _TierChip extends StatelessWidget {
         builder: (context, hovered) => GestureDetector(
           behavior: HitTestBehavior.opaque,
           onTap: onTap,
-          child: AnimatedContainer(
-            duration: const Duration(milliseconds: 140),
+          child: Container(
             padding: const EdgeInsets.symmetric(
               horizontal: PhotonSpace.md - 2,
               vertical: 5,
@@ -1265,31 +1107,27 @@ class _QuotaBar extends StatelessWidget {
             borderRadius: BorderRadius.circular(3),
             child: SizedBox(
               height: 6,
-              child: TweenAnimationBuilder<double>(
-                tween: Tween<double>(end: fraction.clamp(0.0, 1.0)),
-                duration: const Duration(milliseconds: 520),
-                curve: Curves.easeOutCubic,
-                builder: (context, v, _) => Stack(
-                  children: [
-                    Positioned.fill(
-                      child: ColoredBox(
-                        color: context.ink.withValues(alpha: 0.14),
-                      ),
+              // The bar is set to its value at once: no fill animation.
+              child: Stack(
+                children: [
+                  Positioned.fill(
+                    child: ColoredBox(
+                      color: context.ink.withValues(alpha: 0.14),
                     ),
-                    FractionallySizedBox(
-                      widthFactor: v,
-                      child: DecoratedBox(
-                        decoration: BoxDecoration(
-                          gradient: LinearGradient(
-                            colors: hot
-                                ? [const Color(0xFFF59E0B), t.colors.rose]
-                                : [t.colors.violet, t.colors.violetInk],
-                          ),
+                  ),
+                  FractionallySizedBox(
+                    widthFactor: fraction.clamp(0.0, 1.0),
+                    child: DecoratedBox(
+                      decoration: BoxDecoration(
+                        gradient: LinearGradient(
+                          colors: hot
+                              ? [const Color(0xFFF59E0B), t.colors.rose]
+                              : [t.colors.violet, t.colors.violetInk],
                         ),
                       ),
                     ),
-                  ],
-                ),
+                  ),
+                ],
               ),
             ),
           ),
@@ -1523,8 +1361,7 @@ class _SwitchRow extends StatelessWidget {
                   ),
                 ),
                 const SizedBox(width: PhotonSpace.sm),
-                AnimatedContainer(
-                  duration: const Duration(milliseconds: 160),
+                Container(
                   width: 32,
                   height: 17,
                   padding: const EdgeInsets.all(2),
@@ -1764,17 +1601,18 @@ class _SessionRow extends StatelessWidget {
   }
 }
 
-/// The aurora: three drifting Lusion-blue blooms. Nothing follows the cursor:
-/// no ring and no spotlight (the card's own tilt is the pointer response).
+/// The aurora: three soft Lusion-blue blooms, held still at a fixed phase of
+/// the drift they used to follow. Nothing moves and nothing follows the cursor.
 class _AuroraPainter extends CustomPainter {
-  _AuroraPainter({
-    required this.aurora,
+  const _AuroraPainter({
     required this.isDark,
     required this.blue,
     required this.cyan,
-  }) : super(repaint: aurora);
+  });
 
-  final ValueListenable<double> aurora;
+  /// Where in its old 14s lap the glow is held.
+  static const double phase = 0.25;
+
   final bool isDark;
 
   /// Lusion Electric Blue, and the lifted blue for the second bloom.
@@ -1783,7 +1621,7 @@ class _AuroraPainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
-    final a = aurora.value * 2 * math.pi;
+    const a = phase * 2 * math.pi;
     // One Paint for all three blooms; only its shader changes.
     final paint = Paint();
     void bloom(Offset fraction, double radius, Color color) {
@@ -1822,7 +1660,6 @@ class _AuroraPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(_AuroraPainter old) =>
-      old.aurora != aurora ||
       old.isDark != isDark ||
       old.blue != blue ||
       old.cyan != cyan;

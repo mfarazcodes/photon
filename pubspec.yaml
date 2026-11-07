@@ -70,6 +70,7 @@ flutter:
     - assets/images/hero_frame_02.jpg
     - assets/images/hero_frame_03.jpg
     - assets/images/hero_frame_04.jpg
+    - assets/images/photon_logo.png
     - assets/videos/photon_hero.mp4
 
   # An image asset can refer to one or more resolution-specific "variants", see

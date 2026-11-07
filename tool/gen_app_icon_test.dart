@@ -1,6 +1,6 @@
 // Regenerates windows/runner/resources/app_icon.ico from the exact drawing the
-// app uses (PhotonLogoPainter), so the taskbar and titlebar icon always match
-// the in-app mark.
+// app uses (PhotonLogo.paint over assets/images/photon_logo.png), so the
+// taskbar and titlebar icon always match the in-app mark.
 //
 //     flutter test tool/gen_app_icon_test.dart
 import 'dart:io';
@@ -14,10 +14,15 @@ import 'package:photon/widgets/photon_primitives.dart';
 /// The frames in the .ico, smallest first.
 const List<int> kIconSizes = [16, 32, 48, 256];
 
-Future<Uint8List> _png(int size) async {
+/// The logo artwork, decoded once.
+Future<ui.Image> _art() async {
+  final codec = await ui.instantiateImageCodec(File(PhotonLogo.asset).readAsBytesSync());
+  return (await codec.getNextFrame()).image;
+}
+
+Future<Uint8List> _png(int size, ui.Image art) async {
   final recorder = ui.PictureRecorder();
-  final canvas = Canvas(recorder);
-  const PhotonLogoPainter().paint(canvas, Size.square(size.toDouble()));
+  PhotonLogo.paint(Canvas(recorder), Size.square(size.toDouble()), art);
   final image = await recorder.endRecording().toImage(size, size);
   final data = await image.toByteData(format: ui.ImageByteFormat.png);
   return data!.buffer.asUint8List();
@@ -59,8 +64,9 @@ Uint8List buildIco(Map<int, Uint8List> frames) {
 
 void main() {
   testWidgets('writes windows/runner/resources/app_icon.ico', (tester) async {
+    final art = (await tester.runAsync(_art))!;
     final ico = await tester.runAsync(() async {
-      final frames = <int, Uint8List>{for (final size in kIconSizes) size: await _png(size)};
+      final frames = <int, Uint8List>{for (final size in kIconSizes) size: await _png(size, art)};
       return buildIco(frames);
     });
     File('windows/runner/resources/app_icon.ico').writeAsBytesSync(ico!);
@@ -68,7 +74,7 @@ void main() {
 
     // A 256px preview, and a 16px one scaled up, for a quick look (build/ is
     // not committed).
-    final previews = await tester.runAsync(() async => {'logo': await _png(256), 'logo_16': await _png(16)});
+    final previews = await tester.runAsync(() async => {'logo': await _png(256, art), 'logo_16': await _png(16, art), 'logo_32': await _png(32, art)});
     Directory('build').createSync(recursive: true);
     previews!.forEach((name, png) => File('build/$name.png').writeAsBytesSync(png));
   });

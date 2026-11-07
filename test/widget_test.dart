@@ -91,6 +91,14 @@ final Uint8List _tinyPng = base64Decode(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
 );
 
+/// Decodes the logo artwork for real (asset loading is asynchronous in the test
+/// binding) and pumps it in, so a capture shows the picture, not an empty tile.
+Future<void> _logoReady(WidgetTester tester) async {
+  final context = tester.element(find.byType(PhotonLogoMark).first);
+  await tester.runAsync(() => precacheImage(const AssetImage(PhotonLogo.asset), context));
+  await tester.pump();
+}
+
 /// The spinning dashed ring of the optical probe. (The Scaffold keeps a
 /// RotationTransition of its own for the FAB, so `byType` would match two.)
 final Finder _probeRing = find.byWidgetPredicate((w) => w is RotationTransition && w.child is CustomPaint);
@@ -1934,13 +1942,14 @@ void main() {
             ),
           ),
         );
+        await _logoReady(tester);
         return _capture(tester, key);
       }
 
       final dark = await render(PhotonPalette.grading);
       final light = await render(PhotonPalette.daylight);
       expect(dark.buffer.asUint8List(), light.buffer.asUint8List(), reason: 'pixel for pixel');
-      expect(_channel(_pixel(light, 40, 4, 20).r), lessThan(40), reason: 'the void tile even in Daylight Lab');
+      expect(_channel(_pixel(light, 40, 6, 4).r), lessThan(40), reason: 'the dark navy tile even in Daylight Lab');
       expect(_pixel(light, 40, 0, 0).a, 0);
     });
 
@@ -3339,79 +3348,88 @@ void main() {
         await _teardown(tester, studio);
       });
 
-      testWidgets('smooth: no backdrop blur, the card on its own cached layer', (tester) async {
+      testWidgets('still: no backdrop blur, and nothing in the console moves', (tester) async {
         final studio = await openAccount(tester);
-        expect(find.byType(BackdropFilter), findsNothing, reason: 'a blur re-runs over the whole window every frame the card tilts');
-        // The card is cached below the tilt, so tilting re-composites a texture:
-        // walking up from the card, a RepaintBoundary comes before the tilt.
-        final order = <String>[];
-        tester.element(surface).visitAncestorElements((e) {
-          if (e.widget is RepaintBoundary) order.add('boundary');
-          if (e.widget is Transform) order.add('tilt');
-          return !order.contains('tilt');
+        expect(find.byType(BackdropFilter), findsNothing);
+        final card = find.byKey(const Key('animated-profile-card'));
+        // No tilt, no turning ring, no fades, no size or hover tweens inside the card.
+        for (final moving in [RotationTransition, FadeTransition, ScaleTransition, SlideTransition, AnimatedContainer, AnimatedSwitcher, TweenAnimationBuilder<double>]) {
+          expect(find.descendant(of: card, matching: find.byType(moving)), findsNothing, reason: '$moving');
+        }
+        // Walking up from the card there is no tilt Transform before the modal.
+        var tilts = 0;
+        tester.element(card).visitAncestorElements((e) {
+          if (e.widget is Transform) tilts++;
+          return e.widget.key != const Key('account-modal');
         });
-        expect(order.take(2), ['boundary', 'tilt']);
+        expect(tilts, 0);
         expect(tester.takeException(), isNull);
         await _teardown(tester, studio);
       });
 
-      testWidgets('smooth: the aurora redraws about 20 times a second, not 60', (tester) async {
+      testWidgets('still: hovering, moving about, switching tabs and folding the curtain schedule no frames', (tester) async {
         final studio = StudioController(autoConnect: false);
         await _pumpStudio(tester, const Size(1280, 800), controller: studio);
+        for (var i = 0; i < 500 && studio.tickerActive; i++) {
+          studio.debugTick();
+        }
         studio.setAccountModalOpen(true);
         await _pumpFor(tester, const Duration(milliseconds: 300));
+        final card = find.byKey(const Key('animated-profile-card'));
         final mouse = await _mouse(tester);
-        await mouse.moveTo(tester.getCenter(find.byKey(const Key('animated-profile-card'))));
+        await mouse.moveTo(tester.getCenter(card));
         await tester.pump();
-        dynamic aurora() => tester
-            .widgetList<CustomPaint>(find.descendant(of: surface, matching: find.byType(CustomPaint)))
-            .map((c) => c.painter)
-            .whereType<CustomPainter>()
-            .firstWhere((p) => p.runtimeType.toString() == '_AuroraPainter');
-        var last = aurora().aurora.value as double;
-        var changes = 0, frames = 0;
-        for (var i = 0; i < 62; i++) {
-          await tester.pump(const Duration(milliseconds: 16));
-          frames++;
-          final now = aurora().aurora.value as double;
-          if (now != last) changes++;
-          last = now;
-        }
-        expect(frames, greaterThan(55), reason: 'the studio is still running at full frame rate');
-        expect(changes, inInclusiveRange(10, 24), reason: 'one second of 16ms frames: about 20 repaints, not ~60');
-        expect(tester.takeException(), isNull);
+        await mouse.moveTo(tester.getCenter(card) + const Offset(60, 25));
+        await tester.pump();
+        expect(tester.binding.hasScheduledFrame, isFalse, reason: 'on the card: nothing is animating');
+        // A tab change is one frame: the old tab is gone and the new one is there
+        // (a cross-fade would leave both on screen part-way).
+        expect(find.text('github.com/mfarazcodes'), findsOneWidget);
+        await tester.tap(find.byKey(Key(ProfileTab.plan.keyName)));
+        await tester.pump();
+        expect(find.text('github.com/mfarazcodes'), findsNothing, reason: 'the old tab leaves in the same frame');
+        expect(find.text('STUDIO PRO · \$49/mo'), findsOneWidget, reason: 'and the new one is already there');
+        // And the curtain folds at once (a height tween would leave it part open).
+        await tester.tap(find.byKey(Key(ProfileTab.plan.keyName)));
+        await mouse.moveTo(const Offset(2, 2));
+        await tester.pump();
+        expect(find.text('STUDIO PRO · \$49/mo'), findsNothing, reason: 'folded in the same frame');
         await _teardown(tester, studio);
       });
 
-      testWidgets('the aurora is a Lusion-blue glow: stronger in the dark (0.18) than in the light (0.08)', (tester) async {
+      testWidgets('the glow is a still Lusion blue: stronger in the dark (0.18) than in the light (0.08)', (tester) async {
         final studio = await openAccount(tester);
         final auroraFinder = find.descendant(
           of: surface,
           matching: find.byWidgetPredicate((w) => w is CustomPaint && w.painter.runtimeType.toString() == '_AuroraPainter'),
         );
-        // The aurora sits on its own layer; read the glow back from its pixels
-        // at the first bloom's centre (the drift is at rest at 0.25 of its cycle).
-        Future<int> glowAlpha() async {
-          final boundary = tester.renderObject<RenderRepaintBoundary>(find.ancestor(of: auroraFinder, matching: find.byType(RepaintBoundary)).first);
-          final bytes = await tester.runAsync(() async {
-            final image = await boundary.toImage();
-            return (await image.toByteData())!;
-          });
-          final w = boundary.size.width.round(), h = boundary.size.height.round();
-          final x = (0.34 * w).round(), y = (0.155 * h).round();
-          return bytes!.getUint8((y * w + x) * 4 + 3);
+        final darkPainter = tester.widget<CustomPaint>(auroraFinder).painter!;
+        await setTheme(tester, studio, dark: false);
+        final lightPainter = tester.widget<CustomPaint>(auroraFinder).painter!;
+        expect((darkPainter as dynamic).isDark, isTrue);
+        expect((darkPainter as dynamic).blue, PhotonPalette.grading.violet);
+        expect((lightPainter as dynamic).isDark, isFalse);
+        expect((lightPainter as dynamic).blue, PhotonPalette.daylight.violet);
+
+        // Paint each on its own, and read the glow back at the first bloom's
+        // centre (it is held at 0.25 of its old lap).
+        Future<int> glowAlpha(CustomPainter painter) async {
+          final key = GlobalKey();
+          await tester.pumpWidget(
+            Directionality(
+              textDirection: TextDirection.ltr,
+              child: Center(
+                child: RepaintBoundary(key: key, child: SizedBox(width: 560, height: 400, child: CustomPaint(painter: painter))),
+              ),
+            ),
+          );
+          final data = await _capture(tester, key);
+          return (_pixel(data, 560, (0.34 * 560).round(), (0.155 * 400).round()).a * 255).round();
         }
 
-        dynamic painter() => tester.widget<CustomPaint>(auroraFinder).painter;
-        expect(painter().isDark, isTrue);
-        expect(painter().blue, PhotonPalette.grading.violet);
-        final dark = await glowAlpha();
+        final dark = await glowAlpha(darkPainter);
+        final light = await glowAlpha(lightPainter);
         expect(dark, inInclusiveRange(40, 75), reason: 'about 0.18 of 255');
-
-        await setTheme(tester, studio, dark: false);
-        expect(painter().isDark, isFalse);
-        expect(painter().blue, PhotonPalette.daylight.violet);
-        final light = await glowAlpha();
         expect(light, inInclusiveRange(15, 35), reason: 'about 0.08 of 255');
         expect(dark, greaterThan(light * 1.8));
         await _teardown(tester, studio);
@@ -3462,14 +3480,14 @@ void main() {
         // 2FA is on in the seeded account: its toggle track is the brand blue.
         final toggle = find.byKey(const Key('profile-2fa-toggle'));
         final track = tester
-            .widgetList<AnimatedContainer>(find.descendant(of: toggle, matching: find.byType(AnimatedContainer)))
+            .widgetList<Container>(find.descendant(of: toggle, matching: find.byType(Container)))
             .map((c) => c.decoration)
             .whereType<BoxDecoration>()
             .firstWhere((d) => d.shape != BoxShape.circle && d.borderRadius != null);
         expect(track.color, PhotonPalette.grading.violet);
         await setTheme(tester, studio, dark: false);
         final lightTrack = tester
-            .widgetList<AnimatedContainer>(find.descendant(of: toggle, matching: find.byType(AnimatedContainer)))
+            .widgetList<Container>(find.descendant(of: toggle, matching: find.byType(Container)))
             .map((c) => c.decoration)
             .whereType<BoxDecoration>()
             .firstWhere((d) => d.shape != BoxShape.circle && d.borderRadius != null);
@@ -4632,7 +4650,7 @@ void main() {
       await _teardown(tester, studio);
     });
 
-    testWidgets('hovering the card tilts it in 3D and opens a folded curtain', (tester) async {
+    testWidgets('hovering the card opens a folded curtain at once, and the card stays flat', (tester) async {
       final studio = await openCard(tester);
       await _tapKey(tester, const Key('profile-tab-identity'));
       await _pumpFor(tester, const Duration(milliseconds: 500));
@@ -4649,8 +4667,8 @@ void main() {
       await mouse.moveTo(rect.centerRight - const Offset(8, 0));
       await _pumpFor(tester, const Duration(milliseconds: 500));
       final bottomRight = tester.getTopLeft(find.text('Mohd Faraz'));
-      expect(topLeft, isNot(bottomRight), reason: 'the card tilts toward the cursor');
-      expect(rest, isNot(topLeft));
+      expect(topLeft, bottomRight, reason: 'the card does not tilt toward the cursor');
+      expect(rest.dx, topLeft.dx);
 
       await mouse.moveTo(const Offset(2, 790));
       await _pumpFor(tester, const Duration(milliseconds: 500));
@@ -5403,8 +5421,11 @@ void main() {
           ),
         ),
       );
+      await _logoReady(tester);
       return _capture(tester, key);
     }
+
+    double luma(Color c) => 0.2126 * _channel(c.r) + 0.7152 * _channel(c.g) + 0.0722 * _channel(c.b);
 
     testWidgets('draws at the studio sizes and the icon sizes without fuss', (tester) async {
       for (final size in [16.0, 22.0, 24.0, 40.0, 256.0]) {
@@ -5414,8 +5435,6 @@ void main() {
     });
 
     test('the mark takes no theme input at all', () {
-      const painter = PhotonLogoPainter();
-      expect(painter.shouldRepaint(const PhotonLogoPainter()), isFalse);
       final source = File('lib/widgets/photon_primitives.dart').readAsStringSync();
       final start = source.indexOf('class PhotonLogoMark');
       final end = source.indexOf('/// Double-tap detection');
@@ -5425,67 +5444,58 @@ void main() {
       }
     });
 
-    testWidgets('the squircle tile is always the Lusion void with a corner clear', (tester) async {
-      final d = await render(tester, size: 40);
-      expect(_channel(_pixel(d, 40, 4, 20).r), lessThan(40), reason: 'tile at (4,20)');
-      expect(_pixel(d, 40, 0, 0).a, 0, reason: 'the corner is outside the squircle');
-      final rim = _pixel(d, 40, 4, 20);
-      expect([_channel(rim.r), _channel(rim.g), _channel(rim.b)], everyElement(lessThan(40)));
-      expect(_channel(rim.b), greaterThanOrEqualTo(_channel(rim.r)), reason: 'a cool blue-black, not grey');
+    test('the artwork is the supplied transparent PNG, registered as an asset', () {
+      final bytes = File(PhotonLogo.asset).readAsBytesSync();
+      expect(bytes.sublist(0, 8), [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]);
+      final h = ByteData.sublistView(bytes);
+      expect([h.getUint32(16), h.getUint32(20)], [1024, 1024]);
+      expect(bytes[25], 6, reason: 'RGBA: it keeps its transparency');
+      expect(File('pubspec.yaml').readAsStringSync(), contains(PhotonLogo.asset));
     });
 
-    bool near(Color c, int rgb, int tol) =>
-        (_channel(c.r) - ((rgb >> 16) & 0xFF)).abs() <= tol &&
-        (_channel(c.g) - ((rgb >> 8) & 0xFF)).abs() <= tol &&
-        (_channel(c.b) - (rgb & 0xFF)).abs() <= tol;
+    testWidgets('a dark navy squircle with its corner clear, contrasting the pastel artwork', (tester) async {
+      final d = await render(tester);
+      expect(_pixel(d, 200, 0, 0).a, 0, reason: 'the corner is outside the squircle');
+      // Just inside the top-left of the tile, clear of the artwork.
+      final bg = _pixel(d, 200, 20, 20);
+      expect(bg.a, 1.0);
+      expect(luma(bg), lessThan(35), reason: 'deep navy: $bg');
+      expect(_channel(bg.b), greaterThan(_channel(bg.r)), reason: 'navy, not grey or black');
+      // The artwork is far lighter than that: the prism, the beam and the ribbon.
+      final prism = _pixel(d, 200, 100, 100);
+      expect(luma(prism), greaterThan(luma(bg) + 90), reason: 'the prism stands out of the tile: $prism');
+    });
 
-    testWidgets('light through a prism: a white beam in, a glass-blue triangle, cyan, lime and coral out', (tester) async {
+    testWidgets('the prism, the pale beam and the coral ribbon are all there', (tester) async {
       final d = await render(tester);
       Color at(int x, int y) => _pixel(d, 200, x, y);
-      // The beam entering from the left, in off-white (a 12px stroke).
-      expect(near(at(47, 112), 0xF0F1FA, 8), isTrue, reason: 'the beam: ${at(47, 112)}');
-      // The prism: a thick off-white edge along its base, glass blue inside.
-      expect(near(at(100, 140), 0xF0F1FA, 8), isTrue, reason: 'the prism\'s base edge: ${at(100, 140)}');
-      final glass = at(100, 115);
-      expect(_channel(glass.b), greaterThan(150), reason: 'glass blue: $glass');
-      expect(_channel(glass.b), greaterThan(_channel(glass.r) + 60));
-      // The spectrum leaving the right face, one bold ray each.
-      expect(near(at(153, 88), 0x22D3EE, 14), isTrue, reason: 'cyan: ${at(153, 88)}');
-      expect(near(at(155, 106), 0xC1FF00, 14), isTrue, reason: 'lime: ${at(155, 106)}');
-      expect(near(at(153, 124), 0xFF4C41, 14), isTrue, reason: 'coral: ${at(153, 124)}');
-      // And the old P is gone: inside the prism there is glass, not an off-white stem.
-      expect(_channel(at(95, 100).r), lessThan(220));
+      // The prism: frosted blue.
+      final prism = at(100, 104);
+      expect(_channel(prism.b), greaterThan(_channel(prism.r) + 25), reason: 'blue prism: $prism');
+      // The beam entering from the left: pale blue.
+      final beam = at(32, 96);
+      expect(_channel(beam.b), greaterThan(190), reason: 'the pale beam: $beam');
+      expect(_channel(beam.b), greaterThan(_channel(beam.r)));
+      // The ribbon leaving to the right: coral to amber.
+      final ribbon = at(176, 109);
+      expect(_channel(ribbon.r), greaterThan(200), reason: 'the warm ribbon: $ribbon');
+      expect(_channel(ribbon.r), greaterThan(_channel(ribbon.b) + 60));
     });
 
-    testWidgets('no hairlines: the prism and a ray are solid at 16, 22, 40 and 256px', (tester) async {
-      for (final size in [16, 22, 40, 256]) {
+    testWidgets('it holds at 16, 22, 24 and 40px: the prism is a clear light shape on the dark tile', (tester) async {
+      for (final size in [16, 22, 24, 40]) {
         final d = await render(tester, size: size.toDouble());
-        final x = (0.5 * size).round();
-        final base = (0.70 * size).floor();
-        var edge = 0;
-        for (var y = base - 1; y <= base + 1; y++) {
-          edge = math.max(edge, _channel(_pixel(d, size, x, y).r));
-        }
-        expect(edge, greaterThan(150), reason: '$size px: the prism\'s base edge is a solid row');
-        // The coral ray: some pixel in its area is clearly coral.
-        var coral = false;
-        for (var yy = (0.58 * size).floor(); yy <= (0.76 * size).ceil() && !coral; yy++) {
-          for (var xx = (0.70 * size).floor(); xx <= (0.95 * size).ceil(); xx++) {
-            final p = _pixel(d, size, xx, yy);
-            if (_channel(p.r) > 170 && _channel(p.g) < 120 && _channel(p.b) < 110) {
-              coral = true;
-              break;
-            }
-          }
-        }
-        expect(coral, isTrue, reason: '$size px: the coral ray');
+        final corner = _pixel(d, size, (0.1 * size).round(), (0.1 * size).round());
+        final centre = _pixel(d, size, size ~/ 2, (0.53 * size).round());
+        expect(luma(centre), greaterThan(luma(corner) + 70), reason: '$size px: the prism against the tile');
+        expect(_channel(centre.b), greaterThan(_channel(centre.r)), reason: '$size px: blue');
         expect(tester.takeException(), isNull);
       }
     });
 
-    test('the old clutter is gone: no P, ring, starburst or wedge in the painter', () {
+    test('the old drawn mark is gone: no hand-drawn prism, rays or P in the painter code', () {
       final source = File('lib/widgets/photon_primitives.dart').readAsStringSync();
-      for (final gone in ['_star(', '_hit(', 'wedge', 'fanTop', 'collimated', 'Doppler', '_ringStart', 'bowl', 'final stem']) {
+      for (final gone in ['PhotonLogoPainter', '_star(', '_hit(', 'wedge', 'fanTop', 'collimated', 'Doppler', '_ringStart', 'bowl', 'final stem', 'exit =']) {
         expect(source.contains(gone), isFalse, reason: gone);
       }
     });
@@ -5523,20 +5533,19 @@ void main() {
       expect(sizes, [16, 32, 48, 256]);
     });
 
-    testWidgets('its 256px frame is exactly the in-app PhotonLogoMark drawing', (tester) async {
+    testWidgets('its 256px frame is the app logo: the same PhotonLogo drawing, and the same picture as the widget', (tester) async {
       final bytes = file.readAsBytesSync();
       final h = ByteData.sublistView(bytes);
       final e = 6 + 16 * 3;
       final png = Uint8List.sublistView(bytes, h.getUint32(e + 12, Endian.little), h.getUint32(e + 12, Endian.little) + h.getUint32(e + 8, Endian.little));
+      Future<Uint8List> rgba(ui.Image i) async => (await i.toByteData(format: ui.ImageByteFormat.rawRgba))!.buffer.asUint8List();
       final result = await tester.runAsync(() async {
-        final codec = await ui.instantiateImageCodec(png);
-        final decoded = (await codec.getNextFrame()).image;
-        final fromIcon = (await decoded.toByteData(format: ui.ImageByteFormat.rawRgba))!;
+        final fromIcon = await rgba((await (await ui.instantiateImageCodec(png)).getNextFrame()).image);
+        final art = (await (await ui.instantiateImageCodec(File(PhotonLogo.asset).readAsBytesSync())).getNextFrame()).image;
         final recorder = ui.PictureRecorder();
-        const PhotonLogoPainter().paint(Canvas(recorder), const Size.square(256));
-        final drawn = await recorder.endRecording().toImage(256, 256);
-        final fromPainter = (await drawn.toByteData(format: ui.ImageByteFormat.rawRgba))!;
-        return (fromIcon.buffer.asUint8List(), fromPainter.buffer.asUint8List());
+        PhotonLogo.paint(Canvas(recorder), const Size.square(256), art);
+        final fromPainter = await rgba(await recorder.endRecording().toImage(256, 256));
+        return (fromIcon, fromPainter);
       });
       final (icon, painter) = result!;
       expect(icon.length, painter.length);
@@ -5544,21 +5553,38 @@ void main() {
       for (var i = 0; i < icon.length; i++) {
         if ((icon[i] - painter[i]).abs() > 2) differing++;
       }
-      expect(differing, lessThan(icon.length ~/ 200), reason: 'the icon is the app mark, rasterised');
-      // And it is the new mark: the transparent corner, the white beam, the cyan
-      // ray leaving the prism (the same points as the 200px drawing, times 1.28).
-      int px(int x, int y, int channel) => icon[(y * 256 + x) * 4 + channel];
-      expect(px(0, 0, 3), 0, reason: 'a squircle with transparent corners');
-      expect(px(60, 143, 0), greaterThan(220), reason: 'the off-white beam');
-      expect(px(196, 113, 0), lessThan(120), reason: 'the cyan ray');
-      expect(px(196, 113, 1), greaterThan(180));
-      expect(px(196, 113, 2), greaterThan(200));
-      // Not the old P: glass, not an off-white stem, inside the prism.
-      expect(px(122, 128, 0), lessThan(220));
+      expect(differing, lessThan(icon.length ~/ 200), reason: 'the icon is PhotonLogo.paint, rasterised');
+
+      int px(Uint8List data, int x, int y, int channel) => data[(y * 256 + x) * 4 + channel];
+      expect(px(icon, 0, 0, 3), 0, reason: 'a squircle with transparent corners');
+      // The dark navy ground, and the pale prism standing out of it.
+      final ground = [px(icon, 26, 26, 0), px(icon, 26, 26, 1), px(icon, 26, 26, 2)];
+      expect(ground.every((v) => v < 45), isTrue, reason: 'navy ground: $ground');
+      expect(ground[2], greaterThan(ground[0]));
+      expect(px(icon, 128, 136, 2), greaterThan(180), reason: 'the blue prism');
+
+      // And it is the picture the app shows: the widget's own render of the logo.
+      final key = GlobalKey();
+      await tester.pumpWidget(
+        Directionality(
+          textDirection: TextDirection.ltr,
+          child: Center(child: RepaintBoundary(key: key, child: const PhotonLogoMark(size: 256))),
+        ),
+      );
+      await _logoReady(tester);
+      final widget = (await _capture(tester, key)).buffer.asUint8List();
+      var far = 0;
+      for (var i = 0; i < icon.length; i += 4) {
+        final d = (icon[i] - widget[i]).abs() + (icon[i + 1] - widget[i + 1]).abs() + (icon[i + 2] - widget[i + 2]).abs();
+        if (d > 60) far++;
+      }
+      expect(far, lessThan(256 * 256 ~/ 40), reason: 'the widget and the icon show the same logo (under 2.5% of pixels differ visibly)');
     });
 
-    test('the generator that writes it lives in tool/', () {
-      expect(File('tool/gen_app_icon_test.dart').readAsStringSync(), contains('PhotonLogoPainter'));
+    test('the generator that writes it lives in tool/ and draws with PhotonLogo', () {
+      final source = File('tool/gen_app_icon_test.dart').readAsStringSync();
+      expect(source, contains('PhotonLogo.paint'));
+      expect(source, contains('PhotonLogo.asset'));
     });
   });
 
@@ -6564,7 +6590,6 @@ void main() {
         'photon_primitives.dart', // the pulsing pip: only while something is converging
         'progressive_flux_loader.dart', // the shimmer: only while a transfer shows
         'command_dock.dart', // the focus beam: only while the prompt has focus
-        'animated_profile_card.dart', // the aurora: only under the pointer
         'mac_window_viewport.dart', // the probe ring: only while shown and uncovered
       });
       // A pulsing pip never rides on the engine link alone.
@@ -6586,7 +6611,7 @@ void main() {
       await _teardown(tester, studio);
     });
 
-    testWidgets('an open account console is a still image until the pointer is on it', (tester) async {
+    testWidgets('an open account console is a still image, with the pointer on it or off', (tester) async {
       final studio = StudioController(autoConnect: false);
       await _pumpStudio(tester, const Size(1280, 800), controller: studio);
       for (var i = 0; i < 500 && studio.tickerActive; i++) {
@@ -6601,10 +6626,10 @@ void main() {
       await mouse.moveTo(tester.getCenter(find.byKey(const Key('animated-profile-card'))));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 50));
-      expect(tester.binding.hasScheduledFrame, isTrue, reason: 'it moves while you are on it');
+      expect(tester.binding.hasScheduledFrame, isFalse, reason: 'and nothing moves while you are on it');
       await mouse.moveTo(const Offset(2, 2));
-      await _pumpFor(tester, const Duration(milliseconds: 300));
-      expect(tester.binding.hasScheduledFrame, isFalse, reason: 'and stops when you leave');
+      await tester.pump();
+      expect(tester.binding.hasScheduledFrame, isFalse, reason: 'or when you leave');
       await _teardown(tester, studio);
     });
 

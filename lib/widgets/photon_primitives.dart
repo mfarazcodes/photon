@@ -357,16 +357,18 @@ class _WindowPip extends StatelessWidget {
   }
 }
 
-/// The Photon mark: light through a prism.
+/// The Photon mark: a frosted glass prism bending a pale blue beam into a
+/// flowing orange-and-coral spectrum, on a deep navy squircle.
 ///
-/// A white beam comes in from the left, strikes a glass prism, and leaves it
-/// split into cyan, lime and coral: what the engine does, spectral light
-/// transport, as one bold picture. Every stroke is thick and round, so it holds
-/// at 16px.
+/// The artwork is `assets/images/photon_logo.png` (a transparent PNG). Its
+/// pastels are light, so the tile behind it is dark and saturated: a navy that
+/// deepens toward the edges, which makes the blue, coral and amber glow. The
+/// beam and the ribbon run off the tile's edges, so the tile crops the artwork
+/// in a little ([PhotonLogo.zoom]) to keep the prism large at 16px.
 ///
-/// The mark is the app's identity, so it does not follow the studio theme: it is
-/// always the same Lusion-void tile, in Dark Grading and in Daylight Lab, and
-/// it is the same drawing as the Windows app icon.
+/// It is the app's identity, so it does not follow the studio theme: the same
+/// tile in Dark Grading and in Daylight Lab, and the same picture as the
+/// Windows app icon ([PhotonLogo.paint] draws both).
 class PhotonLogoMark extends StatelessWidget {
   const PhotonLogoMark({super.key, this.size = 22, this.semanticLabel});
 
@@ -375,91 +377,93 @@ class PhotonLogoMark extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final radius = BorderRadius.circular(PhotonLogo.radius * size);
+    // The artwork is laid out [PhotonLogo.zoom] times the tile's side, centred,
+    // and the tile clips it: a crop, with no transform layer.
+    final art = size * (1 - 2 * PhotonLogo.inset) * PhotonLogo.zoom;
     final mark = SizedBox.square(
       dimension: size,
-      child: const CustomPaint(painter: PhotonLogoPainter()),
+      child: Padding(
+        padding: EdgeInsets.all(PhotonLogo.inset * size),
+        child: DecoratedBox(
+          decoration: BoxDecoration(borderRadius: radius, gradient: PhotonLogo.background),
+          child: ClipRRect(
+            borderRadius: radius,
+            child: OverflowBox(
+              minWidth: art,
+              maxWidth: art,
+              minHeight: art,
+              maxHeight: art,
+              child: Image.asset(
+                PhotonLogo.asset,
+                width: art,
+                height: art,
+                fit: BoxFit.cover,
+                filterQuality: FilterQuality.medium,
+                // Never a stray error box in a corner of the chrome.
+                errorBuilder: (_, _, _) => const SizedBox.shrink(),
+              ),
+            ),
+          ),
+        ),
+      ),
     );
     if (semanticLabel == null) return ExcludeSemantics(child: mark);
     return Semantics(label: semanticLabel, image: true, child: mark);
   }
 }
 
-/// Paints the Photon mark. Public so the app icon can be rasterised from this
-/// exact drawing (see `tool/gen_app_icon_test.dart`). It has no theme input.
-class PhotonLogoPainter extends CustomPainter {
-  const PhotonLogoPainter();
+/// The Photon mark's drawing: one set of numbers for the widget and for the
+/// Windows icon, so the two cannot drift apart.
+abstract final class PhotonLogo {
+  /// The artwork, a transparent PNG.
+  static const String asset = 'assets/images/photon_logo.png';
 
-  static const _void = Color(0xFF0B0C10);
-  static const _deep = Color(0xFF1B1F36);
-  static const _offWhite = Color(0xFFF0F1FA);
-  static const _blue = Color(0xFF1A2FFB);
-  static const _periwinkle = Color(0xFF6878FF);
-  static const _cyan = Color(0xFF22D3EE);
-  static const _lime = Color(0xFFC1FF00);
-  static const _coral = Color(0xFFFF4C41);
+  /// How far the artwork is scaled up inside the tile, about its centre (the
+  /// prism's centre), so the prism stays large at 16px.
+  static const double zoom = 1.75;
 
-  @override
-  void paint(Canvas canvas, Size size) {
+  /// The squircle tile: inset from the canvas edge, and corner radius, as
+  /// fractions of the canvas side.
+  static const double inset = 0.03;
+  static const double radius = 0.22;
+
+  /// Deep navy behind the pastel artwork: lighter behind the prism, darker at
+  /// the corners, so the tile has depth without a hard edge.
+  static const Color navyCentre = Color(0xFF1B2250);
+  static const Color navyEdge = Color(0xFF080A16);
+
+  static const RadialGradient background = RadialGradient(
+    center: Alignment(0, 0.05),
+    radius: 0.85,
+    colors: [navyCentre, navyEdge],
+  );
+
+  /// Draws the whole mark at [size], with [art] the decoded artwork.
+  static void paint(Canvas canvas, Size size, ui.Image art) {
     final s = size.shortestSide;
-    Offset p(double x, double y) => Offset(x * s, y * s);
-
-    // The squircle tile: the Lusion void, deepening toward the middle.
     final tile = RRect.fromRectAndRadius(
-      Rect.fromLTRB(0.03 * s, 0.03 * s, 0.97 * s, 0.97 * s),
-      Radius.circular(0.22 * s),
+      Rect.fromLTRB(inset * s, inset * s, (1 - inset) * s, (1 - inset) * s),
+      Radius.circular(radius * s),
     );
     canvas.drawRRect(
       tile,
       Paint()
-        ..color = _void
+        ..shader = background.createShader(tile.outerRect)
         ..isAntiAlias = true,
     );
-    canvas.drawRRect(
-      tile,
+    canvas.save();
+    canvas.clipRRect(tile, doAntiAlias: true);
+    canvas.drawImageRect(
+      art,
+      Rect.fromLTWH(0, 0, art.width.toDouble(), art.height.toDouble()),
+      Rect.fromCenter(center: tile.outerRect.center, width: tile.width * zoom, height: tile.height * zoom),
       Paint()
-        ..shader = RadialGradient(
-          center: const Alignment(-0.1, 0.05),
-          radius: 0.85,
-          colors: [_deep.withValues(alpha: 0.95), _void.withValues(alpha: 0)],
-        ).createShader(tile.outerRect),
+        ..filterQuality = FilterQuality.high
+        ..isAntiAlias = true,
     );
-
-    Paint line(Color c, double w) => Paint()
-      ..color = c
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = w * s
-      ..strokeCap = StrokeCap.round
-      ..strokeJoin = StrokeJoin.round
-      ..isAntiAlias = true;
-
-    // The white beam entering the left face, and the spectrum leaving the right
-    // one: three bold rays, cyan over lime over coral, fanning out of one point.
-    // They are drawn first, so they run through the glass.
-    canvas.drawLine(p(0.07, 0.60), p(0.40, 0.52), line(_offWhite, 0.07));
-    final exit = p(0.60, 0.52);
-    canvas.drawLine(exit, p(0.93, 0.36), line(_cyan, 0.07));
-    canvas.drawLine(exit, p(0.955, 0.54), line(_lime, 0.07));
-    canvas.drawLine(exit, p(0.93, 0.72), line(_coral, 0.07));
-
-    // The prism: an equilateral triangle, glass-blue inside, with a thick
-    // off-white edge.
-    final apex = p(0.50, 0.28), left = p(0.26, 0.70), right = p(0.74, 0.70);
-    final prism = Path()
-      ..moveTo(apex.dx, apex.dy)
-      ..lineTo(right.dx, right.dy)
-      ..lineTo(left.dx, left.dy)
-      ..close();
-    canvas.drawPath(
-      prism,
-      Paint()
-        ..isAntiAlias = true
-        ..shader = ui.Gradient.linear(apex, right, [_periwinkle.withValues(alpha: 0.55), _blue.withValues(alpha: 0.95)]),
-    );
-    canvas.drawPath(prism, line(_offWhite, 0.065));
+    canvas.restore();
   }
-
-  @override
-  bool shouldRepaint(PhotonLogoPainter old) => false;
 }
 
 

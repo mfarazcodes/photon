@@ -113,6 +113,8 @@ class _LaunchHeroPortalState extends State<LaunchHeroPortal> with SingleTickerPr
       for (final provider in LaunchHeroPortal.frameProviders) {
         precacheImage(provider, context, onError: (_, _) {});
       }
+      // The logo in the masthead, decoded before the page is first drawn.
+      precacheImage(const AssetImage(PhotonLogo.asset), context, onError: (_, _) {});
     }
     // Tests (animateShader off) hold the first frame still.
     final shouldRun = studio.animateShader && studio.showLaunchPortal && !_left;
